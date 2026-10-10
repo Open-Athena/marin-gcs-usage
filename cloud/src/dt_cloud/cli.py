@@ -5415,9 +5415,10 @@ _static_names.add_command(_static_anchors)
 main.add_command(_static_names)
 
 from .interval_store import cli as _interval_store  # noqa: E402
-from .interval_append import append_cmd as _interval_append, cli as _interval_runs  # noqa: E402
+from .interval_append import append_cmd as _interval_append, cli as _interval_runs, merge_cmd as _interval_merge  # noqa: E402
 
 _interval_store.add_command(_interval_append)
+_interval_store.add_command(_interval_merge)
 _interval_store.add_command(_interval_runs)
 main.add_command(_interval_store)
 

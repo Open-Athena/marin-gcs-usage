@@ -20,6 +20,7 @@
 import { type CatalogIo, type CatalogMeta, type Member, StaticCatalog } from './staticCatalog.js'
 import { type Blobs, cmp, FirstHits, type Io, type IndexCache, type GroupIndex, StaticNames } from './staticNames.js'
 import { type HexRule, ruleOf, sameRule } from './hexRuns.js'
+import { newestManifest } from './manifests.js'
 
 export interface RunInfo { key: string; first: string; last: string; level: number; scans: string[] }
 export interface Manifest { gen: string; date: string; base_scans?: number; scans: string[]; runs: RunInfo[] }
@@ -187,13 +188,14 @@ export class Tiers {
   }
 }
 
-/** The greatest `manifests/<D>.json`, or null (none, or no `list`). */
+/** The newest manifest (`manifests.ts`: a scan's `<D>.json` or a merge's revision `<D>.mNNN.json`), or null (none, or
+ *  no `list`). */
 export async function latestManifest(blobs: Blobs): Promise<Manifest | null> {
   if (!blobs.list) return null
-  const keys = (await blobs.list('manifests/')).filter(k => /^manifests\/[^/]+\.json$/.test(k)).sort(cmp)
-  if (!keys.length) return null
-  const m = await blobs.json<Manifest>(keys[keys.length - 1])
-  if (!Array.isArray(m.scans) || !Array.isArray(m.runs) || typeof m.date !== 'string') throw new Error(`static runs: bad ${keys[keys.length - 1]}`)
+  const name = newestManifest((await blobs.list('manifests/')).filter(k => k.startsWith('manifests/')).map(k => k.slice('manifests/'.length)))
+  if (name === null) return null
+  const m = await blobs.json<Manifest>(`manifests/${name}`)
+  if (!Array.isArray(m.scans) || !Array.isArray(m.runs) || typeof m.date !== 'string') throw new Error(`static runs: bad manifests/${name}`)
   return m
 }
 

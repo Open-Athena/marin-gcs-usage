@@ -1543,17 +1543,12 @@ def r2_verify_cmd(bucket, gen, scan, workers) -> None:
     """Check that every served file (`R2_SERVED`) of every run a manifest lists is on R2 as on GCS (size, and md5 where both
     know it), before the manifest itself is copied: a manifest goes to R2 only once each run it lists is whole there.
     Exit 1, listing what's missing or different."""
-    from concurrent.futures import ThreadPoolExecutor
-
-    from . import publish as pub
+    from .append_runner import r2_missing, r2_objects
 
     prefix = f"{PREFIX}/{gen}"
     runs = read_json(f"gs://{bucket}/{prefix}/manifests/{scan}.json")["runs"]
-    objs = [o for r in runs for o in pub.list_source(bucket, [f"{prefix}/{r['key']}/"])
-            if o.key.removeprefix(f"{prefix}/{r['key']}/").startswith(R2_SERVED)]
-    s3, r2 = pub.r2_client(), pub.r2_bucket()
-    with ThreadPoolExecutor(workers) as ex:
-        bad = [o.key for o, do in ex.map(lambda o: (o, pub.should_copy(o, pub.head_dest(s3, r2, o.key))), objs) if do]
+    objs = [o for r in runs for o in r2_objects(bucket, [f"{prefix}/{r['key']}/"], lambda k, r=r: k.removeprefix(f"{prefix}/{r['key']}/").startswith(R2_SERVED))]
+    bad = r2_missing(objs, workers=workers)
     doc = {"gen": gen, "manifest": scan, "runs": [r["key"] for r in runs], "objects": len(objs), "missing": bad}
     print(json.dumps(doc, indent=1))
     if bad:
@@ -1570,37 +1565,24 @@ def r2_verify_cmd(bucket, gen, scan, workers) -> None:
 @option("-x", "--exclude", multiple=True, help="Skip the served keys under this generation-relative prefix (repeatable; e.g. a run's `drill/meta.json`, copied last)")
 def r2_copy_cmd(bucket, gen, dry_run, only, workers, exclude) -> None:
     """Copy the generation's served files (shards, sidecar, plan, scans) GCS → R2 under the same keys,
-    skipping objects already there with the same size and md5 (`publish.copy_one`'s streaming copy,
-    the GCS md5 stamped as metadata). R2 via `R2_ENDPOINT`, `R2_BUCKET` and AWS_* (or R2_*) keys."""
-    from concurrent.futures import ThreadPoolExecutor
-
-    from . import publish as pub
+    skipping objects already there with the same size and md5 (`append_runner.r2_copy`: `publish.copy_one`'s streaming
+    copy, the GCS md5 stamped as metadata). R2 via `R2_ENDPOINT`, `R2_BUCKET` and AWS_* (or R2_*) keys."""
+    from .append_runner import r2_copy, r2_objects
 
     prefix = f"{PREFIX}/{gen}"
-    objs = [o for o in pub.list_source(bucket, [prefix + "/"]) if o.key.removeprefix(prefix + "/").startswith(R2_SERVED)
-            and (only is None or o.key.removeprefix(prefix + "/").startswith(only))
-            and not any(o.key.removeprefix(prefix + "/").startswith(x) for x in exclude)]
-    s3, r2 = pub.r2_client(), pub.r2_bucket()
-    with ThreadPoolExecutor(workers) as ex:
-        todo = [o for o, do in ex.map(lambda o: (o, pub.should_copy(o, pub.head_dest(s3, r2, o.key))), objs) if do]
-    total = sum(o.size for o in todo)
-    err(f"r2-copy {gen}: {len(objs)} objects, {len(todo)} to copy ({total:,} B)")
+
+    def keep(key: str) -> bool:
+        rel = key.removeprefix(prefix + "/")
+        return rel.startswith(R2_SERVED) and (only is None or rel.startswith(only)) and not any(rel.startswith(x) for x in exclude)
+
+    objs = r2_objects(bucket, [prefix + "/"], keep)
+    doc = r2_copy(bucket, objs, workers=workers, dry_run=dry_run)
+    err(f"r2-copy {gen}: {len(objs)} objects, {doc['copied'] if not dry_run else len(doc['keys'])} to copy ({doc['bytes']:,} B)")
     if dry_run:
-        for o in todo:
-            print(o.key)
+        for k in doc["keys"]:
+            print(k)
         return
-    t0 = monotonic()
-
-    def one(o):
-        pub.copy_one(bucket, s3, r2, o)
-        return o
-
-    done = 0
-    with ThreadPoolExecutor(workers) as ex:
-        for o in ex.map(one, todo):
-            done += o.size
-            err(f"  → {o.key} ({o.size:,} B; {done / total:.1%}, {done / max(monotonic() - t0, 1e-9) / 1e6:.0f} MB/s)")
-    print(json.dumps({"gen": gen, "objects": len(objs), "copied": len(todo), "bytes": total, "s": round(monotonic() - t0, 1)}))
+    print(json.dumps({"gen": gen, **doc}))
 
 
 @cli.command("compare-answers")

@@ -810,27 +810,18 @@ def r2_copy_cmd(bucket, profile, gen, mount, dry_run, workers) -> None:
     """Copy the generation's served files GCS → R2 under the same keys (`static-names r2-copy`'s streaming
     copy: objects already there with the same size and md5 are skipped). R2 via `R2_ENDPOINT`,
     `R2_BUCKET` and AWS_* keys."""
+    from .append_runner import r2_copy, r2_objects
+
     bucket = _bucket(bucket, profile)
-    from concurrent.futures import ThreadPoolExecutor
-
-    from . import publish as pub
-
     prefix = f"{PREFIX}/{gen}"
-    objs = [o for o in pub.list_source(bucket, [prefix + "/"]) if o.key.removeprefix(prefix + "/").startswith(R2_SERVED)]
-    s3, r2 = pub.r2_client(), pub.r2_bucket()
-    with ThreadPoolExecutor(workers) as ex:
-        todo = [o for o, do in ex.map(lambda o: (o, pub.should_copy(o, pub.head_dest(s3, r2, o.key))), objs) if do]
-    total = sum(o.size for o in todo)
-    err(f"r2-copy {gen}: {len(objs)} objects, {len(todo)} to copy ({total:,} B)")
+    objs = r2_objects(bucket, [prefix + "/"], lambda key: key.removeprefix(prefix + "/").startswith(R2_SERVED))
+    doc = r2_copy(bucket, objs, workers=workers, dry_run=dry_run)
+    err(f"r2-copy {gen}: {len(objs)} objects, {len(doc['keys']) if dry_run else doc['copied']} to copy ({doc['bytes']:,} B)")
     if dry_run:
-        for o in todo:
-            print(o.key)
+        for k in doc["keys"]:
+            print(k)
         return
-    t0 = monotonic()
-    with ThreadPoolExecutor(workers) as ex:
-        for o in ex.map(lambda o: (pub.copy_one(bucket, s3, r2, o), o)[1], todo):
-            err(f"  → {o.key} ({o.size:,} B)")
-    print(json.dumps({"gen": gen, "objects": len(objs), "copied": len(todo), "bytes": total, "s": round(monotonic() - t0, 1)}))
+    print(json.dumps({"gen": gen, **doc}))
 
 
 if __name__ == "__main__":
