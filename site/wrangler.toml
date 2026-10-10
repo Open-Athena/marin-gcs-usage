@@ -5,6 +5,7 @@
 name = "oa-gcs-usage"
 pages_build_output_dir = "dist"
 compatibility_date = "2026-06-01"
+compatibility_flags = ["enable_request_signal"]   # `request.signal` aborts when the viewer cancels, so the interval store evicts that request's in-flight reads at once (`_lib/index.ts`)
 
 # D1: the @open-athena/auth tables (grants, access_log, access_requests,
 # profiles, pending_auth) plus the app's own (allowlist, the owner ledger
