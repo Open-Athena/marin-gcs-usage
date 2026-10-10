@@ -153,6 +153,9 @@ migrations_dir = "migrations/cw"
 
 [env.preview.vars]
 ROOT_LABEL = "marin CoreWeave (dev)"
+# Response-cache namespace (`_lib/edgeCache.ts`): this stack shares prod's KV, so its keys carry their own tag;
+# pinned so dev.cw-s3.oa.dev and the `pages.dev` alias share one.
+CACHE_NS = "dev.cw-s3.oa.dev"
 STORE = "cw"
 AUTH_MODE = "app"                     # own sign-in (specs/done/oidc-cutover-cw.md P3); production flips at P4
 STORE_SCHEME = "s3://"
