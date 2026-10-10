@@ -60,6 +60,7 @@ SWEEP_PACING = "guided"   # Feedback control within the cold-ramp envelope; adap
 CF_ACCOUNT_ID = "74981a43be0de7712369306c7b19133d"
 D1_DB_ID = "e52398b7-5538-4bc4-83db-3355a1b5ef9a"   # the `DB` binding's D1: executor jobs record their runs there
 D1_DB_NAME = "oa-gcs-usage-auth"
+DISKY_LABELS = "app=disky,deployment=gcs"  # cost labels on executor jobs (specs/cost-labels.md)
 REPO_URL = "https://github.com/Open-Athena/marin-gcs-usage"  # the GitHub link (`SiteKbd`/`SiteNav`)
 # Snapshots live at the store root (`snapshots/<date>/`); no SNAPSHOTS_SUBDIR.
 # No EDGE_TRUSTED / ACCESS_*: the host is off Zero Trust since 2026-09-24 — the
@@ -169,6 +170,7 @@ SWEEP_PACING = "guided"
 CF_ACCOUNT_ID = "74981a43be0de7712369306c7b19133d"
 D1_DB_ID = "e52398b7-5538-4bc4-83db-3355a1b5ef9a"   # the `DB` binding's D1: executor jobs record their runs there
 D1_DB_NAME = "oa-gcs-usage-auth"
+DISKY_LABELS = "app=disky,deployment=gcs"  # cost labels on executor jobs (specs/cost-labels.md)
 STAFF_DOMAIN = "openathena.ai"
 STORE_SCHEME = "gs://"
 STORE_BUCKETS = "marin-us-central2,marin-us-central1,marin-us-east1,marin-us-east5,marin-us-west4,marin-eu-west4"

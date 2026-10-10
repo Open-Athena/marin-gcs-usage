@@ -11,7 +11,7 @@ from pathlib import Path
 import pulumi
 import pulumi_gcp as gcp
 
-from gcp_jobs import Adopt, BatchCron, JobAccount, RunJobCron, Secrets, StorageBatchDelete, grant_bucket
+from gcp_jobs import Adopt, BatchCron, JobAccount, RunJobCron, Secrets, StorageBatchDelete, cost_labels, grant_bucket, labeled_provider
 from task_logs import TaskLogView
 
 cfg = pulumi.Config()
@@ -24,6 +24,10 @@ job_dir = Path(__file__).resolve().parents[2] / "job"
 STACK = "gcs"
 if pulumi.get_stack() != STACK:
     raise ValueError(f"this branch's gcp/ manages only the {STACK!r} stack, not {pulumi.get_stack()!r}")
+
+# Cost attribution (specs/cost-labels.md): `$DISKY_LABELS` (app=disky,deployment=gcs, from the
+# shell's `.envrc`) becomes every labelable resource's default labels.
+labeled_provider("gcs-labeled", project=project, region=region, labels=cost_labels())
 
 sa = lambda account_id: f"{account_id}@{project}.iam.gserviceaccount.com"  # noqa: E731
 
@@ -134,6 +138,7 @@ sheet_sync = RunJobCron(
     sa_email=job.email_literal,
     image=f"{region}-docker.pkg.dev/{project}/cloud-run-source-deploy/gcs-sheet-sync:latest",
     secret_env={"SITE_TOKEN": "gcs-sheet-sync-token"},
+    labels={"component": "sheet-sync"},
     adopt=adopt,
     existing=True,
     opts=pulumi.ResourceOptions(depends_on=[secrets]),
@@ -149,6 +154,8 @@ gcp.storage.Bucket(
     location="US-EAST1",
     storage_class="STANDARD",
     uniform_bucket_level_access=True,
+    # shared with cw-s3 (its `cw-l2/`, static names): no one deployment's
+    labels={"deployment": "shared", "component": "data"},
     soft_delete_policy=gcp.storage.BucketSoftDeletePolicyArgs(retention_duration_seconds=604800),
     lifecycle_rules=[
         gcp.storage.BucketLifecycleRuleArgs(
@@ -179,6 +186,7 @@ scratch = gcp.storage.Bucket(
     location="US-EAST1",
     storage_class="STANDARD",
     uniform_bucket_level_access=True,
+    labels={"deployment": "shared", "component": "scratch"},
     soft_delete_policy=gcp.storage.BucketSoftDeletePolicyArgs(retention_duration_seconds=0),
     lifecycle_rules=[
         gcp.storage.BucketLifecycleRuleArgs(

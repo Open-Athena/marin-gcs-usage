@@ -135,6 +135,8 @@ PYTHONPATH=/stage/src python3 -u -m dt_cloud.${MODULE:-static_names} $KIND $MOUN
   fi
   ENVJ=${ENV_JSON:-'{}'}
   if [ -n "${SPOT:-}" ]; then MODEL=SPOT; RETRIES=3; else MODEL=STANDARD; RETRIES=0; fi
+  # cost labels (specs/cost-labels.md): $DISKY_LABELS + component, {} when unset
+  COST_LABELS=$(python3 -c 'import json, os; d = dict(i.strip().split("=", 1) for i in os.environ.get("DISKY_LABELS", "").split(",") if i.strip()); print(json.dumps({**d, "component": "static-names"} if d else {}))')
   spec=$(mktemp)
   cat > "$spec" <<EOF
 {
@@ -167,9 +169,10 @@ PYTHONPATH=/stage/src python3 -u -m dt_cloud.${MODULE:-static_names} $KIND $MOUN
       "disks": [{"newDisk": {"type": "local-ssd", "sizeGb": "$SSD"}, "deviceName": "stage"}]
     }}],
     "serviceAccount": {"email": "gcs-usage-job@$PROJECT.iam.gserviceaccount.com"},
-    "location": {"allowedLocations": ["regions/$REGION"]}
+    "location": {"allowedLocations": ["regions/$REGION"]},
+    "labels": $COST_LABELS
   },
-  "labels": {"purpose": "static-names", "stage": "$KIND"},
+  "labels": $(python3 -c 'import json, sys; print(json.dumps({"purpose": "static-names", "stage": sys.argv[1], **json.loads(sys.argv[2])}))' "$KIND" "$COST_LABELS"),
   "logsPolicy": {"destination": "CLOUD_LOGGING"}
 }
 EOF

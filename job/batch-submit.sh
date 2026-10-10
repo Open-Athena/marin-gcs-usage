@@ -30,6 +30,14 @@ MEMORY_MIB=${MEMORY_MIB:-250000}
 LOCAL_SSD_GB=${LOCAL_SSD_GB:-1500}  # n2 32-vCPU machines require >=4 local SSDs (375G each)
 JOB_ID=${JOB_ID:-gcs-usage-snapshot-$(date -u +%Y%m%d-%H%M%S)}
 
+labels() {  # cost labels (specs/cost-labels.md): $DISKY_LABELS + component $1, as JSON; {} when unset
+  python3 - "$1" <<'PY'
+import json, os, sys
+d = dict(i.strip().split("=", 1) for i in os.environ.get("DISKY_LABELS", "").split(",") if i.strip())
+print(json.dumps({**d, "component": sys.argv[1]} if d else {}))
+PY
+}
+
 vars() {  # container env: defaults + optional passthroughs
   python3 - <<'EOF'
 import json, os
@@ -59,6 +67,9 @@ v = {
     "SLACK_ALERT_CHANNEL": g("SLACK_ALERT_CHANNEL", "C0BTUNT3B5Z"),
     # CF account for index-sync's `wrangler d1 execute` (token is a secretVariable)
     "CLOUDFLARE_ACCOUNT_ID": g("CLOUDFLARE_ACCOUNT_ID", "74981a43be0de7712369306c7b19133d"),
+    # the stack's cost labels (PIN keeps them: `submitter_spec` passes them through), so the
+    # jobs this one submits (the listing fan-out, the static-names chain) carry them too
+    "DISKY_LABELS": os.environ.get("DISKY_LABELS", ""),
 }
 v = {k: s for k, s in v.items() if s}
 if not pin:  # one-off overrides forwarded only for manual submits, never the cron spec
@@ -134,8 +145,10 @@ cat > "$spec" <<EOF
       }
     }],
     "serviceAccount": {"email": "$SA"},
-    "location": {"allowedLocations": ["regions/$REGION"]}
+    "location": {"allowedLocations": ["regions/$REGION"]},
+    "labels": $(labels scan)
   },
+  "labels": $(labels scan),
   "logsPolicy": {"destination": "CLOUD_LOGGING"}
 }
 EOF
