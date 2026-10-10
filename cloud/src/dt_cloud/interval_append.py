@@ -471,7 +471,8 @@ class Runner(ar.Runner):
         return ar.job_spec(self.p, name, tasks, commands, stage=stage, purpose="interval-store", component=COMPONENT, **kw)
 
     def merge_job(self, scan: str) -> tuple[str, dict]:
-        return self.job("merge", scan, 1, "interval_append", ["carry", "-L", level_arg(self.p.compact_level), *duckdb_args(self.p.machine)])
+        return self.job("merge", scan, 1, "interval_append", ["carry", "-L", level_arg(self.p.compact_level), *duckdb_args(self.p.machine)],
+                        r2=self.merge_r2())
 
     def one(self, d: str) -> None:
         run = f"{self.root}/deltas/{d}"
@@ -753,11 +754,13 @@ def publish_cmd(bucket, gen, ranges_gen, scratch, scan, compact_level, mount, me
 def carry_cmd(bucket, gen, ranges_gen, scratch, compact_level, mount, mem, max_merges, dry_run, threads, tmp) -> None:
     """Run the newest manifest's due carries (`append_runner.plan_carries`, `merge_pending`): each merged run into its own
     dir (its deltas, its cut, its `meta.json` last), then a revision `manifests/<id>.m<NNN>.json` listing it. One merger
-    per generation (a lease in the scratch bucket); resumable."""
+    per generation (a lease in the scratch bucket, mirrored to R2's `interval-store/<gen>/merging.json` for /health when the
+    job has the R2 env); resumable."""
     store = GcsRunStore(bucket, scratch, gen, prefix=PREFIX)
     k = read_json(f"gs://{bucket}/{PREFIX}/{ranges_gen}/ranges.json")["k"]
+    status = None if dry_run else ar.r2_merge_status(f"{PREFIX}/{gen}")
     doc = ar.merge_pending(store, carry(gen, k, threads=threads, mem=mem), Path(mount) / PREFIX / gen, tmp=Path(tmp), dry_run=dry_run,
-                           max_merges=max_merges, max_level=compact_level)
+                           max_merges=max_merges, max_level=compact_level, status=status)
     print(json.dumps(doc, indent=1))
 
 

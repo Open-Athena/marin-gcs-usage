@@ -1,6 +1,6 @@
 """`dt_cloud.append_runner`, the machinery both run stores share, where the stores' own tests don't reach: the R2 copy of
 one manifest (its runs, each run's liveness markers after the rest of it, a check, the manifest last; nothing of the
-manifest when the check fails), the Batch poll's cap, and `exit_on`'s exit codes."""
+manifest when the check fails), the Batch poll's cap, `exit_on`'s exit codes, and the merge status record's R2 sink."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -95,3 +95,41 @@ def test_exit_on(raise_, code, logged):
         ar.exit_on("x", fn, logs.append)
     assert (e.value.code, logs) == (code, logged)
     assert ar.exit_on("x", lambda: [1], logs.append) == [1]
+
+
+class S3:
+    """A boto3 S3 client recording its calls."""
+
+    def __init__(self):
+        self.calls: list[tuple] = []
+
+    def put_object(self, **kw):
+        self.calls.append(("put_object", kw))
+
+    def delete_object(self, **kw):
+        self.calls.append(("delete_object", kw))
+
+
+def test_r2_merge_status_writes_beside_the_store():
+    """The record goes to `<prefix>/<gen>/merging.json` in the serving bucket (no reader lists the generation's root),
+    uncached; a delete removes it."""
+    s3 = S3()
+    st = ar.R2MergeStatus(s3, "r2b", f"{ROOT}/{ar.MERGE_STATUS}")
+    st.put({"holder": "iv-merge-x", "merges": []})
+    st.delete()
+    assert s3.calls == [
+        ("put_object", {"Bucket": "r2b", "Key": "interval-store/g1/merging.json", "Body": b'{\n "holder": "iv-merge-x",\n "merges": []\n}\n',
+                        "ContentType": "application/json", "CacheControl": "no-store"}),
+        ("delete_object", {"Bucket": "r2b", "Key": "interval-store/g1/merging.json"}),
+    ]
+
+
+def test_r2_merge_status_from_the_env():
+    """Built from the R2 copy's env; without an endpoint or bucket, None (logged): the merge runs, /health doesn't see it."""
+    logs = []
+    assert ar.r2_merge_status(ROOT, env={"R2_BUCKET": "r2b"}, log=logs.append) is None
+    assert logs == ["merge status: no R2_ENDPOINT in the env; /health won't show this merge"]
+    st = ar.r2_merge_status(ROOT, env={"R2_ENDPOINT": "https://acct.r2.cloudflarestorage.com", "R2_BUCKET": "r2b", "R2_ACCESS_KEY_ID": "k",
+                                       "R2_SECRET_ACCESS_KEY": "s"}, log=logs.append)
+    assert (type(st), st.bucket, st.key, st.client.meta.endpoint_url, len(logs)) == (
+        ar.R2MergeStatus, "r2b", "interval-store/g1/merging.json", "https://acct.r2.cloudflarestorage.com", 1)

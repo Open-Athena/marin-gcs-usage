@@ -40,6 +40,65 @@ export interface StoreRead {
   runs: HealthRun[]
   /** The read failed (no `scans.json`, an unreadable manifest): the stack is unknown. */
   error?: string
+  /** The store's merge status record (`<root>/merging.json`), when a merge holds (or held) the lease. */
+  merging?: MergeRecord | null
+}
+
+// ── Merges in progress ─────────────────────────────────────────────────────
+
+const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
+
+/** A carry a merge job has planned (`append_runner.StatusMirror`'s `merges`; the first is the one building). */
+export interface MergePlan { inputs: string[]; output: string; level: number; first: string; last: string; scans: number }
+
+/** A merge's status record, mirrored to R2 beside the store by the job holding the merge lease
+ *  (`append_runner.StatusMirror`): written as each carry starts, refreshed every `heartbeat_s`, removed when the job ends
+ *  cleanly, `state: failed` when it raised. A job killed outright leaves it `merging` with a heartbeat that stops. Times
+ *  in epoch s. */
+export interface MergeRecord {
+  holder: string
+  owner?: string
+  state: 'merging' | 'failed'
+  started_ts: number
+  updated_ts: number
+  heartbeat_s?: number | null
+  lease_s?: number
+  manifest?: string | null
+  merges: MergePlan[]
+  done?: { output: string; manifest: string | null }[]
+  error?: string
+}
+
+/** A heartbeat older than this and a merge is stuck: ~6 of `append_runner.HEARTBEAT_S` (5 min) missed. */
+export const STUCK_S = 1800
+/** The merge lease's lifetime (`append_runner.LEASE_S`), when the record doesn't carry its own. */
+export const LEASE_S = 4 * 3600
+
+/** A merge as /health reports it: its record, `status` (`stuck`: no heartbeat for `STUCK_S`, or held past its lease),
+ *  its age and its heartbeat's (s), and why it's stuck. */
+export interface MergeState extends MergeRecord { status: 'merging' | 'stuck' | 'failed'; age: number; beat_age: number; why: string | null }
+
+/** `s` seconds as `12m` or `4h05m`. */
+export const dur = (s: number): string => (s < 3600 ? `${Math.floor(s / 60)}m` : `${Math.floor(s / 3600)}h${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}m`)
+
+export function mergeState(rec: MergeRecord | null | undefined, now: number): MergeState | null {
+  if (!rec) return null
+  const age = Math.max(0, now - rec.started_ts), beat_age = Math.max(0, now - rec.updated_ts), lease = rec.lease_s ?? LEASE_S
+  if (rec.state === 'failed') return { ...rec, status: 'failed', age, beat_age, why: rec.error ?? null }
+  const why = beat_age > STUCK_S ? `no heartbeat for ${dur(beat_age)}` : age > lease ? `held ${dur(age)}, past its ${dur(lease)} lease` : null
+  return { ...rec, status: why ? 'stuck' : 'merging', age, beat_age, why }
+}
+
+/** `ts` (epoch s) as `HH:MM UTC`, with its date when it isn't `now`'s day. */
+export function clock(ts: number, now: number): string {
+  const t = new Date(ts * 1000).toISOString(), n = new Date(now * 1000).toISOString()
+  return `${t.slice(0, 10) === n.slice(0, 10) ? t.slice(11, 16) : `${t.slice(0, 10)} ${t.slice(11, 16)}`} UTC`
+}
+
+/** A merge's one-line summary: `merging since 06:00 UTC: 2 runs → deltas/a_b (L1)` (a failed one: `merge failed at …`). */
+export function mergeLine(m: MergeState, now: number): string {
+  const plan = m.merges.map(x => `${plural(x.inputs.length, 'run')} → ${x.output} (L${x.level})`).join('; ')
+  return m.status === 'failed' ? `merge failed at ${clock(m.updated_ts, now)}: ${plan}` : `merging since ${clock(m.started_ts, now)}: ${plan}`
 }
 
 /** A carry the binary counter has due (`append_runner.plan_carries`): the runs it merges and the run it makes. */
@@ -102,9 +161,12 @@ export interface StoreHealth extends StoreRead {
   served: { light: string[]; drill: string[] | null; anchors: string[] | null }
   /** The run each served stack is cut at (its first run without the tier), when one is. */
   cut: { light: string | null; drill: string | null; anchors: string | null }
+  /** The merge holding (or that last held) the lease, from its status record: null when none is recorded. */
+  merge: MergeState | null
 }
 
-export function storeHealth(s: StoreRead): StoreHealth {
+/** `now`: epoch s (a merge's age). */
+export function storeHealth(s: StoreRead, now: number = Math.floor(Date.now() / 1000)): StoreHealth {
   const drilled = new Set(s.runs.filter(r => r.tiers?.drill).map(r => r.key))
   const { after, carries } = planCarries(s.runs, drilled, s.compact_level)
   const all = [...s.base, ...s.runs.flatMap(r => r.scans)]
@@ -120,6 +182,7 @@ export function storeHealth(s: StoreRead): StoreHealth {
     ...s, carries, compaction: compaction(after, s.compact_level), newest: all.length ? all[all.length - 1] : null,
     served: { light: light.scans ?? [], drill: drill.scans, anchors: anchors.scans },
     cut: { light: light.cut, drill: drill.cut, anchors: anchors.cut },
+    merge: mergeState(s.merging, now),
   }
 }
 
@@ -229,7 +292,7 @@ export interface HealthJob { scan: string; status: string; started_ts?: number |
 /** The /health document from the sources: the stores' reads, the per-scan path store's scans, and the scan jobs (which
  *  are running, matched by scan id; when each scan's job started, for its age). */
 export function healthDoc(reads: readonly StoreRead[], perScan: readonly string[], jobs: readonly HealthJob[], now: number): HealthDoc {
-  const stores = reads.map(storeHealth)
+  const stores = reads.map(r => storeHealth(r, now))
   const live = jobs.filter(j => j.status === 'running')
   const running = new Set(live.map(j => j.scan))
   const started = new Map<string, number>()
@@ -254,7 +317,6 @@ export function spanOf(first: string, last: string, axis: readonly string[], now
 }
 
 const iso = (ms: number): string => new Date(ms).toISOString()
-const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
 
 /** One timeline row: its segments as `pyramidCover` would report them, with the counts the type carries. */
 export function row(tier: string, segments: PyramidCoverSegment[], now: number): PyramidTierCoverStatus {
@@ -272,8 +334,9 @@ export function row(tier: string, segments: PyramidCoverSegment[], now: number):
 
 /** A store's stack as timeline rows, top to bottom: `base` (one shard over the base's scans), one row per level from the
  *  compaction's `level - 1` down to 0 (each run a shard over its scans' span on its level's row; a due carry's output a
- *  `pending` shard on its level), and for the static index a `drill` and an `anch` row (the base and each run present or
- *  missing on R2). A run whose files aren't whole on R2 is `missing`. `axis`: every scan (sorted); `now` in ms. */
+ *  `pending` shard on its level, as is each output a merge in progress (or stuck) has planned and not yet listed), and
+ *  for the static index a `drill` and an `anch` row (the base and each run present or missing on R2). A run whose files
+ *  aren't whole on R2 is `missing`. `axis`: every scan (sorted); `now` in ms. */
 export function stackTiers(s: StoreHealth, axis: readonly string[], now: number): PyramidTierCoverStatus[] {
   const seg = (first: string, last: string, status: PyramidCoverSegment['status'], label: string, key: string): PyramidCoverSegment => {
     const { start, end } = spanOf(first, last, axis, now)
@@ -283,10 +346,16 @@ export function stackTiers(s: StoreHealth, axis: readonly string[], now: number)
   const baseSeg = s.base.length ? [seg(s.base[0], s.base[s.base.length - 1], s.error ? 'missing' : 'present', `${plural(s.base.length, 'scan')}`, `${s.gen} (base)`)] : []
   rows.push(row('base', baseSeg, now))
   const top = Math.max(s.compaction.level - 1, s.compaction.max_level)
+  const active = s.merge && s.merge.status !== 'failed' ? s.merge : null
+  const listed = new Set(s.runs.map(r => r.key))
+  const planned = (active?.merges ?? []).filter(x => !listed.has(x.output))
+  const merging = new Set(planned.map(x => x.output))
+  const verb = active?.status === 'stuck' ? 'stuck merge' : 'merging'
   for (let lv = top; lv >= 0; lv--) {
     const segs = [
       ...s.runs.filter(r => r.level === lv).map(r => seg(r.first, r.last, r.r2 ? 'present' : 'missing', plural(r.scans.length, 'scan'), r.key)),
-      ...s.carries.filter(c => c.level === lv).map(c => seg(c.first, c.last, 'pending', `due carry of ${plural(c.inputs.length, 'run')} · ${plural(c.scans, 'scan')}`, c.output)),
+      ...s.carries.filter(c => c.level === lv && !merging.has(c.output)).map(c => seg(c.first, c.last, 'pending', `due carry of ${plural(c.inputs.length, 'run')} · ${plural(c.scans, 'scan')}`, c.output)),
+      ...planned.filter(x => x.level === lv).map(x => seg(x.first, x.last, 'pending', `${verb} of ${plural(x.inputs.length, 'run')} · ${plural(x.scans, 'scan')}`, x.output)),
     ].sort((a, b) => a.start.localeCompare(b.start) || a.status.localeCompare(b.status))
     rows.push(row(`L${lv}`, segs, now))
   }

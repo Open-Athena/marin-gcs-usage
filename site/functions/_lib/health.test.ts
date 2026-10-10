@@ -96,4 +96,24 @@ describe('GET /api/health', () => {
     const { doc } = await get({})
     expect([doc.scans, doc.stores, doc.coverage]).toEqual([[], [], []])
   })
+
+  it('a store\'s merge status record: merging, then stuck once its heartbeat stops; an unreadable one is none', async () => {
+    const now = Math.floor(Date.now() / 1000)
+    const plan = { inputs: ['deltas/2026-10-05', 'deltas/2026-10-06'], output: 'deltas/2026-10-05_2026-10-06', level: 1, first: D('05'), last: D('06'), scans: 2 }
+    const record = { holder: 'iv-merge-2026-10-06-060000', owner: 'uid:7', state: 'merging', started_ts: now - 1200, updated_ts: now - 60, heartbeat_s: 300,
+      lease_s: 14400, manifest: 'manifests/2026-10-06.json', merges: [plan], done: [] }
+    const read = async (merging: unknown) => {
+      const { doc } = await get({ INDEX_R2: r2({ ...OBJECTS, ...(merging === undefined ? {} : { 'interval-store/iv1/merging.json': merging }) }), INTERVAL_STORE_GEN: 'iv1', STATIC_GEN: 'sn1' })
+      return doc.stores.map(s => [s.kind, s.merging ?? null, s.merge && [s.merge.status, s.merge.why], s.carries.map(c => c.output)])
+    }
+    expect(await read(record)).toEqual([
+      ['interval', record, ['merging', null], [plan.output]],
+      ['static', null, null, []],
+    ])
+    expect((await read({ ...record, updated_ts: now - 2400 }))[0].slice(2)).toEqual([['stuck', 'no heartbeat for 40m'], [plan.output]])
+    for (const bad of [{ holder: 'x' }, { ...record, merges: undefined }, { ...record, started_ts: '10:00' }]) {
+      expect(await read(bad)).toEqual([['interval', null, null, [plan.output]], ['static', null, null, []]])
+    }
+    expect(await read(undefined)).toEqual([['interval', null, null, [plan.output]], ['static', null, null, []]])
+  })
 })

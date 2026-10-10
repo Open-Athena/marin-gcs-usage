@@ -194,10 +194,11 @@ def publish_revision(store: RunStore, inputs: list[str], out: dict, *, attempts:
 
 def merge_pending(store: RunStore, mount: Path, *, tmp: Path, rule=None, jobs: int = 1, owner: str | None = None, dry_run: bool = False,
                   max_merges: int | None = None, max_level: int | None = None, now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
-                  build: Callable[..., dict] = build_merged_run, log: Callable[[str], None] = err) -> dict:
+                  build: Callable[..., dict] = build_merged_run, status: ar.MergeStatus | None = None, heartbeat_s: float | None = ar.HEARTBEAT_S,
+                  log: Callable[[str], None] = err) -> dict:
     """The newest manifest's due carries (`append_runner.merge_pending`) with the static store's merged-run `build`."""
     return ar.merge_pending(store, carry(rule, jobs, build), mount, tmp=tmp, owner=owner, dry_run=dry_run, max_merges=max_merges,
-                            max_level=max_level, now=now, log=log)
+                            max_level=max_level, now=now, status=status, heartbeat_s=heartbeat_s, log=log)
 
 
 # ── Backfilling a merged run's tier ────────────────────────────────────────
@@ -272,12 +273,14 @@ def cli() -> None:
 @option("-T", "--tmp", default="/stage/tmp", help="Scratch dir for merges")
 def carry_cmd(bucket, gen, jobs, compact_level, mount, max_merges, dry_run, scratch, tmp) -> None:
     """Run the newest manifest's due carries (`plan_carries`): each merged run into its own dir, then a revision
-    `manifests/<id>.m<NNN>.json` listing it. One merger per generation (a lease in the scratch bucket); resumable."""
+    `manifests/<id>.m<NNN>.json` listing it. One merger per generation (a lease in the scratch bucket, mirrored to R2's
+    `static-names/<gen>/merging.json` for /health when the job has the R2 env); resumable."""
     from .static_names import gen_rule_at
 
     store = gcs_store(bucket, scratch, gen)
+    status = None if dry_run else ar.r2_merge_status(f"{PREFIX}/{gen}")
     doc = merge_pending(store, Path(mount) / PREFIX / gen, tmp=Path(tmp), rule=gen_rule_at(bucket, gen), jobs=jobs, dry_run=dry_run,
-                        max_merges=max_merges, max_level=compact_level)
+                        max_merges=max_merges, max_level=compact_level, status=status)
     print(json.dumps(doc, indent=1))
 
 
