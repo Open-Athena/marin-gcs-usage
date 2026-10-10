@@ -77,8 +77,9 @@ export interface HitSource {
   readonly heavy?: boolean
 }
 
-/** The generation's scans (ids). */
-export interface StaticFilterStore { source: HitSource; scans: () => Promise<string[]>; gen: string }
+/** The generation's scans (ids). `dirOnly`: those of them indexed from a dir-only (v1) source — held, but blind
+ *  to every file name, so a literal's total there is not the scan's (`/api/series` leaves them as gaps). */
+export interface StaticFilterStore { source: HitSource; scans: () => Promise<string[]>; dirOnly?: () => Promise<string[]>; gen: string }
 
 /** A suffix range read whole above this many rows (row-group granular) is declined: V = 100K (the
  *  catalog's membership bound, so every non-member fits) plus two 8K-row groups of slack. */
@@ -249,7 +250,7 @@ export function staticFilterStore(env: StaticFilterEnv): StaticFilterStore | nul
         top: dir => cacheIndexes(caches.default, sub(dir, 'anchors'), 'top-v1'),
       },
     })
-    held = { r2: env.INDEX_R2, gen, store: { source: new SuffixHits(t.names, { cache: cacheHits(caches.default, pre), heavy, catalog: heavy ? null : t.catalog, anchored }), scans: t.scans, gen: `${gen}${heavy ? '+drill' : ''}` } }
+    held = { r2: env.INDEX_R2, gen, store: { source: new SuffixHits(t.names, { cache: cacheHits(caches.default, pre), heavy, catalog: heavy ? null : t.catalog, anchored }), scans: t.scans, dirOnly: t.dirOnly, gen: `${gen}${heavy ? '+drill' : ''}` } }
   }
   return held.store
 }
@@ -280,8 +281,9 @@ export function liveTotal(hits: Hit[], date: string, keep: (usr: string | null) 
  *  character literal's fleet-root `matchCount.n` counted from the roots index, not 0; 6: heavy literals on
  *  the drill runs' scans; 7: with no drilldown, a heavy literal's fleet root from the catalog's buckets and a
  *  `term-too-common` refusal below it, never the approximate walk; 8: anchored terms — `^q`, `q$` were literals before;
- *  9: a heavy `^q` — its fleet root from the starts-with catalog, scoped reads below, a 400K-row bound). */
-const RESPONSE_V = 9
+ *  9: a heavy `^q` — its fleet root from the starts-with catalog, scoped reads below, a 400K-row bound; 10: a
+ *  series' uncovered and dir-only scans are gaps named in `unindexed`, indexed-only or not — never zeros). */
+const RESPONSE_V = 10
 
 /** The cache keys' static marker: the generation when the static filter would answer this query's literal
  *  (so a response never outlives a switch of backend or generation), else ''. */
