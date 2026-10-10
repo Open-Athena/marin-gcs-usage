@@ -9,6 +9,8 @@ export interface NameExecution {
   validation: Record<string, unknown> & { description: string }
   source_identity: { generation?: string; snapshot_db?: string; history_manifest_sha256?: string; kind?: NameScanKind; target?: string; artifact_sha256?: string; artifact_bytes?: number; source_manifest_sha256?: string; source_prefix_proofs_checked?: true; postings?: string; through?: string; geometry?: 'preorder' | 'ordinal'; catalog?: string; max_rows?: number }
   registry?: NameQualification
+  /** A static scan indexed from a dir-only (v1) source: its totals are its folder-name matches only. */
+  dirs_only?: true
 }
 /** `hexRuns`: the static index's hex-run rule applied to this literal (it is hex-affected): matches inside hex ids of `min`+ digits aren't counted. */
 export interface NameResult extends HotResult { execution: { after: NameExecution; before?: NameExecution }; logical_store?: string; capabilities?: { bucket_drill: false; child_drill: false; fallback: false }; hexRuns?: { min: number; tail: number } }
@@ -156,10 +158,11 @@ function datedExecution(body: Record<string, unknown>): NameExecution {
   if (identity.kind === 'static-names-v1') {
     const checked = staticIdentity(identity)
     const plan = body.plan === 'catalog' || body.plan === 'bounded-name-postings' ? body.plan : fail()
-    if (!keys(body, ['schema', 'logical_store', 'target', 'date', 'pattern', 'path', 'exact', 'incremental', 'levels', 'scope', 'plan', 'source', 'source_identity', 'validation', 'capabilities', 'root', 'buckets', ...('hexRuns' in body ? ['hexRuns'] : [])]) ||
-        body.source !== (plan === 'catalog' ? STATIC_CATALOG_SOURCE : STATIC_SOURCE) || body.target !== 'static_names' || !keys(validation, validationKeys) ||
+    const dirs = 'dirs_only' in body
+    if (!keys(body, ['schema', 'logical_store', 'target', 'date', 'pattern', 'path', 'exact', 'incremental', 'levels', 'scope', 'plan', 'source', 'source_identity', 'validation', 'capabilities', 'root', 'buckets', ...(dirs ? ['dirs_only'] : []), ...('hexRuns' in body ? ['hexRuns'] : [])]) ||
+        (dirs && body.dirs_only !== true) || body.source !== (plan === 'catalog' ? STATIC_CATALOG_SOURCE : STATIC_SOURCE) || body.target !== 'static_names' || !keys(validation, validationKeys) ||
         typeof validation.description !== 'string' || !validation.description.trim() || validation.source_prefix_proofs_checked !== true || validation.independent_full_catalog_source_oracle !== false) fail()
-    return { plan, source: body.source as string, validation: { description: validation.description, source_prefix_proofs_checked: true, independent_full_catalog_source_oracle: false }, source_identity: checked }
+    return { plan, source: body.source as string, validation: { description: validation.description, source_prefix_proofs_checked: true, independent_full_catalog_source_oracle: false }, source_identity: checked, ...(dirs ? { dirs_only: true as const } : {}) }
   }
   if (identity.kind === 'consolidated-store-v1') {
     const checked = consolidatedIdentity(identity), catalog = checked.catalog
@@ -235,6 +238,10 @@ export function nameHasDetail(result: NameResult): boolean {
   if (result.capabilities) return false
   return result.execution.after.plan === 'catalog' && (!result.before || result.execution.before?.plan === 'catalog')
 }
+/** A static scan's dir-only flag (`NameExecution.dirs_only`), in words. */
+export const NAME_DIRS_ONLY = 'This scan lists folders only — files aren’t searchable on it: these totals are its folder-name matches, not every match.'
+/** A comparison across a dir-only scan and a full one (a 400 `scan-dirs-only`). */
+export const NAME_DIRS_SPLIT = 'One of these scans lists folders only (files aren’t searchable on it), so the literal can’t be compared across the two; compare two scans that both list files. This is not a zero-match result.'
 export async function loadName(
   request: HotRequest,
   signal?: AbortSignal,
@@ -245,6 +252,10 @@ export async function loadName(
   params.set('name', checked.name)
   const response = await fetch(`/api/name-summary?${params}`, { signal })
   if (!response.ok) {
+    if (response.status === 400) {
+      const body = await response.json().catch(() => null) as { code?: string } | null
+      if (body?.code === 'scan-dirs-only') throw new Error(NAME_DIRS_SPLIT)
+    }
     throw new Error(response.status === 401 ? 'Sign in to view name summaries.' : response.status === 400
       ? availableDates ? 'This literal or scan is unavailable for the selected name-summary plan; it is not a zero-match result.' : 'Invalid name-summary request. Check the literal and frozen scan dates; this is not a zero-match result.'
       : 'Name summary is unavailable, busy or exceeded its work budget. This is not a zero-match result. Try again.')

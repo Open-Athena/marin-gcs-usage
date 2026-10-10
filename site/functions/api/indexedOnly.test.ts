@@ -4,14 +4,15 @@ import { sqliteD1 } from '../_lib/testD1'
 import { type D1Variant, fixture, FILES, readJson, seedGeneration } from '../_lib/testStore'
 import { searchKey } from '../_lib/search'
 import { type FilterRejectCode, REJECT_MESSAGES, rejectQuery } from '../_lib/indexedOnly'
-import { drillSource, injectedStores, SuffixHits, type StaticFilterStore } from '../_lib/staticFilter'
-import { type Blobs, StaticNames } from '../_lib/staticNames'
+import { drillSource, type HitSource, injectedStores, SuffixHits, type StaticFilterStore } from '../_lib/staticFilter'
+import { type Blobs, scanAt, StaticNames } from '../_lib/staticNames'
 import { StaticCatalog } from '../_lib/staticCatalog'
 import { onRequestGet as subtree } from './subtree'
 import { onRequestGet as diff } from './diff'
 import { onRequestGet as series } from './series'
 import { onRequestGet as caps } from './filter-caps'
 import { onRequestGet as filterScans } from './filter-scans'
+import { onRequestGet as filterCover } from './filter-cover'
 
 vi.mock('@rdub/file-tree/stores/s3', async () => ({ S3Store: (await import('../_lib/testStore')).S3Store }))
 
@@ -268,5 +269,67 @@ describe('/api/filter-scans', () => {
       return [r.status, await r.json()]
     }))
     expect(got).toEqual([[200, { scans: [A, B] }], [200, { scans: null }]])
+  })
+})
+
+describe('a dir-only (v1) scan: its folder-name matches, flagged — never a complete answer', () => {
+  // The fixture's index saw both scans whole; a v1 index on `A` would never have seen a file. `asV1` replays that:
+  // a file's versions live on `A` start at `B` instead (dropped if that leaves them empty). The fixture's files are
+  // exactly its paths whose name has an extension (`fixtures/static-filter/gen.py`'s `BASE`).
+  const isFile = (p: string) => /\.[a-z]+$/i.test(p.slice(p.lastIndexOf('/') + 1))
+  const asV1 = (inner: HitSource): HitSource => ({
+    heavy: inner.heavy,
+    async hits(key, under, opts) {
+      const f = await inner.hits(key, under, opts)
+      if (!f?.hits) return f
+      const a = scanAt(A), b = scanAt(B)
+      return { ...f, hits: f.hits.flatMap(h => !isFile(h.path) || !(h.vf <= a && a < h.vt) ? [h] : h.vt > b ? [{ ...h, vf: b }] : []) }
+    },
+  })
+  const v1 = (dirOnly: string[]): StaticFilterStore => { const s = store([A, B], [A, B], dirOnly); return { ...s, source: asV1(s.source) } }
+  const view = async (qs: string, env: Env) => {
+    const r = await subtree({ request: new Request(`http://localhost/api/x?${qs}`), env })
+    const j = await r.json() as { matched: { path: string; b: number; o: number }[]; dirsOnly?: true; approximate?: true; partial?: true }
+    return [r.status, j.matched.map(m => [m.path, m.b, m.o]), j.dirsOnly ?? null, j.approximate ?? null, j.partial ?? null]
+  }
+
+  it.each([[true], [false]])('a folder-name literal (flag %s): the folders that match, exact, flagged `dirsOnly`; the full scan unflagged', async flag => {
+    const env = envOf(flag, v1([A]))
+    expect(await Promise.all([view(`date=${A}&path=bk&q=tomat`, env), view(`date=${B}&path=bk&q=tomat`, env)])).toEqual([
+      [200, [['bk/data/tomato', 8000, 2], ['bk/data/raw/tomat-1', 150, 2]], true, null, null],
+      [200, [['bk/data/tomato', 10000, 3], ['bk/runs/x/ckpt-tomat.pt', 9500, 1], ['bk/new-tomat', 400, 1], ['bk/data/raw/tomat-1', 150, 2], ['bk/runs/x/tomat-tomat.bin', 77, 1]], null, null, null],
+    ])
+  })
+
+  it.each([[true], [false]])('a file-name literal (flag %s): no folder matches, flagged — not a bare "no matches"', async flag => {
+    const env = envOf(flag, v1([A]))
+    expect(await Promise.all([view(`date=${A}&path=bk&q=ckpt`, env), view(`date=${B}&path=bk&q=ckpt`, env)])).toEqual([
+      [200, [], true, null, null],
+      [200, [['bk/runs/x/ckpt-tomat.pt', 9500, 1], ['bk/runs/x/ckpt-2.pt', 1200, 1]], null, null, null],
+    ])
+  })
+
+  it.each([[true], [false]])('a diff (flag %s): across the cutover `scan-dirs-only`; both sides dir-only, flagged; neither, unflagged', async flag => {
+    const flagOf = async (s: StaticFilterStore) => {
+      const r = await diff({ request: new Request(`http://localhost/api/x?from=${A}&to=${B}&path=bk&q=tomat`), env: envOf(flag, s) })
+      return r.status === 200 ? [200, (await r.json() as { dirsOnly?: true }).dirsOnly ?? null] : [r.status, await r.json()]
+    }
+    expect(await Promise.all([flagOf(v1([A])), flagOf(v1([B])), flagOf(store([A, B], [A, B], [A, B])), flagOf(store())])).toEqual([
+      refusal('scan-dirs-only'), refusal('scan-dirs-only'), [200, true], [200, null],
+    ])
+  })
+
+  it('a diff across the cutover whose view root the literal holds is the plain diff (nothing searched)', async () => {
+    expect(await call(diff, `from=${A}&to=${B}&path=bk/data/tomato&q=tomat`, envOf(true, v1([A])))).toEqual([200, 'ok'])
+  })
+
+  it('a match action on a dir-only scan: no items, the reason given', async () => {
+    const r = await filterCover({ request: new Request(`http://localhost/api/filter-cover?date=${A}&path=bk&q=tomat`), env: envOf(false, v1([A])) } as never)
+    const j = await r.json() as Record<string, unknown>
+    expect([r.status, j.items, j.complete, j.reason]).toEqual([200, [], false, 'This scan lists folders only, so its file matches can’t be listed here. Pick a newer scan to act on the matches.'])
+  })
+
+  it('says so in words', () => {
+    expect(refusal('scan-dirs-only')).toEqual([400, { error: 'One of these scans lists folders only (files aren’t searchable on it), so a search can’t be compared across the two; compare two scans that both list files.', code: 'scan-dirs-only' }])
   })
 })

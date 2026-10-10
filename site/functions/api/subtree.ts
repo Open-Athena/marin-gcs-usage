@@ -158,7 +158,7 @@ async function subtree(ctx0: SubtreeCtx, gate: boolean): Promise<Response> {
         nodes: view.nodes,
         truncated: view.truncated,
         ...(owner ? { owner } : {}),
-        ...(query ? { q: qRaw, ...hexNote(hx.hexRuns, query.ast), matches: view.matches ?? [], matched: view.matched ?? [], ...(view.matchCount ? { matchCount: view.matchCount } : {}), ...(view.matchesCapped ? { matchesCapped: true } : {}), ...(view.rollup ? { rollup: view.rollup } : {}), ...(view.excluded ? { excluded: view.excluded } : {}), ...(view.firstPaint ? { firstPaint: true } : {}), ...(view.interiors ? { interiors: view.interiors } : {}), partial: view.partial, partialReason: view.partialReason, approximate: view.approximate, approximateReason: view.approximateReason } : {}),
+        ...(query ? { q: qRaw, ...hexNote(hx.hexRuns, query.ast), matches: view.matches ?? [], matched: view.matched ?? [], ...(view.matchCount ? { matchCount: view.matchCount } : {}), ...(view.matchesCapped ? { matchesCapped: true } : {}), ...(view.rollup ? { rollup: view.rollup } : {}), ...(view.excluded ? { excluded: view.excluded } : {}), ...(view.firstPaint ? { firstPaint: true } : {}), ...(view.interiors ? { interiors: view.interiors } : {}), partial: view.partial, partialReason: view.partialReason, approximate: view.approximate, approximateReason: view.approximateReason, ...(view.dirsOnly ? { dirsOnly: true } : {}) } : {}),
         ...(view.interiors?.late ? { budgetCut: true } : {}),
         tree: view.tree,
       })

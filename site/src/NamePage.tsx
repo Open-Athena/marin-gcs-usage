@@ -5,7 +5,7 @@ import { HotSearchForm, HotTotals } from './HotPage'
 import { SiteKbd } from './SiteKbd'
 import type { HotRequest } from './hotModel'
 import { HexRunsInfo, hexRunsNote } from './FilterNote'
-import { loadName, loadNameRegistry, nameHasDetail, namePageParams, nameRequest, nameResultForRegistry, type NameQualification, type NameResult } from './nameModel'
+import { loadName, loadNameRegistry, NAME_DIRS_ONLY, nameHasDetail, namePageParams, nameRequest, nameResultForRegistry, type NameQualification, type NameResult } from './nameModel'
 import { useDocTitle } from './title'
 import { fmtScan, fromMiss, scanMiss, useScans, useScanSel, type ScanMiss } from './scan'
 import { DEFAULT_STORE } from './stores'
@@ -18,6 +18,7 @@ export function NamePlanStatus({ result }: { result: NameResult }) {
     : [{ view: result.after, execution: result.execution.after }]
   return <div aria-label="Name-summary execution plan">{sides.map(({ view, execution }) => <p className="hot-note" key={view.date}>
     {view.date}: {execution.plan === 'catalog' ? 'Catalog (precomputed)' : 'Bounded name postings (on demand)'}. {execution.source} — {execution.validation.description}
+    {execution.dirs_only && <>{' '}<span className="fflag" role="note">{NAME_DIRS_ONLY}</span></>}
   </p>)}</div>
 }
 /** A registry's domain in words: the threshold, and the short literals registered whatever their frequency. */

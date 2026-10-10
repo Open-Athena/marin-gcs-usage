@@ -11,6 +11,8 @@ export interface Coverage {
    *  totals, but no view inside a bucket without the full index — or, `'scoped'` (`^q`'s starts-with catalog,
    *  `rollup.scopedBelow`), a view inside one where the term's matches there are few enough. */
   bucketsOnly?: boolean | 'scoped'
+  /** The scan lists folders only (a v1 index; the response's `dirsOnly`): its matches are folder names only. */
+  dirsOnly?: boolean
   /** The static name index's hex-run rule, applied to this literal (specs/static-hex-runs.md): its matches
    * inside hex ids of `min`+ digits aren't counted. */
   hexRuns?: { min: number; tail: number }
@@ -31,12 +33,14 @@ export function HexRunsInfo({ min }: { min: number }) {
 
 /** The `bucketsOnly` flag's words. */
 export const BUCKETS_ONLY = 'per-bucket totals only: searching inside a bucket for this term needs the full search index'
+export const DIRS_ONLY = 'this scan lists folders only — files aren’t searchable on it'
 export const BUCKETS_ONLY_SCOPED = 'per-bucket totals only at the top: inside a bucket, this term is searched where its matches are few enough'
 
 /** The coverage flags, spelled out — never a silent "fewer matches". */
-export function FilterFlags({ partialReason, approximateReason, bucketsOnly, hexRuns }: Coverage) {
+export function FilterFlags({ partialReason, approximateReason, bucketsOnly, dirsOnly, hexRuns }: Coverage) {
   return (
     <>
+      {dirsOnly && <span className="fflag">{DIRS_ONLY}</span>}
       {bucketsOnly && <span className="fflag">{bucketsOnly === 'scoped' ? BUCKETS_ONLY_SCOPED : BUCKETS_ONLY}</span>}
       {partialReason && <span className="fflag">partial results: {partialReason}</span>}
       {approximateReason && <span className="fflag">approximate: {approximateReason}</span>}

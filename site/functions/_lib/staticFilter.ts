@@ -267,6 +267,26 @@ export async function staticKey(s: StaticFilterStore | null, ast: QueryAst | und
   return dates.every(d => have.includes(d)) ? key : null
 }
 
+/** Which of `dates` are dir-only (v1) scans of the store (`StaticFilterStore.dirOnly`): every source's answer
+ *  there — the suffix shards', the anchored and drill readers', the catalog's (`catalogRoot`) — comes from an
+ *  index that only ever saw folder names, so a literal's matches there are its folder-name matches: exact as
+ *  such (a folder's bytes and objects are its whole subtree's), never a file's. */
+export async function dirsOnlyOf(s: StaticFilterStore | null, dates: string[]): Promise<string[]> {
+  const held = s?.dirOnly ? await s.dirOnly() : []
+  return dates.filter(d => held.includes(d))
+}
+
+/** A literal compared across a dir-only scan and a full one (a diff over the v1 → v2 cutover): one side counts
+ *  folder names only, the other files too, so every file match would read as added — `scan-dirs-only`, never a
+ *  diff. Null: comparable (neither side dir-only, or both), not a static literal, or a view root the literal
+ *  matches (the plain view, nothing searched). */
+export async function dirsOnlySplit(s: StaticFilterStore | null, ast: QueryAst | undefined, path: string, dates: string[]): Promise<FilterReject | null> {
+  const key = staticLiteral(ast)
+  if (!s || !key || termInPath(key, path, s.hexRuns ? await s.hexRuns() : null)) return null
+  const n = (await dirsOnlyOf(s, dates)).length
+  return n && n < dates.length ? reject('scan-dirs-only') : null
+}
+
 /** The filter's bytes and objects under the hits' root on `date` (Σ live first hits), with `keep` an
  *  owner test on the slice's `usr` (null = unowned). */
 export function liveTotal(hits: Hit[], date: string, keep: (usr: string | null) => boolean = () => true): { b: number; o: number; roots: number } {
@@ -286,9 +306,10 @@ export function liveTotal(hits: Hit[], date: string, keep: (usr: string | null) 
  *  the drill runs' scans; 7: with no drilldown, a heavy literal's fleet root from the catalog's buckets and a
  *  `term-too-common` refusal below it, never the approximate walk; 8: anchored terms — `^q`, `q$` were literals before;
  *  9: a heavy `^q` — its fleet root from the starts-with catalog, scoped reads below, a 400K-row bound; 10: a
- *  series' uncovered and dir-only scans are gaps named in `unindexed`, indexed-only or not — never zeros; 11: the
- *  hex-run rule — `hexRuns` on hex-affected literals, `occurs` in the fallback and the anchored reader). */
-const RESPONSE_V = 11
+ *  series' uncovered and dir-only scans are gaps named in `unindexed`, indexed-only or not — never zeros;
+ *  12: a dir-only scan's answer flagged `dirsOnly`, a diff across a dir-only and a full scan `scan-dirs-only`;
+ *  13: the hex-run rule — `hexRuns` on hex-affected literals, `occurs` in the fallback and the anchored reader). */
+const RESPONSE_V = 13
 
 /** The query's substring matchers (positive and negative): the literals the hex-run rule applies to. */
 const subMatchers = (ast: QueryAst | undefined): Extract<Matcher, { kind: 'sub' }>[] =>
@@ -336,7 +357,9 @@ export function declined(s: StaticFilterStore | null, skey: string | null, raw: 
 }
 
 /** An indexed-only deployment's coverage test (`indexedOnly.ts`): `ast` (one literal, `rejectAst` passed) is
- *  answered statically under `path` on every one of `dates`, else the refusal `declined` names. A view root
+ *  answered statically under `path` on every one of `dates`, else the refusal `declined` names (or, dates
+ *  across a dir-only and a full scan, `scan-dirs-only`: `dirsOnlySplit`); a dir-only scan alone passes, its
+ *  view flagged `dirsOnly`. A view root
  *  the literal matches is the plain view (nothing to search). The answer is held per isolate, so the view's
  *  own read reuses it. */
 export async function indexedGate(env: StaticFilterEnv, ast: QueryAst | undefined, path: string, dates: string[], opts?: HitOpts): Promise<FilterReject | null> {
@@ -346,6 +369,8 @@ export async function indexedGate(env: StaticFilterEnv, ast: QueryAst | undefine
   if (termInPath(key, path, await staticHexRule(env))) return null
   const skey = s ? await staticKey(s, ast, dates) : null
   if (!skey) return declined(s, null, null)
+  const split = await dirsOnlySplit(s, ast, path, dates)
+  if (split) return split
   const found = await s!.source.hits(key, path, opts)
   return found && covers(found, dates) ? null : declined(s, skey, found)
 }

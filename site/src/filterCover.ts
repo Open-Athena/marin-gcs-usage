@@ -122,12 +122,12 @@ export function groupItems(items: readonly CoverItem[]): CoverGroup[] {
 export interface RowMatches { n: number; one?: string; atLeast?: true }
 
 /** How far a response's `matched` list can be trusted per row: `exact` (every match root), `capped` (a prefix
- *  of them, heaviest first: counts are lower bounds), or `null` (partial, approximate, a rollup, or absent). */
+ *  of them, heaviest first: counts are lower bounds), or `null` (partial, approximate, a rollup, a dir-only scan, or absent). */
 export type MatchedList = 'exact' | 'capped' | null
 
 /** A response's `matched` list's trust (`MatchedList`), from its own flags. */
-export function matchedListOf(d: { matched?: unknown; matchesCapped?: boolean; partialReason?: string; approximateReason?: string; rollup?: unknown } | undefined): MatchedList {
-  if (!d?.matched || d.partialReason || d.approximateReason || d.rollup) return null
+export function matchedListOf(d: { matched?: unknown; matchesCapped?: boolean; partialReason?: string; approximateReason?: string; rollup?: unknown; dirsOnly?: true } | undefined): MatchedList {
+  if (!d?.matched || d.partialReason || d.approximateReason || d.rollup || d.dirsOnly) return null
   return d.matchesCapped ? 'capped' : 'exact'
 }
 

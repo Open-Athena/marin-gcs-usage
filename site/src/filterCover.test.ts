@@ -94,7 +94,7 @@ describe('a filtered row: its label and its matches', () => {
       null, null,
     ])
   })
-  it('a response\'s list is exact only uncapped and complete: capped, or unknown when partial, approximate or a rollup', () => {
+  it('a response\'s list is exact only uncapped and complete: capped, or unknown when partial, approximate, a rollup or a dir-only scan', () => {
     const m = [{ path: 'a/tomat', b: 1, o: 1 }]
     expect([
       matchedListOf({ matched: m }),
@@ -102,9 +102,10 @@ describe('a filtered row: its label and its matches', () => {
       matchedListOf({ matched: m, partialReason: 'cut' }),
       matchedListOf({ matched: m, approximateReason: 'no index' }),
       matchedListOf({ matched: m, rollup: {} }),
+      matchedListOf({ matched: m, dirsOnly: true }),
       matchedListOf({}),
       matchedListOf(undefined),
-    ]).toEqual(['exact', 'capped', null, null, null, null, null])
+    ]).toEqual(['exact', 'capped', null, null, null, null, null, null])
   })
   // gcs prod, 2026-10-09 scan, `/api/subtree?q=tomat&full=1` (shape as served; names shortened): the fleet
   // root lists 205 of 21,735 match roots (`matchesCapped`), the paths below the store root as the rows' are;
