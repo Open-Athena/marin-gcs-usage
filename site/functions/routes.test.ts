@@ -74,3 +74,11 @@ describe('`index.html`\'s boot watchdog', () => {
     expect(page.match(/<script[^>]*>/g)).toEqual(['<script>', '<script type="module" src="/src/main.tsx">'])
   })
 })
+
+describe('the middleware keeps the isolate alive for the colo puts', () => {
+  it('hands `waitUntil` exactly one promise per request, which settles', async () => {
+    const kept: Promise<unknown>[] = []
+    const res = await onRequest({ request: new Request('https://gcs.example.test/api/x'), env: {} as never, next: async () => new Response('{}', { headers: { 'content-type': 'application/json' } }), waitUntil: p => { kept.push(p) } })
+    expect([res.status, kept.length, await Promise.all(kept)]).toEqual([200, 1, [undefined]])
+  })
+})
