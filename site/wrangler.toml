@@ -206,7 +206,9 @@ STORES_JSON = '{"meta":{"scope":"admin","vars":{"ROOT_LABEL":"our storage","SNAP
 # `dt-cloud static-names runs add`). Dev only until the per-scan runs are scheduled.
 FILTER_STATIC = "1"
 NAME_SUMMARY_STATIC = "1"
-STATIC_GEN = "2026-10-09cw"
+# The hex-run generation (specs/static-hex-runs.md), light index and drill both on R2; heavy terms read the drill.
+STATIC_GEN = "2026-10-10cw"
+FILTER_STATIC_HEAVY = "1"
 
 # Worker-served indexes (the static name index), read through a native binding (the store seam's S3 creds are
 # for the path store; this is the same bucket).
