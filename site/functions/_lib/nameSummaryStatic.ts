@@ -8,6 +8,8 @@
  *  - Longer: the suffix shards' group index first (`staticNames.ts`). A range of ≤ V rows (row-group
  *    granular, an upper bound) cannot be a member: read it. Otherwise the catalog: a member answers from
  *    its cells; a miss has an exact range ≤ V, so the read is bounded (≤ V + 2 row groups).
+ *  - A dir-only (v1) scan (`scans.json` `version: 1`): its totals are its folder-name matches (exact as such),
+ *    flagged `dirs_only: true`; compared with a full scan (`from`), a 400 `scan-dirs-only`.
  *  - Bucket geometry: the answer is root and bucket totals only (no drill), so each bucket's `pre`/`post`
  *    is its ordinal position in `bucket_paths` (the box's `ordinal` geometry). */
 import { decodeScan, isScanId, resolveScan } from '../../src/scanSlug.js'
@@ -16,6 +18,7 @@ import { datedNameRequest, parseName, parseNameRegistry, STATIC_CATALOG_SOURCE, 
 import { HOT_SCOPE } from '../../src/hotModel.js'
 import { type Env, json } from './auth.js'
 import { privateHeaders } from './hotL1.js'
+import { REJECT_MESSAGES } from './indexedOnly.js'
 import { catalogAnswer, type CatalogIo, type CatalogMeta, type Member } from './staticCatalog.js'
 import { type Answer, type Blobs, cacheIndexes, type Io, r2Blobs, staticGen, staticPrefix, type Totals } from './staticNames.js'
 import { tiers } from './staticRuns.js'
@@ -40,7 +43,9 @@ export interface NameReader {
 }
 /** The catalog (`StaticCatalog`, or `TieredCatalog`). */
 export interface CatalogReader { info(): Promise<CatalogMeta>; lookup(q: string): Promise<{ io: CatalogIo; member: Member | null; scans?: string[] }> }
-export interface Store { names: NameReader; catalog: CatalogReader; scans: () => Promise<string[]>; clock: () => Promise<number> }
+/** `dirOnly`: the scans indexed from a dir-only (v1) source (`staticRuns.ts` `dirOnlyScans`): their totals are
+ *  the literal's folder-name matches only. */
+export interface Store { names: NameReader; catalog: CatalogReader; scans: () => Promise<string[]>; dirOnly?: () => Promise<string[]>; clock: () => Promise<number> }
 let held: { r2: R2Bucket; gen: string; store: Store } | undefined
 
 // The Workers clock only advances across I/O; a cache miss pins "now" after CPU-bound work (decode).
@@ -53,7 +58,7 @@ export function store(r2: R2Bucket, gen: string): Store {
     // The base generation plus its runs (`staticRuns.ts`), each tier's indexes cached under its own prefix.
     const pre = (dir: string | null) => dir ? `${root}/${dir}` : root
     const t = tiers(blobs, { indexCache: dir => cacheIndexes(caches.default, pre(dir)), catalogCache: dir => cacheIndexes(caches.default, pre(dir), 'catalog-v1'), clock: tick })
-    held = { r2, gen, store: { names: t.names, catalog: t.catalog, scans: t.scans, clock: tick } }
+    held = { r2, gen, store: { names: t.names, catalog: t.catalog, scans: t.scans, dirOnly: t.dirOnly, clock: tick } }
   }
   return held.store
 }
@@ -128,6 +133,7 @@ export async function answerKey(s: Store, key: string, days: string[], maxRows =
 
 const safe = (v: bigint): number => { const n = Number(v); if (!Number.isSafeInteger(n)) throw new Error('static names: total exceeds 2^53'); return n }
 const notIndexed = () => json({ error: 'This scan is not in the static name index yet. This is not a zero-match result.', code: 'scan-not-indexed' }, 400, privateHeaders)
+const dirsSplit = () => json({ error: `${REJECT_MESSAGES['scan-dirs-only']} This is not a zero-match result.`, code: 'scan-dirs-only' }, 400, privateHeaders)
 const unavailable = () => json({ error: 'Name summary is unavailable, busy or exceeded its work budget. This is not a zero-match result. Try again.' }, 503, { ...privateHeaders, 'retry-after': '1' })
 
 /** `/api/name-summary` from R2: a 400 for a scan outside the generation, a 503 on any failure (never a box answer). */
@@ -161,6 +167,10 @@ export async function staticSummary(env: StaticNameEnv, params: URLSearchParams,
     if (from && date && from >= date) return json({ error: '`from` must be an earlier scan than `date`.' }, 400, privateHeaders)
     const request = { ...asked, date: date!, ...(from === undefined || from === null ? {} : { from }) }
     const days = from ? [from, date!] : [date!]
+    // A dir-only (v1) scan's totals are its folder-name matches: flagged (`dirs_only`) alone, refused beside a full scan.
+    const dirs = s.dirOnly ? await s.dirOnly() : []
+    const dirsOnly = days.filter(d => dirs.includes(d))
+    if (dirsOnly.length && dirsOnly.length < days.length) return dirsSplit()
     const { plan, answers, io, scans } = await answerKey(s, key, days, Number(env.STATIC_MAX_ROWS ?? MAX_ROWS))
     // A tier broke during the read: the index answers the scans before it only.
     if (scans && days.some(d => !scans.includes(d))) return notIndexed()
@@ -175,6 +185,7 @@ export async function staticSummary(env: StaticNameEnv, params: URLSearchParams,
         source_identity: { kind: 'static-names-v1', generation: gen, max_rows: meta.membership.max_rows },
         validation: validation(gen), capabilities: { ...CAPABILITIES },
         root: { b: buckets.reduce((a, x) => a + x.b, 0), o: buckets.reduce((a, x) => a + x.o, 0) }, buckets,
+        ...(dirsOnly.includes(date) ? { dirs_only: true } : {}),
       }
     })
     let body: unknown = sides[0]

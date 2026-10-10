@@ -90,6 +90,7 @@ export async function onRequestGet(ctx0: Ctx): Promise<Response> {
     const why = found?.rollup ? 'There are too many matches under this folder to list them. Open a folder below to act on its matches.'
       : found?.coverage.partial?.length ? `Not every match here could be listed (${found.coverage.partial.join('; ')}).`
       : found?.coverage.approximate?.length ? `Small matches may be missing here (${found.coverage.approximate.join('; ')}).`
+      : found?.coverage.dirsOnly?.length ? 'This scan lists folders only, so its file matches can’t be listed here. Pick a newer scan to act on the matches.'
       : null
     const cap = coverCap(ctx.env)
     // More roots than the cap: first a lower bound on the cover's size (`coverFloor`, a few shallow lookups —

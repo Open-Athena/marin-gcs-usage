@@ -38,6 +38,8 @@ export interface DiffData {
    * (`FilterNote.tsx`). */
   partialReason?: string
   approximateReason?: string
+  /** With `q=`: both scans list folders only (`FilterNote.tsx` `DIRS_ONLY`). */
+  dirsOnly?: true
 }
 
 export type AreaMode = 'max' | 'delta'
