@@ -11,8 +11,8 @@ const store: Store = {
   // trash gesture, no storage-class prices.
   key: 'meta',
   label: 'Meta',
-  title: 'Our storage — scan & index data',
-  desc: 'The scan and index data these deployments write (the GCS snapshot bucket and its R2 mirror) — treemap, sizes over time, and diffs.',
+  title: 'Marin usage — meta',
+  desc: 'The data behind the Marin usage sites: scans, indexes and listings in oa-gcs-usage-dvx (GCS) and oa-cw-s3-usage-index (R2) — treemap, sizes over time, and diffs.',
   path: '/meta',
   scheme: 'gs://',
   base: '/data/meta',
@@ -22,7 +22,7 @@ const store: Store = {
   owners: false,
   executor: 'plan-sweep',
   buckets: ['oa-gcs-usage-dvx', 'oa-cw-s3-usage-index'],
-  rootLabel: 'our storage',
+  rootLabel: 'Marin usage — meta',
   objectsNote: 'Scan outputs are written once per job run and never rewritten in place, so created is the object’s publish time.',
   wall: {
     restrict: 'The meta store is limited to Open Athena staff.',
