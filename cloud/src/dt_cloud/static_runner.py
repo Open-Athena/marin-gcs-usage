@@ -100,10 +100,11 @@ def task_command(cfg: Profile, module: str, args: list[str], *, mount: bool = Tr
 
 
 def job_spec(cfg: Profile, name: str, tasks: int, commands: list[str], *, stage: str, scratch: bool = True, r2: bool = False,
-             machine: str | None = None, ssd_gb: int | None = None) -> dict:
+             machine: str | None = None, ssd_gb: int | None = None, purpose: str = "static-names", component: str | None = None) -> dict:
     """A Batch job of `tasks` tasks (in parallel) running `commands` (one shell script, `&&`-chained) in the image, the
     data bucket (and `scratch`) mounted read-only under /gcs, a local SSD at /stage. `r2`: as the R2 account, with its
-    credentials from Secret Manager."""
+    credentials from Secret Manager. `purpose` labels the job; `component` is its cost label (default: the stage's,
+    `STAGE_COMPONENTS`)."""
     machine = machine or cfg.machine
     vcpus = int(machine.rsplit("-", 1)[-1])
     buckets = [cfg.bucket, *([cfg.scratch] if scratch else [])]
@@ -146,9 +147,9 @@ def job_spec(cfg: Profile, name: str, tasks: int, commands: list[str], *, stage:
             "serviceAccount": {"email": (cfg.r2_sa or cfg.sa) if r2 else cfg.sa},
             "location": {"allowedLocations": [f"regions/{cfg.region}"]},
         },
-        "labels": {"purpose": "static-names", "stage": stage, "gen": _label(cfg.gen)},
+        "labels": {"purpose": purpose, "stage": stage, "gen": _label(cfg.gen)},
         "logsPolicy": {"destination": "CLOUD_LOGGING"},
-    }, STAGE_COMPONENTS.get(stage, "static-names"))
+    }, component or STAGE_COMPONENTS.get(stage, "static-names"))
 
 
 #: A stage's cost-attribution `component` (`cost_labels`); the rest of the chain is `static-names`.
@@ -168,8 +169,10 @@ def job_id(stage: str, scan_id: str, now: datetime | None = None) -> str:
 class BatchRunner:
     """Submit a Batch job and wait for it (REST over ADC, `batch.submit_job` / `gcp.batch_job`)."""
 
-    def __init__(self, cfg: Profile, log: Callable[[str], None]):
-        self.cfg, self.log = cfg, log
+    def __init__(self, cfg: Profile, log: Callable[[str], None], *, delay: int = 20, max_delay: int = 120):
+        """Polls every `delay` s, doubling up to `max_delay` (a short chain of short jobs wants a low cap: its stages
+        finish within a poll)."""
+        self.cfg, self.log, self.delay, self.max_delay = cfg, log, delay, max_delay
 
     def __call__(self, name: str, spec: dict) -> None:
         from .batch import submit_job
@@ -177,7 +180,7 @@ class BatchRunner:
 
         submit_job(spec, name, region=self.cfg.region)
         self.log(f"submitted {name}")
-        delay = 20
+        delay = self.delay
         while True:
             st = batch_job(name, project=self.cfg.project, region=self.cfg.region).get("status", {})
             state = st.get("state", "?")
@@ -188,7 +191,7 @@ class BatchRunner:
             if state in ("FAILED", "DELETION_IN_PROGRESS", "CANCELLED"):
                 raise RuntimeError(f"Batch job {name}: {state}")
             time.sleep(delay)
-            delay = min(delay * 2, 120)
+            delay = min(delay * 2, self.max_delay)
 
 
 # ── The chain ──────────────────────────────────────────────────────────────

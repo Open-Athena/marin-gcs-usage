@@ -12,7 +12,7 @@
  * re-hit the cache.
  */
 import { type Env, type Identity, requireViewer } from '../_lib/auth.js'
-import { pathGens, withPathStore, storeReady, type Lens } from '../_lib/index.js'
+import { ivRetry, pathGens, withPathStore, storeReady, type Lens } from '../_lib/index.js'
 import { hasLedger, ledgerHead } from '../_lib/ledger.js'
 import { parseOwner, queryParam, QueryError, classKey, parseClasses } from '../_lib/scope.js'
 import { hasExtras } from '../_lib/extras.js'
@@ -143,7 +143,8 @@ async function subtree(ctx0: SubtreeCtx, gate: boolean): Promise<Response> {
     // The worker's answer: the view's JSON and what to keep of it — `phase2Ms` (a background full run's) over
     // the viewer-facing default.
     const render = async (o: { phase2Ms?: number; trace?: typeof st.trace } = {}) => {
-      const view = await buildView(ctx.env, { date, path, w, h, minArea, atten, lens, owner, by, maxDepth: depth, query, classes, firstPaint: !!query && !full, trace: o.trace, ...(o.phase2Ms ? { phase2Ms: o.phase2Ms } : {}) })
+      // A broken interval-store run is cut out and the view read again (its scans per-scan): never a failed request.
+      const view = await ivRetry(() => buildView(ctx.env, { date, path, w, h, minArea, atten, lens, owner, by, maxDepth: depth, query, classes, firstPaint: !!query && !full, trace: o.trace, ...(o.phase2Ms ? { phase2Ms: o.phase2Ms } : {}) }))
       const body = JSON.stringify({
         date,
         path,
