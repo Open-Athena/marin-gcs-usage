@@ -33,7 +33,7 @@ from click import IntRange, group, option
 from . import static_catalog as sc
 from .append_runner import COMPACT_LEVEL, StateIncomplete, latest_key, run_key, scans_of  # noqa: F401 — shared with the interval store
 from .hex_runs import HexRule, occurs, occurs_sql, rule_json
-from .static_profile import data_bucket, layouts as profile_layouts, scratch_bucket
+from .static_profile import data_bucket, layouts as profile_layouts, profile, scratch_bucket
 from .static_names import (
     ANSWER_COLS, CINTERVAL_SCHEMA, CODEC, INTERVAL_RG, KEY_COLS, OPEN, PREFIX, SX_RG,
     SX_SCHEMA, Reader, _batches, _src, _sx_cast, _task, answer_rows, connect, err, hist_sql, q, range_preds,
@@ -632,12 +632,13 @@ def catalog_cmd(bucket, date, gen, mount, mem, threads, tmp) -> None:
     print(json.dumps(meta, indent=1))
 
 
-def publish_run(store, date: str, rule: HexRule | None = None, dry_run: bool = False) -> dict:
+def publish_run(store, date: str, rule: HexRule | None = None, dry_run: bool = False, max_level: int | None = COMPACT_LEVEL) -> dict:
     """Add scan `date`'s run (level 0) to the newest earlier manifest's runs (a scan's, or a merge's revision of it) and
     write `manifests/<date>.json`, last and once (`store`: a `static_merge.RunStore` over the generation). No carries: the
     binary counter's merges run apart (`static_merge`), each published as a revision of the newest manifest, so a scan's
     publish takes seconds however big a carry it makes due. Refuses (`SystemExit`) a manifest that exists, whose runs lack
-    a reader file, or whose drill covers fewer scans than the last's. Returns the manifest (dry run: and the carries due)."""
+    a reader file, or whose drill covers fewer scans than the last's. Returns the manifest (dry run: and the carries due,
+    none reaching `max_level`, the compaction level; None: unbounded)."""
     from .append_runner import plan_carries, publish_scan
     from .static_merge import drilled_runs, missing, refuse
 
@@ -654,7 +655,7 @@ def publish_run(store, date: str, rule: HexRule | None = None, dry_run: bool = F
     if dry_run:
         prev = latest_key(store.keys("manifests/"), before=date)
         after = [*(store.read_json(prev)["runs"] if prev else []), new]
-        return {"manifest": doc({}, after), "carries_due": [[[r["key"] for r in ins], m["key"]] for ins, m in plan_carries(after, drilled_runs(store, after))[1]]}
+        return {"manifest": doc({}, after), "carries_due": [[[r["key"] for r in ins], m["key"]] for ins, m in plan_carries(after, drilled_runs(store, after), max_level)[1]]}
     if not store.exists(f"{run}/meta.json"):
         store.create(f"{run}/meta.json", json.dumps({"gen": store.gen, "first": date, "last": date, "level": 0, "scans": [date], **meta,
                                                      **rule_json(rule)}, indent=1) + "\n")
@@ -673,7 +674,7 @@ def publish_cmd(bucket, date, gen, dry_run) -> None:
     (`publish_run`). No carries: those run apart (`runs merge`)."""
     from .static_merge import gcs_store
 
-    print(json.dumps(publish_run(gcs_store(bucket, None, gen), date, gen_rule_at(bucket, gen), dry_run), indent=1))
+    print(json.dumps(publish_run(gcs_store(bucket, None, gen), date, gen_rule_at(bucket, gen), dry_run, profile().compact_level), indent=1))
 
 
 @cli.command("prune")

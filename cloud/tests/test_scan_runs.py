@@ -9,9 +9,10 @@ from pathlib import Path
 import pytest
 
 from dt_cloud.scan_runs import (
-    ALL, Output, Phase, PrintSink, Record, Run, SqliteSink, cost, measure, measure_after, parse_profile, record,
+    ALL, Output, Phase, PrintSink, Record, Run, SqliteSink, cost, fill, measure, measure_after, parse_profile, record,
     record_sql,
 )
+from dt_cloud.static_profile_examples import EXAMPLES
 from dt_cloud.scan_runs_backfill import classify, failure_of, log_filter, phases_of, reconstruct, task_lines
 
 SITE = Path(__file__).parents[2] / "site"
@@ -20,6 +21,14 @@ DDL = (SITE / "migrations/cw/0016_scan_runs.sql").read_text()
 
 def ts(s: str) -> int:
     return int(dt.datetime.fromisoformat(s).replace(tzinfo=dt.timezone.utc).timestamp())
+
+
+def test_fill_static_gen_follows_the_named_profile_and_its_env_override(monkeypatch):
+    t = "gs://d/static-names/{static_gen:cw}/manifests/{scan}.json"
+    monkeypatch.delenv("STATIC_NAMES_GEN", raising=False)
+    assert fill(t, "2026-10-10T1201", None) == f"gs://d/static-names/{EXAMPLES['cw'].gen}/manifests/2026-10-10T1201.json"
+    monkeypatch.setenv("STATIC_NAMES_GEN", "2026-11-01cw")
+    assert fill(t, "2026-10-10T1201", None) == "gs://d/static-names/2026-11-01cw/manifests/2026-10-10T1201.json"
 
 
 class FakeStore:
@@ -140,6 +149,18 @@ def test_record_failure_keeps_phases_and_names_the_error():
         ("failed", 100, 250, "index", "exit 1: dt-cloud path-index (line 300)"),
     ]
     assert rows(s, "SELECT phase, started_ts, finished_ts FROM scan_run_phases") == [("listing", 100, 200)]
+
+
+def test_record_start_with_a_job_not_yet_running_keeps_the_start():
+    """`scan_run -S -B` reads the Batch job right after it starts: its events may not show RUNNING yet, and the job's
+    empty start must not clear the one `-S` stamps (the live cw runs had `started_ts` NULL)."""
+    s = sink()
+    job = {"name": "projects/p/locations/us-central1/jobs/job-x", "status": {"statusEvents": [
+        {"description": "Job state is set from QUEUED to SCHEDULED", "eventTime": "2026-10-10T12:00:40Z"}]}}
+    record(s, PROFILE, "2026-10-08", "uid-6", 1000, start=True, job=job)
+    record(s, PROFILE, "2026-10-08", "uid-6", 1600, phase="listing")
+    assert rows(s, "SELECT status, started_ts, job_name, region FROM scan_runs") == [("running", 1000, "job-x", "us-central1")]
+    assert rows(s, "SELECT phase, started_ts, finished_ts FROM scan_run_phases") == [("listing", 1000, 1600)]
 
 
 def test_record_nop_and_first_call_without_start():

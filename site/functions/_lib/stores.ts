@@ -35,6 +35,7 @@ export const PRIMARY_STORE = 'primary'
 /** The vars a store config may set; all are cleared for a secondary store. */
 export const STORE_VARS = [
   'ROOT_LABEL',
+  'ROOT_TITLE',
   'SNAPSHOTS_SUBDIR',
   'STORE_SCHEME',
   'STORE_BUCKETS',

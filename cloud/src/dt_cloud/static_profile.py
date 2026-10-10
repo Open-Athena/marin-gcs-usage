@@ -14,6 +14,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, fields, replace
 from functools import cache
 
+#: The binary counter's compaction level when a profile sets none (deployments set theirs explicitly; the examples do).
+#: Carries stop below level L, so a stack holds at most 2^L − 1 scans in carried runs, and a compaction into a new base
+#: generation is due after about 2^L scans: at 5, 32 scans (~32 days at gcs's daily scans, ~8 at cw's 6-hourly).
+COMPACT_LEVEL = 5
+
 #: The R2 copy's credentials: Secret Manager secret names, by the env var each sets in the copy job.
 R2_SECRET_VARS = {"endpoint": "R2_ENDPOINT", "key_id": "R2_ACCESS_KEY_ID", "secret": "R2_SECRET_ACCESS_KEY"}
 
@@ -55,6 +60,15 @@ class Profile:
     #: The hex-run rule a new generation is built with (specs/static-hex-runs.md): `MIN,TAIL` (e.g. `16,8`) or `off`.
     #: Required (no default): `hex_rule()`. A generation records its rule (`scans.json` `hex_runs`); its runs follow it.
     hex_runs: str = ""
+    #: The binary counter's compaction level L (≥ 1): carries stop below it, so a stack holds at most 2^L − 1 scans in
+    #: carried runs and a compaction into a new base generation is due after about 2^L scans. None (JSON `null`, env
+    #: `none`): unbounded, the cascade carries at every level and never asks for a compaction (≈ log2(n) runs live after
+    #: n scans). Unset: `COMPACT_LEVEL`, the documented fallback; the examples set theirs explicitly.
+    compact_level: int | None = COMPACT_LEVEL
+
+    def __post_init__(self):
+        if self.compact_level is not None and (isinstance(self.compact_level, bool) or not isinstance(self.compact_level, int) or self.compact_level < 1):
+            raise SystemExit(f"compact_level must be an integer ≥ 1 or none, not {self.compact_level!r}")
 
     def need(self, name: str):
         v = getattr(self, name)
@@ -90,8 +104,26 @@ ENV = {
     "project": "GCP_PROJECT", "region": "STATIC_NAMES_REGION", "image": "STATIC_NAMES_IMAGE", "sa": "STATIC_NAMES_SA",
     "r2_sa": "STATIC_NAMES_R2_SA", "machine": "STATIC_NAMES_MACHINE", "ssd_gb": "STATIC_NAMES_SSD", "spot": "STATIC_NAMES_SPOT",
     "append_tasks": "STATIC_NAMES_APPEND_TASKS", "drill": "STATIC_NAMES_DRILL", "anchors": "STATIC_NAMES_ANCHORS", "src": "STATIC_NAMES_SRC",
-    "hex_runs": "STATIC_NAMES_HEX_RUNS",
+    "hex_runs": "STATIC_NAMES_HEX_RUNS", "compact_level": "STATIC_NAMES_COMPACT_LEVEL",
 }
+
+
+def parse_compact_level(var: str, raw: str) -> int | None:
+    """`raw` (env var or option `var`) as a compaction level: an integer ≥ 1, or `none` (unbounded: None)."""
+    if raw.strip().lower() == "none":
+        return None
+    try:
+        v = int(raw)
+    except ValueError as e:
+        raise SystemExit(f"{var}: {raw!r} is not an integer ≥ 1 or none") from e
+    if v < 1:
+        raise SystemExit(f"{var}: {raw!r} is not an integer ≥ 1 or none")
+    return v
+
+
+def level_arg(level: int | None) -> str:
+    """A compaction level as a CLI argument (`-L`): `none` when unbounded."""
+    return "none" if level is None else str(level)
 
 
 def _parse(name: str, raw: str):
@@ -105,6 +137,8 @@ def _parse(name: str, raw: str):
                 raise SystemExit(f"STATIC_NAMES_R2_SECRETS: {part!r} is not endpoint=|key_id=|secret=<secret name>")
             out[k.strip()] = v.strip()
         return out
+    if name == "compact_level":
+        return parse_compact_level(ENV[name], raw)
     if name in ("ssd_gb", "append_tasks"):
         return int(raw)
     if name in ("spot", "drill", "anchors"):
