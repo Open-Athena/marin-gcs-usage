@@ -257,7 +257,22 @@ export class AnchoredSource implements HitSource {
 
   why(key: string): FilterRejectCode | undefined { return this.whyNot.get(key) }
 
+  /** Whether the light index is there but the generation has no anchored tiers to read: no `anchors/meta.json`
+   *  (a profile built without anchors), or one built under another hex-run rule (`state`). */
+  private async anchorless(): Promise<boolean> {
+    const st = await this.state()
+    return !st.tiers.length && st.light.tiers.length > 0
+  }
+
   async hits(key: string, under: string, opts: HitOpts = {}): Promise<Found | null> {
+    const f = await this.read(key, under, opts)
+    // `^q`, `^q$` and a heavy `q$` need the anchored tiers: without them it is `anchor-not-indexed` (the term's
+    // form, not the scan, is the reason), never the approximate walk. A light `q$` answers from the light index.
+    if (!f && parseKey(key).text && await this.anchorless()) this.whyNot.set(key, 'anchor-not-indexed')
+    return f
+  }
+
+  private async read(key: string, under: string, opts: HitOpts): Promise<Found | null> {
     const { text, mode } = parseKey(key)
     if (!mode || !text) return null
     const t0 = Date.now()

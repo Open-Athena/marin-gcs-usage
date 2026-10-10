@@ -23,6 +23,7 @@ export type FilterRejectCode =
   | 'scan-not-indexed'
   | 'term-too-common'
   | 'anchor-too-short'
+  | 'anchor-not-indexed'
   | 'scan-dirs-only'
 
 export interface FilterReject { code: FilterRejectCode; message: string }
@@ -39,6 +40,7 @@ export const REJECT_MESSAGES: Record<FilterRejectCode, string> = {
   'scan-not-indexed': 'Search isn’t available for this scan yet.',
   'term-too-common': 'This term matches too many files to search here; try a longer one.',
   'anchor-too-short': 'An anchored term needs at least 3 characters before “$” (add the dot: “.gz$”) and 2 after “^”.',
+  'anchor-not-indexed': 'Starts-with (^) and ends-with ($) search isn’t indexed on this deployment yet; search for a plain substring instead.',
   'scan-dirs-only': 'One of these scans lists folders only (files aren’t searchable on it), so a search can’t be compared across the two; compare two scans that both list files.',
 }
 

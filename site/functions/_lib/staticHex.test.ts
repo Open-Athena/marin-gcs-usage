@@ -222,11 +222,13 @@ describe('anchored search on a generation with the rule', () => {
     for (const anchors of [undefined, meta, { ...meta, hex_runs: { min: 16, tail: 0 } }]) {
       const t = tiers(listed(anchors))
       const src = new AnchoredSource(t.tiers, listed(anchors), { maxRows: 0 })
-      expect(await Promise.all([
-        src.hits(termKey({ text: 'cafe', start: true, end: false }), ''),
-        src.hits(termKey({ text: 'cafe.txt', start: true, end: true }), 'bkt-c'),
-        src.hits(termKey({ text: '.txt', start: false, end: true }), 'bkt-b'),
-      ])).toEqual([null, null, null])
+      const keys = [termKey({ text: 'cafe', start: true, end: false }), termKey({ text: 'cafe.txt', start: true, end: true }), termKey({ text: '.txt', start: false, end: true })]
+      expect(await Promise.all(keys.map((k, i) => src.hits(k, ['', 'bkt-c', 'bkt-b'][i])))).toEqual([null, null, null])
+      // …named: the term's form isn't indexed here (`anchor-not-indexed`), not the scan.
+      expect(keys.map(k => src.why(k))).toEqual(['anchor-not-indexed', 'anchor-not-indexed', 'anchor-not-indexed'])
+      // A light `q$` still answers from the light index, and has no reason.
+      const light = new AnchoredSource(t.tiers, listed(anchors))
+      expect([(await light.hits(keys[2], ''))?.hits?.length, light.why(keys[2])]).toEqual([(await new AnchoredSource(tiers(listed()).tiers, listed()).hits(keys[2], ''))!.hits!.length, undefined])
     }
   })
 

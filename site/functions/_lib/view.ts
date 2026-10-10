@@ -29,7 +29,7 @@
  * `f = n_children(P) − kept` — objects and dirs alike.
  */
 import type { Env } from './auth.js'
-import { type IndexHandle, isStore, ivLastRead, type Lens, openIndex, perScan, planRects, planSizeRects, readAsks, readRects, readRows, readSizeRects, type Rect, type Row, sizeVariant, type Span, TooWide, type Trace, withTrace } from './index.js'
+import { folded, type IndexHandle, isStore, ivLastRead, type Lens, openIndex, pathStoreKey, perScan, planRects, slices, planSizeRects, readAsks, readRects, readRows, readSizeRects, type Rect, type Row, sizeVariant, type Span, TooWide, type Trace, withTrace } from './index.js'
 import { type FoldedLens, ownerLens, poolLens } from './owners.js'
 import { type ClassScope, classRow, nameFilter, type NamePred, ownerKey, ownerOk, type OwnerScope } from './scope.js'
 import { filterThreshold, looseThreshold, matchRoots, pickTier, rebasedThreshold, rootRects } from './filter.js'
@@ -116,6 +116,9 @@ export interface ViewOpts {
   firstPaint?: boolean
   /** The store's small-subtree cutoff, rows (default `SMALL_SUBTREE_ROWS`). */
   smallRows?: number
+  /** The interval store's cutoff past which a subtree plans `bysize` alone (`IV_PATH_PLAN_ROWS`; tests
+   *  lower it to reach that read on small fixtures). */
+  ivPlanRows?: number
   /** With `query` on a v1 scan: the largest subtree (objects) the no-match
    * fallback reads (default `V1_FILTER_SCAN_OBJECTS`). */
   v1ScanObjects?: number
@@ -249,6 +252,9 @@ interface Agg {
   nc: number | null
   /** All descendants (rows under the path in the `path` sort); null on v1. */
   nd: number | null
+  /** Built from exactly one interval-store row: that version's `[vf, vt)` (null once a second row
+   *  merges in; absent on per-scan rows and synthesized aggregates). A diff's lookups use it. */
+  ver?: { vf: number; vt: number } | null
 }
 
 const newAgg = (): Agg => ({ b: 0, o: 0, wts: 0, wb: 0, a: null, cb: {}, ub: {}, kind: null, nc: null, nd: null })
@@ -269,6 +275,7 @@ function merge(a: Agg, r: Row): void {
   a.kind = r.kind
   if (r.n_children != null) a.nc = r.n_children
   if (r.n_desc != null) a.nd = r.n_desc
+  if (r.vf != null && r.vt != null) a.ver = a.ver === undefined ? { vf: r.vf, vt: r.vt } : null
 }
 
 function subtract(parent: Agg, kids: Agg[]): Agg {
@@ -326,7 +333,9 @@ function display(a: Agg): Record<string, unknown> {
 const missing = new Map<string, number>()
 const MISS_TTL = 60_000
 async function tryOpen(env: Env, date: string, variant: string): Promise<IndexHandle | null> {
-  const ck = `${storeKey(env)}:${date}:${variant}`
+  // Keyed by path store too: the interval store's read of a held v1 date finds no coarse tier (its
+  // `path` sort is a store sort), which says nothing of the per-scan generation's.
+  const ck = `${storeKey(env)}:${pathStoreKey(env)}:${date}:${variant}`
   const at = missing.get(ck)
   if (at != null && Date.now() - at < MISS_TTL) return null
   // Coarse tiers and the `user` sort are version-1 artifacts: when the date's
@@ -377,8 +386,9 @@ async function readSubtree(
   nDesc: number | null,
   smallRows: number,
   tr?: Trace,
+  ivPlanRows = IV_PATH_PLAN_ROWS,
 ): Promise<{ rows: Row[]; variant: string }> {
-  const plan = await planSubtree(env, date, pathIdx, rects, thrAt, lens, nDesc, smallRows, tr)
+  const plan = await planSubtree(env, date, pathIdx, rects, thrAt, lens, nDesc, smallRows, tr, false, ivPlanRows)
   return { rows: await plan.read(), variant: plan.variant }
 }
 
@@ -397,6 +407,7 @@ async function planSubtree(
   smallRows: number,
   tr?: Trace,
   pathOnly = false,
+  ivPlanRows = IV_PATH_PLAN_ROWS,
 ): Promise<SubtreePlan> {
   const held = (plan: Span[]) => plan.reduce((n, x) => n + (x.rowEnd - x.rowStart), 0)
   const of = (variant: string, plan: Span[], read: SubtreePlan['read']): SubtreePlan => ({ variant, groups: plan.length, rows: held(plan), read })
@@ -409,8 +420,10 @@ async function planSubtree(
   // `smallRows`: below it the `path` read is taken without planning `bysize`.
   // The interval store plans from footer groups it must fetch and decode (no D1): a big subtree's
   // `path` plan touches most of them, and `bysize` is the cheaper read there anyway, so it isn't planned.
-  if (!pathOnly && pathIdx.asOf != null && (nDesc == null || nDesc > IV_PATH_PLAN_ROWS)) {
-    const sized = await tryOpen(env, date, 'bysize')
+  // A lens reads the user-first size sort, as below: the path-first one (`slices-bytotal`) mixes users
+  // in every group, and a big user's root there selected most groups over the threshold.
+  if (!pathOnly && pathIdx.asOf != null && (nDesc == null || nDesc > ivPlanRows)) {
+    const sized = (lens ? await tryOpen(env, date, 'bysize-user') : null) ?? await tryOpen(env, date, 'bysize')
     if (sized) {
       const sh = withTrace(sized, tr)
       const sp = await planSizeRects(sh, rects, thrAt, lens)
@@ -694,6 +707,7 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
   if (path === '') rootAll.nc = rootMine.nc = new Set(rootRows.map(r => r.path)).size
   const nDesc = subtreeRows(path, rootRows)
   const smallRows = o.smallRows ?? SMALL_SUBTREE_ROWS
+  const ivPlanRows = o.ivPlanRows ?? IV_PATH_PLAN_ROWS
   // P's total, when U's assignment covers P (one point read on the by-path tier).
   let rootTot: Agg | null = null
   if (rootTotal) {
@@ -838,9 +852,10 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       // An indexed-only deployment never walks the path store for a filter (`indexedOnly.ts`); nor does a heavy
       // literal with no drilldown (`FILTER_STATIC_HEAVY` off), whose thresholded walk would read as "no
       // matches": below the fleet root it is `term-too-common`, and the root's catalog buckets know no owners.
+      // Nor does an anchored term on a generation with no anchors build (`anchor-not-indexed`), indexed-only or not.
       const noDrill = !!sfs && !!skey && sfs.source.heavy === false
       const why = shits ? null : (noDrill || raw?.rollup?.scopedBelow) && raw?.rollup?.bucketsOnly && owner && covers(raw, [date]) ? reject('unsupported-scope') : declined(sfs, skey, raw)
-      if (why && (indexedOnly(env) || (noDrill && why.code !== 'scan-not-indexed'))) throw new FilterRejected(why)
+      if (why && (indexedOnly(env) || why.code === 'anchor-not-indexed' || (noDrill && why.code !== 'scan-not-indexed'))) throw new FilterRejected(why)
       tr?.('static', performance.now() - t0, shits ? `${skey} ${shits.rollup ? `rollup ${shits.rollup.cells.length}` : shits.hits.length}` : skey ? `declined${off ? ` (${off})` : ''}` : undefined)
       if (shits?.rollup) {
         const h = pathIdx ?? fine ?? withTrace(await openFine(env, date, 'path'), tr)
@@ -895,7 +910,7 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       if (fineIdx && (isStore(fineIdx) || rootAll.o <= (o.v1ScanObjects ?? V1_FILTER_SCAN_OBJECTS))) {
         // Every depth: `maxDepth` caps what phase 2 draws, never where
         // matches are found (a `depth=1` first paint must still find deep ones).
-        const got = await readSubtree(env, date, fineIdx, [{ dLo: dP + 1, dHi: 1e9, pLo, pHi }], thrAt, undefined, nDesc, smallRows, tr)
+        const got = await readSubtree(env, date, fineIdx, [{ dLo: dP + 1, dHi: 1e9, pLo, pHi }], thrAt, undefined, nDesc, smallRows, tr, ivPlanRows)
         p1 = aggregate(got.rows)
         roots = matchRoots(p1.depth.keys(), query, path)
         p1Tier = isStore(fineIdx) ? got.variant : 'fine'
@@ -1059,7 +1074,7 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
         // deep subtree's every level) can't happen, and planning `bysize` too doubled the span queries —
         // D1 runs them in turn, and a diff's two sides' plans took seconds (`00241`: 15–17 s of spans).
         const capped = rs.every(r => r.path !== path)
-        return settle(planSubtree(env, date, regionIdx, rects, rebasedThreshold(T, atten, rs[0].depth), undefined, nd, smallRows, tr, capped))
+        return settle(planSubtree(env, date, regionIdx, rects, rebasedThreshold(T, atten, rs[0].depth), undefined, nd, smallRows, tr, capped, ivPlanRows))
       }
       const plans = await Promise.all(groups.map(planFor))
       let room = o.phase2Groups ?? FILTER_PHASE2_GROUPS
@@ -1267,7 +1282,7 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
   // query (a lens's assignments fold filters these rows): matches are found at
   // every depth.
   t0 = performance.now()
-  const sub = await readSubtree(env, date, idx, [{ dLo: dP + 1, dHi: maxDepth != null && !query ? dP + maxDepth : 1e9, pLo, pHi }], thrAt, lens, nDesc, smallRows, tr)
+  const sub = await readSubtree(env, date, idx, [{ dLo: dP + 1, dHi: maxDepth != null && !query ? dP + maxDepth : 1e9, pLo, pHi }], thrAt, lens, nDesc, smallRows, tr, ivPlanRows)
   const rows = sub.rows
   tr?.('rows', performance.now() - t0, sub.variant)
   // A store generation names the sort that answered; a v1 one its tier.
@@ -1279,7 +1294,12 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
   const regionRects: Rect[] = regions.map(r => r.path === path
     ? { dLo: dP + 1, dHi: 1e9, pLo, pHi }
     : { dLo: r.depth, dHi: 1e9, pLo: r.path, pHi: r.path + '0' })
-  const allRows = regionRects.length ? await readRects(pick.all!, regionRects, thrAt) : []
+  // On the interval store the regions' totals come from the folded `bysize` sort: one row per path with its
+  // exact total, every path over the threshold and no other. (A path-first read over the slices' dyadic
+  // segments selects a run per depth per segment: a big user's root regions went past `decodeSpans`' cap.)
+  const allRows = !regionRects.length ? []
+    : pick.all!.asOf != null ? await readSizeRects(withTrace(await openIndex(folded(env), date, 'bysize'), tr), regionRects, thrAt)
+    : await readRects(pick.all!, regionRects, thrAt)
   let aggs = new Map<string, Agg>() // the scoped aggregate per path
   const aggDepth = new Map<string, number>()
   const foldedOf = new Map<string, number>()
@@ -1352,14 +1372,19 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     if (ol && !all && ol.needsTotal(p) && !ol.isAssigned(p)) continue
     aggs.set(p, ol ? scoped(p, ol.needsTotal(p) ? all : null, mine) : scoped(p, all, mine))
   }
-  // Unread regions know their object counts from the manifest; an unread
-  // ancestor's count is the sum of the regions under it (its own attributed
-  // objects, below the threshold, are not known).
+  // An unread region and its unread ancestors already count its objects: `lensAgg` takes a node's
+  // objects from the objects fold wherever it can (a region is assigned; an ancestor's bands hold the
+  // regions under it). Only a node the fold leaves to the bytes' shape — inside a cover U holds every
+  // byte but not every object of — adds the manifest's count of each unread region under it; adding it
+  // anywhere else counts the region's objects twice.
   for (const r of allRegions) {
     if (regions.some(q => q.path === r.path)) continue
+    const a0 = aggs.get(r.path)
+    // An unread object region is a file: the assignment says so, and no row says otherwise.
+    if (a0 && r.object && a0.kind == null) a0.kind = 'file'
     for (let q = r.path; q.length > path.length; q = parentOf(q)) {
       const a = aggs.get(q)
-      if (a && mineAggs.get(q) == null && !allAggs.has(q)) a.o += r.objects
+      if (a && mineAggs.get(q) == null && !allAggs.has(q) && ol!.o.needsTotal(q) && !ol!.o.isAssigned(q)) a.o += r.objects
     }
   }
   }
@@ -1641,8 +1666,8 @@ function kidsIndex(kept: Map<string, Agg>, path: string): Map<string, string[]> 
 /** The store root's crumb label: `ROOT_LABEL` (wrangler var) per deployment. */
 const rootName = (path: string, env?: Env) => (path === '' ? env?.ROOT_LABEL ?? 'all buckets' : path.split('/').pop()!)
 
-/** A read scoped by owner or class needs owner-slice rows: per-scan stores (`perScan`). */
-const sliced = (env: Env, o: { lens?: Lens; owner?: OwnerScope; classes?: ClassScope; by?: string }): Env => (o.lens || o.owner || o.classes || o.by ? perScan(env) : env)
+/** A read scoped by owner or class needs owner-slice rows: the interval store's slice sorts (`slices`). */
+const sliced = (env: Env, o: { lens?: Lens; owner?: OwnerScope; classes?: ClassScope; by?: string }): Env => (o.lens || o.owner || o.classes || o.by ? slices(env) : env)
 
 export async function buildView(env0: Env, o: ViewOpts): Promise<View> {
   const env = sliced(env0, o)
@@ -1950,10 +1975,24 @@ export async function buildDiff(env0: Env, o: DiffOpts): Promise<Diff> {
   // group stats only hold inside a single-user group, which `readAsks`'s
   // per-depth rectangles don't model. A batch too wide for the reader's group
   // cap falls back to per-ask reads rather than failing the diff.
-  const lookupMany = async (date: string, v: Read, items: { cp: string; d: number }[]): Promise<Map<string, Agg | null>> => {
+  // Both sides read as of their scans from one interval store, unscoped and unfiltered: a path's row is
+  // one version, and its versions never overlap. So a name one side lacks is the other side's very row
+  // when that version is live at this side's scan (no read), and otherwise a version that closed by the
+  // other's opened (`vtLe`) or opened once it closed (`vfGe`): the open segment and the dyadic blocks
+  // outside that window are never read. (Unbounded, 10-08 → 10-09 at the root reads 12 groups to find
+  // 17 added names absent, none of them holding an answer.)
+  const sameStore = !!(va && vb && va.idx.asOf != null && vb.idx.asOf != null && va.idx.gen === vb.idx.gen && !query && !lens && !owner && !o.classes && !o.by)
+  const lookupMany = async (date: string, v: Read, items: { cp: string; d: number; other?: Agg }[]): Promise<Map<string, Agg | null>> => {
     const out = new Map<string, Agg | null>()
-    const todo: { cp: string; d: number }[] = []
-    for (const q of items) if (inQuery(q.cp, v)) todo.push(q); else out.set(q.cp, null)
+    const todo: { cp: string; d: number; vtLe?: number; vfGe?: number }[] = []
+    const D = sameStore ? v.idx.asOf! : null
+    for (const q of items) {
+      if (!inQuery(q.cp, v)) { out.set(q.cp, null); continue }
+      const w = D != null ? q.other?.ver : null
+      if (!w) { todo.push(q); continue }
+      if (w.vf <= D! && D! < w.vt) { out.set(q.cp, q.other!); continue }
+      todo.push(D! < w.vf ? { cp: q.cp, d: q.d, vtLe: w.vf } : { cp: q.cp, d: q.d, vfGe: w.vt })
+    }
     const perAsk = async (qs: { cp: string; d: number }[]) => {
       for (let i = 0; i < qs.length; i += PAR) {
         const chunk = qs.slice(i, i + PAR)
@@ -1969,9 +2008,10 @@ export async function buildDiff(env0: Env, o: DiffOpts): Promise<Diff> {
     const want = new Map(take.map(q => [`${q.d}\0${q.cp}`, q]))
     let got: Row[]
     try {
-      got = (await readAsks(await fine(date), take.map(q => ({ depth: q.d, path: q.cp })), r => want.has(`${r.depth}\0${r.path}`), { maxGroups: 120, stop: () => lookupsOff })).rows
+      got = (await readAsks(await fine(date), take.map(q => ({ depth: q.d, path: q.cp, ...(q.vtLe != null ? { vtLe: q.vtLe } : {}), ...(q.vfGe != null ? { vfGe: q.vfGe } : {}) })), r => want.has(`${r.depth}\0${r.path}`), { maxGroups: 120, stop: () => lookupsOff })).rows
     } catch (e) {
       if (!/too wide/.test(String((e as Error).message ?? e))) throw e
+      tr?.('perask', take.length)
       await perAsk(take)
       return out
     }
@@ -2031,11 +2071,11 @@ export async function buildDiff(env0: Env, o: DiffOpts): Promise<Diff> {
       return { it, expand, names }
     })
     // The names one side lacks, looked up on that side — in parallel.
-    const asks: { cp: string; d: number; side: 1 | 2; v: Read; date: string }[] = []
+    const asks: { cp: string; d: number; side: 1 | 2; v: Read; date: string; other?: Agg }[] = []
     for (const { it, names } of plans) {
       for (const cp of names) {
-        if (va && !va.kept.has(cp) && !va.exact) asks.push({ cp, d: it.d + 1, side: 1, v: va, date: from })
-        if (vb && !vb.kept.has(cp) && !vb.exact) asks.push({ cp, d: it.d + 1, side: 2, v: vb, date: to })
+        if (va && !va.kept.has(cp) && !va.exact) asks.push({ cp, d: it.d + 1, side: 1, v: va, date: from, other: vb?.kept.get(cp) })
+        if (vb && !vb.kept.has(cp) && !vb.exact) asks.push({ cp, d: it.d + 1, side: 2, v: vb, date: to, other: va?.kept.get(cp) })
       }
     }
     const found = new Map<string, Agg | null>() // `${side}:${cp}`

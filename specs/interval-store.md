@@ -1,9 +1,11 @@
 # Interval store: change intervals in place of per-scan path stores
 
-**Status:** draft v3, 2026-10-09. Base work, branch `interval-store` off `cloud`.
+**Status:** draft v5, 2026-10-09. Base work: on `cloud` (opt-in, `PATH_STORE=opt-in` + `ps=iv`).
 - v1 (2026-10-07, unreviewed) recommended object-only intervals plus keyframes.
 - v2 decided for objects and directories as one interval table, with no keyframes.
 - v3 reports the prototype: every gcs scan built, verified and served from R2 on dev (§6). It also folds `last_read` into the version key, on that evidence (§2.2).
+- v4: closed versions in dyadic time segments (§2.4), the owner-slice table and its reader (§2.1, §2.6), shared footer and group decodes in the reader (§2.6), generation `2026-10-09b` (§6).
+- v5: the diff gap, in the reader alone (§2.5, §2.6, §6.2): one-request footers, footer groups read whole, one cached row group for every scan, lookups bounded by the other scan's version. A lens reads the user-first slice sort. Fixed: the lens's unread-region double count, and the opt-in isolate's shared miss memo. The gcs-scale parity sample over the slice sorts (§6.2).
 
 Nothing here deletes anything. §4 is a proposal for Ryan.
 
@@ -52,7 +54,13 @@ The **per-scan append** is already solved (`specs/static-daily-append.md`, `stat
 
 **Row identity is `(depth, path)`, one row per path.** A path's owner slices fold into the row (`us`, below). A path that is both an object and a prefix is one row whose `kind` is `dir`. Today's store keeps one row per `(path, usr)` slice. Folding the slices changes two things:
 - **Thresholds are exact.** Today's `bysize` read thresholds *per slice* (`readSizeRects` tests `size ≥ thrAt(depth)` on each row). So a drawn directory counts only its slices over the threshold, and a directory whose slices are each under it goes missing. This is a live prod bug, measured in §7.
-- **The user lens needs slices.** A lens reads U's slice of each path with every value. That needs a second interval table keyed `(usr, depth, path)` and sorted `(usr, ⌊log2 size⌋ desc, path, vf)`: today's `bysize-by-user` as intervals. Not prototyped. Until it exists, lens and owner-pool reads stay on per-scan stores (`perScan`).
+- **The user lens needs slices.** A lens reads U's slice of each path with every value. So the store has a second interval table, the owner slices (`build -S`, `sv/`): one row per `(depth, path, usr)` — the per-scan store's own rows, a v1 index's duplicates summed — with every value and `last_read` in the key, `usr` NULL where no owner is named. It is served in the per-scan store's three sorts:
+  - `slices` `(depth, path, usr, vf)`;
+  - `slices-bytotal` `(⌊log2 tot⌋ desc, path, usr, vf)`: keyed on the path's total, as the per-scan `bysize` is since `bysize-path-total.md`. `fold -S` splits each slice version where its path's total changes (`svt/`, the pieces checked to tile the slices);
+  - `slices-bysize-user` `(usr, ⌊log2 size⌋ desc, path, vf)`.
+  
+  Their group indexes carry `u_min`/`u_max`. A slice sort *is* the per-scan sort as intervals, so the per-scan reader's owner logic (lens rects, `ownerOk`, owner totals) runs on it unchanged.
+- **Slices barely add versions.** Most paths are one slice: 1,156,339,350 slice versions against 1,156,324,516 folded path versions (609.2M open in both).
 
 ### 2.2 Version key
 
@@ -82,14 +90,18 @@ Carrying `last_read` with pyrmts' `carried=` instead would make a mid-run scan's
 - `scans.json` lists the scans in order: id, source, epoch. A missing scan (gcs 2026-08-10) has no stamp and is never asked for.
 - A read at `D` takes the rows with `vf ≤ D < vt`.
 
-### 2.4 Layout: sorted files, each in two segments
+### 2.4 Layout: sorted files, open versions then dyadic time segments
 
 | File | Order | Serves |
 |---|---|---|
 | `served/path.parquet` | `(depth, path, vf)` | P's own row, children by name, small subtrees, the diff's point lookups, change scans |
 | `served/bysize.parquet` | `(⌊log2 size⌋ desc, path, vf)`, size 0 last | every thresholded subtree read (the treemap at any P), top-K |
 
-- **Two segments per file.** Each file holds the versions still open at the generation's last scan, then the closed ones. Both are sorted as above and cut at the boundary, so no row group mixes them. A read at the newest scan prunes every closed group by `vt_max ≤ D`, and decodes what a per-scan copy would.
+- **Segments.** Each file holds the versions still open at the generation's last scan (segment 0), then the closed ones in **dyadic time segments** (`seg_sql`). A closed version live at scans `i..j` (by index in `scans.json`) goes to the smallest aligned block of scans holding both: level `k = bit_length(i ^ j)`, block `i >> k`. Each segment is sorted as above and cut at its boundary, so no row group mixes segments.
+  - A read at the newest scan prunes every closed group by `vt_max ≤ D`, and decodes what a per-scan copy would.
+  - A historical read at D touches one block per level (⌈log2 n⌉ + 1); every other block's groups fail `vf_min ≤ D < vt_max`, because a block's versions live only inside it. Within a block a version crosses the block's midpoint, so it is live at most of the block's scans.
+  - Measured on the 71 gcs scans (`path`): open 609.2M rows; L0 70 blocks / 28.4M; L1 34 / 1.8M; L2 17 / 3.9M; L3 9 / 8.0M; L4 4 / 13.8M; L5 2 / 85.9M; L6 1 / 219.6M (the v1 era, closed at the 09-30 switch); L7 1 / 185.7M (the sweeps, which straddle scan 64).
+  - The cost: `path` 16.79 → 19.24 GB, `bysize` 14.82 → 16.75 GB (+14%; a path's versions no longer sit together in one segment).
 - **8K-row groups,** zstd, dictionary on `kind`/`us`.
 - **No per-scan bysize copy.** A version's bucket is fixed, because its size is. So one bysize file serves every scan: the same predicate, with liveness added.
 - **Columns:** `depth, path, vf, vt, kind, size, n_files, n_children, n_desc, mtime, wts, wb, c2, c3, c4, us, last_read`. `-1` marks a value a v1 scan didn't have.
@@ -101,19 +113,30 @@ Beside each sorted file is `<sort>.groups.parquet`: one row per row group, with
 - its segment and row span;
 - the compact column-chunk metadata (`rg_json`).
 
-This is the site's cold-footer format with four time columns added, read in `pq` mode. There is one index per sort per generation, not one per scan (~136K groups, ~21 MB), and nothing goes in D1. A Worker reads a footer group's bounds columns to plan, and `rg_json` only for the groups it selects (`readFooterJson`). The per-scan cold tier benefits from that change too.
+This is the site's cold-footer format with four time columns added, read in `pq` mode. There is one index per sort per generation, not one per scan (~141K groups, ~21 MB), and nothing goes in D1. A Worker reads a footer group's bounds columns to plan, and `rg_json` only for the groups it selects (`readFooterJson`). The per-scan cold tier benefits from that change too.
+- An interval store's footer serves every scan, so its decoded footer groups are cached per isolate without the scan in the key, and a decode in flight is shared (`footerOnce`).
+- Decoded footer groups have an LRU of their own (12 MB). In the row groups' LRU they evicted the groups a warm read wanted.
+- **The footer** (gcs `2026-10-09b`: 527 KB, 276 footer groups of 512 tier groups) is opened once per isolate for every scan (`ivFooter`), in one suffix read (`ByteStore.tail`: the last 1 MB and the object's size), started beside `scans.json`. Opening a sort also opens its sibling's (`path` ↔ `bysize`, `slices` ↔ `slices-bytotal`). A size probe, a tail and a head read in series, per side of a diff, were 3–6 sequential requests.
+- **A footer group is read whole** (bounds and `rg_json`, ~95 KB), once: planning a read and fetching its groups' metadata is one round trip, not two.
 
 ### 2.6 Reads
 
 Every read is today's `index.ts` plan, with one more conjunct on each group (`vf_min ≤ D < vt_max`) and on each row (`vf ≤ D < vt`):
 - **Subtree / treemap at (P, D):** P's row, then `bysize` (`readSizeRects`). Planning `path` too is skipped for subtrees over `IV_PATH_PLAN_ROWS` (256K rows): on R2 footers, planning `path` decodes most footer groups for a read it never picks.
-- **Diff (D1, D2):** both sides are as-of reads at one threshold; the walk's lookups are `path` point reads.
+- **Diff (D1, D2):** both sides are as-of reads at one threshold; the walk's lookups are `path` point reads, one plan per side per level (`readAsks`).
+  - Both sides read the same files. A row group is cached once, with every version, keyed without the scan (`ivGroupKey`); a read keeps its scan's live versions (`cachedGroup`). One being fetched for one side is waited for by the other (`groupsInFlight`). The same holds for a view and its walk. Cached per scan, a root diff's ~20 groups were ~40 entries, past the row-group LRU.
+  - **Lookups are bounded by version.** A name one side lacks is looked up on that side, and the other side's row says which version can answer: a path's versions never overlap. If the other scan's version is live at this scan, it is the answer, with no read. Otherwise the version wanted closed by the time the other opened (`Ask.vtLe`), or opened once it closed (`vfGe`). Groups whose `vt_min` / `vf_max` rule that out are never read, so the open segment is skipped for a name added since. This holds only for unscoped, unfiltered diffs, whose rows are one version per path.
   - Version boundaries also define a **change-only read**: the paths under P that differ between the two scans are exactly the versions with `vf` or `vt` in `(D1, D2]`. The `path` sort's layout can't prune by time, though: its open segment's `vf` ranges span every scan. Measured over 52 diffs, that read selects a median of 2,818 groups (117 MB), against 260 for the two as-of reads; at the root, 38,803 against 359.
   - The change list that is cheap is the per-scan runs (§2.7): each run *is* one scan's changes. So a change-only diff reads the runs for the scans in `(D1, D2]`, and needs a `vf`-ordered cut only for spans older than the runs.
+  - A change-only diff isn't the same diff, though. An expanded node's `(other)` is its total less every named child on each side, unchanged children included, and the change list doesn't name those. So it either keeps the as-of reads for the named children or reports `(other)` as the unchanged remainder too. That is a product decision, and the runs exist only once the job appends (§2.7). The bounded lookups above are its reader-side half, available now.
 - **Series:** P's versions *are* its history, so one `path` point read can replace one read per scan. Not wired in.
 - **Filtered views:** phase 1 searches the scan's own search sidecars; phase 2 reads the interval store.
 - **Lenses:** age (`d`) and read recency (`a`) come from the row.
-- **User lens, owner pools, owner totals:** per-scan stores, until the slice table exists (§2.1).
+- **User lens, owner pools, owner totals, owner prefixes, class scopes:** the slice sorts (`slices(env)` maps `path`/`bysize`/`bysize-user` to `slices`/`slices-bytotal`/`slices-bysize-user`).
+  - A lens view's assigned regions take their totals from the folded `bysize` (one exact row per path). A path-first read of the slices selects a run per depth per dyadic segment, and a big user's root regions went past `decodeSpans`' cap. A held date's v1 `user` and coarse sorts are refused, so an owner read of a held date never mixes in per-scan rows. A generation without slice sorts still falls back to per-scan stores.
+  - A lens view reads U's own rows from the user-first `slices-bysize-user`, as a per-scan lens reads `bysize-user`, also for the big subtrees that plan the size sort alone (`IV_PATH_PLAN_ROWS`). The path-first `slices-bytotal` mixes users in every group: a big user's root there selected most groups over the threshold, and michael-ryan's root on 2 of 5 sampled v1 scans was refused as too wide.
+  - `intervalSlices.test.ts` also covers assigned regions: 26 of a lens's regions, 2 unread. They are drawn from the folded `bysize`, each counted once.
+  - `intervalSlices.test.ts`: over three scans built from the per-scan fixtures (`v2-slices`, `v2-lens`, `v2-slices`), every lens view, owner pool, root total and lens or pool diff equals the per-scan reader's, with no per-scan read. One deliberate difference: a path that is both an object and a prefix is `dir` (the per-scan reader takes whichever row it merged last).
 
 ### 2.7 Per-scan append and compaction (`static_append`'s tiering)
 
@@ -131,11 +154,11 @@ Measured size of a scan's delta (§6): ~2–3M opens plus ~1–2M close records.
 
 ## 3. Not built
 
-- The slice table for the user lens and owner pools (§2.1).
-- The change-only diff, and the one-read series.
-- **Time-partitioned closed segments.** A historical read decodes closed versions of its paths that aren't live at D. On the v2 scans that is up to ~18× the rows of a root view (§6). The fix is to split the closed segment by the smallest dyadic span of scans containing each version. A read at D then touches ⌈log2 n⌉ partitions, each holding versions live near D.
+- The change-only diff (§2.6: needs the per-scan runs, and a decision on `(other)`), and the one-read series.
+- **A floor on the dyadic level.** A historical root still reads one group per small block (L0–L3: ~4 groups of 8K rows for a few rows over the threshold). Putting levels below 4 into L4 would cut that to one, ~30% of a historical diff's groups (§6.2). Deferred to the next compaction (§2.7), which rewrites the closed segments anyway; a standalone re-cut is ~$5 of GCS → R2 egress for the folded sorts.
+- **A lens's unread ancestors' own slices.** An ancestor of U's assigned regions whose own slice is under the threshold is valued from its bands alone, the lens's lower bound (`OwnerLens.value`). On v1 scans per-scan reads a coarse user tier (16 MiB floor) that holds that slice: ahmed-ahmed's `marin-us-east5/tokenized` is 120 MB short on the store (§6.2). A point read of U's slice at those few paths would close it.
 - Shrinking close records. Today a close record is the full row. Identity + `vt` + `size` would do; a sweep scan closes 58–126M versions.
-- The per-scan append in the job (§2.7), and cw.
+- The per-scan append in the job (§2.7), for the slice versions as well as the folded ones, and cw.
 
 ## 4. Retention of per-scan artifacts (proposal — Ryan decides)
 
@@ -162,7 +185,7 @@ Measured size of a scan's delta (§6): ~2–3M opens plus ~1–2M close records.
 ## 5. Migration
 
 1. **Build and verify** (done for 71 scans, §6).
-2. **Dual-read behind a flag** (done on dev).
+2. **Dual-read behind a flag** (done on dev; on `cloud` since v4). The current generation is `INTERVAL_STORE_GEN="2026-10-09b"` with `INTERVAL_STORE_REV` unset; `2026-10-09` + rev 2 is the v3 generation, still on R2.
    - `PATH_STORE=opt-in`: only requests with `ps=iv` read the store (`withPathStore`). `PATH_STORE=intervals` makes it the default.
    - Cache keys carry `iv:<gen>[@rev]` (`pathGens`). `INTERVAL_STORE_REV` re-keys every cache after an in-place re-cut.
    - Anything the store can't serve falls back to per-scan stores: a lens, an owner pool, a scan the store doesn't hold.
@@ -226,6 +249,95 @@ Sample: 20 scans; per scan, the root, a depth-1 band, two buckets, and dirs at d
 - **Diffs are 2–3× slower.** The walk's one-sided point lookups each plan R2 footer groups, where per-scan does them as one D1 query. This is the next lever: batch the lookups per level, or use the change-only read.
 - **Cold numbers carry a fresh isolate's footer decodes** (`footer` 0.1–2.3 s summed).
 
+### 6.1 Generation `2026-10-09b` (v4): dyadic segments, slices, reader sharing
+
+**Built from the same range files** (`cut -g 2026-10-09 -O 2026-10-09b`; nothing in `2026-10-09` was rewritten). Same answers: every unscoped view and diff measured below has the same tree as on `2026-10-09`, up to the order of equal-sized siblings.
+
+| File | Rows | Bytes | Groups |
+|---|---:|---:|---:|
+| `path` | 1,156,324,516 | 19.24 GB | 141,227 |
+| `bysize` | 1,156,324,516 | 16.75 GB | 141,227 |
+| `slices` | 1,156,339,350 | 19.24 GB | — |
+| `slices-bysize` (per slice; superseded by `slices-bytotal`, unread) | 1,156,339,350 | 16.74 GB | — |
+| `slices-bytotal` | 1,156,356,048 | 18.34 GB | 141,230 |
+| `slices-bysize-user` | 1,156,339,350 | 16.74 GB | — |
+
+- **Slice build** (`build -S`, 32 spot n2-highmem-16 tasks, 18.5 task-hours): 256/256 ranges and **18,176/18,176 (range, scan) pairs reconstruct exactly**.
+- **On R2:** 36.0 GB of folded sorts and 71.1 GB of slice sorts, 16.7 GB of which is the unread per-slice `slices-bysize`.
+- **`fold -S`** (8 tasks): 1,156,339,350 slice versions → 1,156,356,048 pieces with their path's total.
+
+**Local timings,** in ms: the TS reader (`buildView` / `buildDiff`) run in Node on the laptop, against R2 (the interval store) and GCS (per-scan stores). Per-scan footers come from a local copy of gcs's D1 (row groups through 10-04). Cold means a fresh module graph and colo cache; warm is the same read again. Each figure is the best of 2. The laptop is a long way from both stores, so absolute times are higher than a Worker's; compare within a row.
+
+| View | Interval v3 cold | v3 warm | Interval v4 cold | v4 warm | Per-scan cold | Per-scan warm | v4 R2 MB |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| root 10-04 | 3,267 | 45 | 1,750 | 22 | 853 | 82 | 4.6 |
+| `marin-us-central2` 10-04 | 3,297 | 583 | 1,947 | 378 | 961 | 444 | 6.4 |
+| root 10-01 | 3,141 | 135 | 1,738 | 27 | 813 | 93 | 4.3 |
+| root 09-15 (v1) | 2,499 | 29 | 1,785 | 27 | 1,079 | 653 | 4.4 |
+| `marin-us-east5` 09-15 (v1) | 3,677 | 149 | 2,482 | 32 | 1,035 | 106 | 6.4 |
+| `marin-us-central1/checkpoints` 10-04 | 5,577 | 2,095 | 3,921 | 1,770 | 1,502 | 864 | 11.1 |
+| diff 10-03 → 10-04, root | 3,736 | 1,735 | 2,388 | 786 | 1,290 | 118 | 8.5 |
+| diff 10-01 → 10-04, `marin-us-central2` | 5,685 | 1,689 | 2,973 | 1,199 | 1,583 | 868 | 10.3 |
+| root 10-09 | 1,941 | 21 | 1,400 | 21 | — | — | 2.8 |
+| diff 10-08 → 10-09, root | 4,962 | 2,676 | 3,216 | 1,337 | — | — | 8.7 |
+| lens `user:michael-ryan`, root 10-04 | per-scan | | 5,293 | 2,716 | 7,896 | 8,383 | 24.7 |
+| pool `unowned`, root 10-04 | per-scan | | 2,113 | 71 | 901 | 104 | 6.0 |
+| lens `user:michael-ryan`, root 09-15 (v1) | per-scan | | 6,290 | 4,065 | 3,520 | 3,082 | 29.6 |
+| diff 10-03 → 10-04, lens `user:michael-ryan` | per-scan | | 6,852 | 4,820 | 16,702 | 18,841 | 31.7 |
+
+- **Historical reads now decode about what the newest does.** At root 10-04, 12 row groups are read (v3: 28; the newest scan: 6; per-scan: 6). The extra groups are one per small dyadic block (L0–L3) plus L7.
+- **Owner reads are served from the store.** The v2 lens root and lens diff have the per-scan tree and rows exactly, and are faster. The unowned pool differs only in float rounding of one `(other)`'s class bytes.
+  - The v1 lens (09-15) has the same tile bytes. Its `(other)` tiles differ in `f`/`cb`/`d`, because per-scan v1 reads coarse tiers.
+  - Two of its tiles show `o` doubled: an unread region with no row gets the manifest's objects twice (`readView`'s unread-region loop starts at the region itself). This is a pre-existing reader bug that the store's exact reads expose. Fixed in v5 (§6.2).
+- **Diffs are still slower than per-scan,** cold 1.8–1.9× and warm well behind. Most of the cold gap is footer decode: the store's footers come from R2 groups (~1 s of a cold diff), where per-scan plans in D1. The warm gap is the row-group LRU (24 MB): a diff's ~40 groups of mostly-live rows don't fit, and in v4 groups hold live rows. Levers:
+  - a floor on the dyadic level (§3);
+  - a larger LRU for interval handles;
+  - the change-only diff over per-scan runs (§2.6).
+- **Recurring cost of the slice sorts, per scan, once the append runs (§2.7).** A scan's slice delta is about the folded one (~4M rows), so ~0.12 GB per sort. The five served sorts are then ~0.6 GB of runs per scan to copy GCS → R2, about $0.07 of egress per scan (~$2/month at one scan a day), against ~$0.04 for the folded sorts alone. Writing the runs to R2 directly from the job would avoid the egress.
+
+### 6.2 v5: closing the diff gap in the reader (generation unchanged)
+
+**What changed,** all in the TS reader, over `2026-10-09b` as built (§2.5, §2.6):
+- footers open in one suffix read, once per isolate, beside `scans.json` and with the sibling sort's; a footer group (bounds and `rg_json`) is one read;
+- a row group is cached once, with every version, for every scan (`ivGroupKey`, `cachedGroup`);
+- a diff's lookups are bounded by the other side's version (`Ask.vtLe` / `vfGe`), or answered by its row;
+- a lens reads the user-first `slices-bysize-user` (§2.6).
+
+**Timings,** local harness as in §6.1 (Node on the laptop, the store on R2, per-scan on GCS with footers from a local D1 copy), best of 2, ms. Cold / warm / *warm colo*: a fresh isolate whose colo cache an earlier isolate filled (footers and footer groups are colo-cached for a day, `cachedRange`), the usual case for a new isolate in production. Before and after ran back to back, before from `cloud` at `2552870b`.
+
+| View | Before | After | Per-scan | After R2 MB |
+|---|---:|---:|---:|---:|
+| diff 10-03 → 10-04, root | 2,096 / 687 / *1,054* | 1,468 / **28** / *922* | 1,019 / 114 / *881* | 7.6 |
+| diff 10-01 → 10-04, `marin-us-central2` | 2,619 / 1,111 / *1,601* | 1,763 / 1,007 / *1,411* | 1,262 / 858 / *1,425* | 10.2 |
+| diff 10-08 → 10-09, root | 3,717 / 1,040 / *1,663* | 1,839 / **27** / *1,429* | — | 7.1 |
+| diff 10-03 → 10-04, lens `michael-ryan` | 5,683 / 4,725 (§6.1) | 3,818 / 2,513 / *3,264* | 11,156 / 11,301 / *11,005* | 18.7 |
+| lens `michael-ryan`, root 10-04 | 4,069 / 2,781 (v5 run before the lens sort) | 2,469 / 947 / *1,742* | 5,431 / 4,999 / *5,457* | 13.7 |
+| lens `michael-ryan`, root 09-15 (v1) | 5,705 / 4,177 | 3,238 / 1,907 / *2,349* | 3,081 / 2,392 / *2,874* | 18.1 |
+
+Every diff has the same rows as before. The lens views' trees equal per-scan's (the double-count fix below is in the shared reader).
+
+- **Warm: at or below per-scan.** The root diffs hold everything they read: 19 distinct groups at 10-03 → 10-04, against 40 per-scan-keyed entries before; per-scan's 18 groups fit too. The `marin-us-central2` diff (28 distinct groups) doesn't fit the LRU in either store. Two runs measured it at 865 and 1,007 ms, per-scan at 852 and 858.
+- **Cold: about 1.4× per-scan on this harness, at parity with a warm colo.** What's left is sequential requests: footers, then footer groups, before each row-group read (rootagg, views, walk). Per-scan plans on a D1 that is a local SQLite file here, so its planning costs nothing; in a Worker each of its span and `rg_json` queries is a D1 round trip. Group decodes are even now (iv 19, per-scan 18 at the root diff), but an iv group costs ~18 ms to decode on the laptop against ~12.5 ms (18 columns; the `path` column alone is 6 ms).
+- **The bounded lookups:** unbounded, the 10-08 → 10-09 walk's 17 added names read 12 `path` groups, none holding an answer. Group reads per diff (`ngroups`, both sides) with the bounds: 10-03 → 10-04 root 40 → 32, 10-08 → 10-09 41 → 31.
+
+**The levers, as asked:**
+- **(b) a larger or dedicated cache: not a larger cap.** A decoded `Row` measures ~370 B on the heap, against the LRU's 160 B estimate (`ROW_BYTES`), so the 24 MB (estimated) cap already holds ~55 MB of rows in a 128 MB isolate. Sharing one entry per group across scans is what makes the working set fit. The estimate is left as is; correcting it would shrink every store's cache.
+- **(a) the change-only diff: its reader half, now.** The full read needs the per-scan runs (the job's append, §2.7) and a decision on what `(other)` means (§2.6). The version bounds come from the same interval structure and need neither.
+- **(c) a floor on the dyadic level: deferred to compaction.** At the 10-03 → 10-04 root, 10 of the 21 distinct groups (before the bounds) were L0–L3 blocks; an L4 floor would make them ~2–4, ~30% fewer decodes and bytes for a historical diff. It needs a new generation, ~$5 of GCS → R2 egress for the folded sorts alone. The compaction (§2.7) rewrites closed segments anyway.
+
+**Fixed in the reader:**
+- **The unread-region double count.** `lensAgg` already counts an unread region's objects (and an unread ancestor's, from its bands); the loop after it added each unread region's manifest objects again, to the region and to every unread ancestor up to P. It now adds them only where the objects fold left a node to the bytes' shape. An unread object region is drawn as a `file`. Test first: 26 assigned regions, 2 unread, both stores (`intervalSlices.test.ts`).
+- **The opt-in isolate's miss memo.** `tryOpen` remembered a missing tier per `(store, date, variant)`. An iv read of a v1 date finds its `path` sort a store sort, so it marked the date's coarse tiers missing for a minute; a per-scan read of that date in the same isolate then skipped them. On gcs, every v1 lens and pool read failed ("query too wide", or a crash) after an iv read of the same date. The memo is now keyed by path store (`pathStoreKey`). Test first (`intervalStore.test.ts`).
+- **A lens on the path-first slice sort.** See §2.6: michael-ryan's v1 roots were refused, and v2 lens reads cost 2–3× what they now do.
+
+**Parity at gcs scale** (the local harness, `wt/iv-diff/tmp/bench/parity.test.ts`, untracked; read-only, R2 and GCS): 10 scans (v1 08-15, 09-01, 09-10, 09-20, 09-29; v2 09-30 → 10-04). Per scan, the root under lenses `michael-ryan` and `ahmed-ahmed` and pools `unowned` and `owned`; lens diffs between consecutive scans; `unowned` diffs between the v2 ones. Every node compared field by field.
+- **v2 lens views: 10/10 equal.** Lens diffs: 9/9 equal, except 3 names in 08-15 → 09-01, where both sides hit `LOOKUP_CAP` and the cap's shared counter races between the sides. `unowned` diffs: 4/4 equal.
+- **v2 `unowned` views:** one `(other)`'s class bytes, float rounding.
+- **v2 `owned` views: ~320 fields per scan, all the per-scan §7 undercount.** Root totals are equal. Per-scan drops owners' slices under the threshold from drawn tiles (the store's `us` lists also carry `percy-liang`, `root`, `runner`, …), so their bytes and objects land in `(other)`: `marin-us-central2/checkpoints` is 1.6M objects short per-scan.
+- **v1 views: tile bytes equal, except one.** `(other)` `f`/`cb`/`d` differ, as in §6.1 (per-scan v1 reads coarse tiers). ahmed-ahmed's `marin-us-east5/tokenized` is 120 MB / 78 objects short on the store, and a few unread ancestors lack `d`/`a`/`cb`: an ancestor of assigned regions whose own slice is under the threshold is valued from its bands (§3).
+
+**Cost of this round:** R2 reads only (no egress fee, a few thousand class B operations); GCS egress from the per-scan reads of the timing and parity runs, ~3 GB, ~$0.40. No writes, no re-cut.
+
 ## 7. The per-scan `bysize` undercount (a prod bug this found)
 
 **The bug.** The per-scan Worker thresholds `bysize` reads per owner-slice row: `readSizeRects` keeps `size ≥ thrAt(depth)` per row, and gcs dir rows are `(path, usr)` slices. Two consequences:
@@ -251,7 +363,7 @@ The missing bytes land in the parent's `(other)`. Totals at the root are unaffec
 - **Not affected:** v1 scans (coarse/fine tiers, read by `path`) and `depth=1` bands read from `path`.
 - **Fixes:**
   - in the per-scan store, give each slice row its path's total in a sort column (bucket on the path's total), or read every slice of the selected paths in a second pass;
-  - the interval store's one-row-per-path design has no such case.
+  - the interval store's one-row-per-path design has no such case for unscoped reads, and its owner-slice size sort is keyed on the path's total (`slices-bytotal`).
 
 ## Open questions
 
