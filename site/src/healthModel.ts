@@ -217,6 +217,9 @@ export interface HealthDoc {
   coverage: ScanCoverage[]
   /** The scans with a gap in any column, and how many per column. */
   gaps: Record<Column, number>
+  /** Scans a finished job ran for that nothing serves (no per-scan store, in no store): not coverage rows — a
+   *  scan never published has no gaps to show — but worth a look (e.g. a backfilled run of a scan purged since). */
+  unserved: string[]
   freshness: Freshness
 }
 
@@ -231,10 +234,14 @@ export function healthDoc(reads: readonly StoreRead[], perScan: readonly string[
   const running = new Set(live.map(j => j.scan))
   const started = new Map<string, number>()
   for (const j of jobs) if (j.started_ts != null) started.set(j.scan, Math.min(started.get(j.scan) ?? Infinity, j.started_ts))
-  const scans = [...new Set([...perScan, ...jobs.map(j => j.scan), ...stores.flatMap(s => [...s.base, ...s.runs.flatMap(r => r.scans)])])].filter(s => !Number.isNaN(scanTime(s))).sort()
+  // A scan is a coverage row when something serves it, or its job is still running; a finished job's scan that
+  // nothing serves is `unserved` instead.
+  const scans = [...new Set([...perScan, ...running, ...stores.flatMap(s => [...s.base, ...s.runs.flatMap(r => r.scans)])])].filter(s => !Number.isNaN(scanTime(s))).sort()
+  const known = new Set(scans)
+  const unserved = [...new Set(jobs.filter(j => j.status !== 'running' && !known.has(j.scan)).map(j => j.scan))].filter(s => !Number.isNaN(scanTime(s))).sort()
   const cov = coverage(scans, new Set(perScan), running, stores, live.length > 0)
   const gaps = Object.fromEntries(COLUMNS.map(c => [c, cov.filter(x => x.cells[c] === 'missing').length])) as Record<Column, number>
-  return { now, scans, stores, coverage: cov, gaps, freshness: freshness(scans, stores, now, started) }
+  return { now, scans, stores, coverage: cov, gaps, unserved, freshness: freshness(scans, stores, now, started) }
 }
 
 // ── Shards on a timeline (`CoverTimeline`'s rows) ──────────────────────────

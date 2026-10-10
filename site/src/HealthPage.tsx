@@ -194,6 +194,13 @@ export function HealthPage() {
             {totalGaps ? <span className="sr-status failed">{totalGaps} scan{totalGaps === 1 ? '' : 's'} with gaps</span> : <span className="sr-status succeeded">no gaps</span>}
             {cols.filter(c => doc.gaps[c]).map(c => <Tooltip key={c} content={COLUMN_TIPS[c]}><span className="hl-gapcount">{COLUMN_LABELS[c]}: {doc.gaps[c]}</span></Tooltip>)}
           </p>
+          {doc.unserved.length > 0 && (
+            <p className="dim">
+              <Tooltip content="A scan job finished for these scans, but no store serves them (not in the path index or any store's runs): e.g. a backfilled run of a scan purged since. Not counted as gaps.">
+                <span>{doc.unserved.length} finished job{doc.unserved.length === 1 ? '' : 's'} with no served scan: {doc.unserved.join(', ')}</span>
+              </Tooltip>
+            </p>
+          )}
           {covTiers.length > 0 && <Timeline tiers={covTiers} genesis={genesis} now={now} />}
           {(gapRows.length > 0 || totalGaps < doc.coverage.length) && (
             <div className="run-filters">
