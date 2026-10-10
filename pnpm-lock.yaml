@@ -141,6 +141,9 @@ importers:
       pyrmts-cfw:
         specifier: github:runsascoded/pyrmts#ad35ff808beb8bbbe8d4fb7dddb894de4421bb62&path:/js/packages/pyrmts-cfw
         version: https://codeload.github.com/runsascoded/pyrmts/tar.gz/ad35ff808beb8bbbe8d4fb7dddb894de4421bb62#path:/js/packages/pyrmts-cfw(react@19.2.8)
+      pyrmts-react:
+        specifier: github:runsascoded/pyrmts#ad35ff808beb8bbbe8d4fb7dddb894de4421bb62&path:/js/packages/pyrmts-react
+        version: https://codeload.github.com/runsascoded/pyrmts/tar.gz/ad35ff808beb8bbbe8d4fb7dddb894de4421bb62#path:/js/packages/pyrmts-react(@floating-ui/react@0.27.20(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react@19.2.8)(use-kbd@https://codeload.github.com/runsascoded/use-kbd/tar.gz/9db5013f5e4034a14530dff37f1c015dc37c8c77(cmdk@1.1.1(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8))
       react:
         specifier: ^19.1.0
         version: 19.2.8
@@ -2237,6 +2240,17 @@ packages:
   pyrmts-cfw@https://codeload.github.com/runsascoded/pyrmts/tar.gz/ad35ff808beb8bbbe8d4fb7dddb894de4421bb62#path:/js/packages/pyrmts-cfw:
     resolution: {path: /js/packages/pyrmts-cfw, tarball: https://codeload.github.com/runsascoded/pyrmts/tar.gz/ad35ff808beb8bbbe8d4fb7dddb894de4421bb62}
     version: 0.0.0
+
+  pyrmts-react@https://codeload.github.com/runsascoded/pyrmts/tar.gz/ad35ff808beb8bbbe8d4fb7dddb894de4421bb62#path:/js/packages/pyrmts-react:
+    resolution: {path: /js/packages/pyrmts-react, tarball: https://codeload.github.com/runsascoded/pyrmts/tar.gz/ad35ff808beb8bbbe8d4fb7dddb894de4421bb62}
+    version: 0.0.0
+    peerDependencies:
+      '@floating-ui/react': '>=0.27'
+      react: '>=18'
+      use-kbd: '>=0.12'
+    peerDependenciesMeta:
+      use-kbd:
+        optional: true
 
   pyrmts@https://codeload.github.com/runsascoded/pyrmts/tar.gz/01cb9739acd3c91f705f32b3c20f14da3f465396#path:/js/packages/pyrmts:
     resolution: {path: /js/packages/pyrmts, tarball: https://codeload.github.com/runsascoded/pyrmts/tar.gz/01cb9739acd3c91f705f32b3c20f14da3f465396}
@@ -4875,6 +4889,14 @@ snapshots:
       pyrmts: https://codeload.github.com/runsascoded/pyrmts/tar.gz/01cb9739acd3c91f705f32b3c20f14da3f465396#path:/js/packages/pyrmts(react@19.2.8)
     transitivePeerDependencies:
       - react
+
+  pyrmts-react@https://codeload.github.com/runsascoded/pyrmts/tar.gz/ad35ff808beb8bbbe8d4fb7dddb894de4421bb62#path:/js/packages/pyrmts-react(@floating-ui/react@0.27.20(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react@19.2.8)(use-kbd@https://codeload.github.com/runsascoded/use-kbd/tar.gz/9db5013f5e4034a14530dff37f1c015dc37c8c77(cmdk@1.1.1(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)):
+    dependencies:
+      '@floating-ui/react': 0.27.20(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      pyrmts: https://codeload.github.com/runsascoded/pyrmts/tar.gz/01cb9739acd3c91f705f32b3c20f14da3f465396#path:/js/packages/pyrmts(react@19.2.8)
+      react: 19.2.8
+    optionalDependencies:
+      use-kbd: https://codeload.github.com/runsascoded/use-kbd/tar.gz/9db5013f5e4034a14530dff37f1c015dc37c8c77(cmdk@1.1.1(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
 
   pyrmts@https://codeload.github.com/runsascoded/pyrmts/tar.gz/01cb9739acd3c91f705f32b3c20f14da3f465396#path:/js/packages/pyrmts(react@19.2.8):
     dependencies:
