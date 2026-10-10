@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { scanTime } from '../../src/scanSlug'
 import { Drill, type DrillAnswer, type DrillRules, DRILL_RULES, DrillSource, rollupAt, rollupTotal } from './staticDrill'
-import { covers, drillSource } from './staticFilter'
+import { covers, drillSource, fromDrill, heavyUncovered } from './staticFilter'
 import { type Blobs, type Hit } from './staticNames'
 import { tiers } from './staticRuns'
 import { fixture, readJson } from './testStore'
@@ -180,6 +180,26 @@ describe('DrillSource over the runs', () => {
     const [a, b] = await Promise.all([wired(), wired({ hide: [`${RUN2}/drill/meta.json`] })].map(d => new DrillSource(d).hits('ckpt', 'b1/runs')))
     expect([a!.rollup ? 'rollup' : 'hits', a!.scans, covers(a!, [E.dates[4]]), b!.scans, covers(b!, [E.dates[3]]), covers(b!, [E.dates[4]])])
       .toEqual([E.py.run2.ckpt['b1/runs'][0] === 'rollup' ? 'rollup' : 'hits', E.dates, true, E.dates.slice(0, 4), true, false])
+  })
+
+  it('a middle run without its drill (cw 10-10: a merged run built before drill was on), a later run\'s live: the drill covers the base\'s scans only; the fleet root from the tiers\' catalog covers every scan, exactly', async () => {
+    const blobs = blobsOf({ hide: [`${RUN1}/drill/meta.json`] })
+    const t = tiers(blobs)
+    const runs = async () => (await t.tiers.state()).tiers.flatMap(x => x.dir ? [x.dir] : [])
+    const src = drillSource(blobs, undefined, { runs, catalog: t.catalog })
+    const below = (await src.hits('ckpt', 'b1/runs'))!
+    const root = (await src.hits('ckpt', ''))!
+    const store = { source: src, scans: async () => E.dates, gen: 'fixture', catalog: t.catalog }
+    const cat = (await heavyUncovered(store, 'ckpt', '', E.dates.slice(3)))!
+    expect([
+      below.scans, root.scans, covers(below, E.dates.slice(3, 4)), covers(below, E.dates.slice(4)), fromDrill(below),
+      await heavyUncovered(store, 'ckpt', 'b1/runs', E.dates.slice(3)), cat.scans ?? null,
+      E.dates.map(d => { const x = rollupTotal(cat.rollup!, d); return [x.b, x.o] }),
+    ]).toEqual([
+      E.dates.slice(0, 3), E.dates.slice(0, 3), false, false, true,
+      null, E.dates,
+      E.dates.map(d => total(brute('ckpt', '', d))),
+    ])
   })
 
   it('roots answers in the colo cache are keyed by the newest tier (the base\'s keep their bare key)', async () => {
