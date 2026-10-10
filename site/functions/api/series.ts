@@ -185,8 +185,10 @@ export const onRequestGet = async (ctx0: Ctx & { waitUntil?: (p: Promise<unknown
   // lists no files, so a name's total there reads ~0 — a gap, not a point).
   const sscans = shits ? new Set(shits.scans ?? await sfs!.scans()) : null
   if (sscans) for (const d of await sfs!.dirOnly?.() ?? []) sscans.delete(d)
-  // Indexed-only: no answer is `scan-not-indexed` (never the client's roots read per scan).
-  if (query && strict && !shits) return new Response(rejectBody(reject('scan-not-indexed')), { status: 400, headers: { 'content-type': 'application/json' } })
+  // An anchored term with no anchors build is `anchor-not-indexed`, indexed-only or not; else, indexed-only, no
+  // answer is `scan-not-indexed` (never the client's roots read per scan).
+  const unanchored = query && skey && !found && sfs!.source.why?.(skey) === 'anchor-not-indexed'
+  if (unanchored || (query && strict && !shits)) return new Response(rejectBody(reject(unanchored ? 'anchor-not-indexed' : 'scan-not-indexed')), { status: 400, headers: { 'content-type': 'application/json' } })
   if (query && !shits && !paths.length) return json({ error: 'a filtered series needs its match roots (paths=)' }, 400)
   /** The scans a static answer doesn't cover: gaps in the series, named (indexed-only or not). */
   const unindexed: string[] = []

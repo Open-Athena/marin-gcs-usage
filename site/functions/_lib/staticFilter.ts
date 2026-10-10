@@ -308,8 +308,9 @@ export function liveTotal(hits: Hit[], date: string, keep: (usr: string | null) 
  *  9: a heavy `^q` — its fleet root from the starts-with catalog, scoped reads below, a 400K-row bound; 10: a
  *  series' uncovered and dir-only scans are gaps named in `unindexed`, indexed-only or not — never zeros;
  *  12: a dir-only scan's answer flagged `dirsOnly`, a diff across a dir-only and a full scan `scan-dirs-only`;
- *  13: the hex-run rule — `hexRuns` on hex-affected literals, `occurs` in the fallback and the anchored reader). */
-const RESPONSE_V = 13
+ *  13: the hex-run rule — `hexRuns` on hex-affected literals, `occurs` in the fallback and the anchored reader;
+ *  14: an anchored term on a generation with no anchors build is `anchor-not-indexed`, never the approximate walk). */
+const RESPONSE_V = 14
 
 /** The query's substring matchers (positive and negative): the literals the hex-run rule applies to. */
 const subMatchers = (ast: QueryAst | undefined): Extract<Matcher, { kind: 'sub' }>[] =>
@@ -346,7 +347,8 @@ export function hexNote(rule: HexRule | null, ast: QueryAst | undefined): { hexR
   return rule && subMatchers(ast).some(m => !m.start && hexAffected(m.text, rule)) ? { hexRuns: { min: rule.min, tail: rule.tail } } : {}
 }
 
-/** Why a static read declined: a scan outside the generation (`skey` null), or a heavy literal past the
+/** Why a static read declined: the source's own reason when it has one (`term-too-common` for a too-common `^q`,
+ *  `anchor-not-indexed` for an anchored term with no anchors build); a scan outside the generation (`skey` null), or a heavy literal past the
  *  drill base, is `scan-not-indexed`; a heavy literal with no heavy source (`FILTER_STATIC_HEAVY` off) below
  *  the fleet root (where the catalog answers, `catalogRoot`) is `term-too-common` — on every scan alike,
  *  indexed or not. */

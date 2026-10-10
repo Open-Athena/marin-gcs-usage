@@ -15,6 +15,13 @@ export async function onRequest(ctx: Ctx & { env: NameSummaryEnv }): Promise<Res
     const r = reject('unsupported-slash')
     return json({ error: r.message, code: r.code }, 400, privateHeaders)
   }
+  // A `^…` / `…$` name: /names reads literals only (no anchored reader on any deployment), so an anchored-looking
+  // name is refused as such — never answered as a literal `^`/`$` substring, which would read as zero matches.
+  const name = new URL(ctx.request.url).searchParams.get('name') ?? ''
+  if (name.length > 1 && (name.startsWith('^') || name.endsWith('$'))) {
+    const r = reject('anchor-not-indexed')
+    return json({ error: r.message, code: r.code }, 400, privateHeaders)
+  }
   let params: URLSearchParams
   try { params = nameSummaryParams(new URL(ctx.request.url), datedNames(ctx.env)) } catch (error) {
     if (error instanceof HotQueryError) return json({ error: error.message }, 400, privateHeaders)

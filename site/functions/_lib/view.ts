@@ -852,9 +852,10 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       // An indexed-only deployment never walks the path store for a filter (`indexedOnly.ts`); nor does a heavy
       // literal with no drilldown (`FILTER_STATIC_HEAVY` off), whose thresholded walk would read as "no
       // matches": below the fleet root it is `term-too-common`, and the root's catalog buckets know no owners.
+      // Nor does an anchored term on a generation with no anchors build (`anchor-not-indexed`), indexed-only or not.
       const noDrill = !!sfs && !!skey && sfs.source.heavy === false
       const why = shits ? null : (noDrill || raw?.rollup?.scopedBelow) && raw?.rollup?.bucketsOnly && owner && covers(raw, [date]) ? reject('unsupported-scope') : declined(sfs, skey, raw)
-      if (why && (indexedOnly(env) || (noDrill && why.code !== 'scan-not-indexed'))) throw new FilterRejected(why)
+      if (why && (indexedOnly(env) || why.code === 'anchor-not-indexed' || (noDrill && why.code !== 'scan-not-indexed'))) throw new FilterRejected(why)
       tr?.('static', performance.now() - t0, shits ? `${skey} ${shits.rollup ? `rollup ${shits.rollup.cells.length}` : shits.hits.length}` : skey ? `declined${off ? ` (${off})` : ''}` : undefined)
       if (shits?.rollup) {
         const h = pathIdx ?? fine ?? withTrace(await openFine(env, date, 'path'), tr)
