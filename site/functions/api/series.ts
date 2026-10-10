@@ -14,7 +14,7 @@
  * got (or lost) its tiers, rather than showing a gap.
  */
 import { type Ctx, json, requireScope, requireViewer } from '../_lib/auth.js'
-import { snapshotsPrefix } from '../_lib/shared.js'
+import { snapshotsPrefix, traceJoins } from '../_lib/shared.js'
 import { ivRetry, type Lens, makeStore, pathGens, withPathStore, pathScans, storeReady } from '../_lib/index.js'
 import { hasLedger, ledgerHead } from '../_lib/ledger.js'
 import { classKey, ownerKey, ownerOk, parseClasses, parseOwner, QueryError, queryParam } from '../_lib/scope.js'
@@ -77,6 +77,7 @@ export const onRequestGet = async (ctx0: Ctx & { waitUntil?: (p: Promise<unknown
   if (!env.DB) return json({ error: 'index backend not configured (DB)' }, 503)
   if (!storeReady(env)) return json({ error: 'index reader not configured' }, 503)
   const st = serverTiming()
+  traceJoins(ctx.env, st.trace)
   const gated = await st.time('auth', requireViewer(ctx))
   if (gated instanceof Response) return gated
   const url = new URL(request.url)

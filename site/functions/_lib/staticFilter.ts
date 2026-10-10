@@ -240,8 +240,13 @@ export function drillSource(blobs: Blobs, cached?: { cache: Cache; prefix: strin
   return new DrillSource(drill, cache ? cacheHits(cache, pre(null), 'roots-v1') : undefined)
 }
 
-/** A test's store for an env object (in place of the R2 binding's). */
-export const injectedStores = new WeakMap<object, StaticFilterStore>()
+/** A test's store for an env object (in place of the R2 binding's): held on the env under a symbol, so the copies a
+ *  request makes of it (`withStore`'s request, `withPathStore`, `slices`, …) carry it too. */
+const INJECTED = Symbol('injected static filter store')
+export const injectedStores = {
+  set: (env: object, s: StaticFilterStore): void => { (env as { [INJECTED]?: StaticFilterStore })[INJECTED] = s },
+  get: (env: object): StaticFilterStore | undefined => (env as { [INJECTED]?: StaticFilterStore })[INJECTED],
+}
 
 let held: { r2: R2Bucket; gen: string; store: StaticFilterStore } | undefined
 /** The isolate's static filter store over the bound bucket; null when the static filter is off. A test
