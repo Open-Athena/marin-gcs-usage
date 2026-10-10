@@ -37,7 +37,7 @@ import { type MatchFields, seriesMatches } from './filterMatches'
 import { QueryHelpTip } from './QueryHelp'
 import { apiError, INDEXED_SYNTAX, refusalOf, useFilterCaps, useIndexedScans } from './filterCaps'
 import { RootCrumb } from './RootCrumb'
-import { actBlock } from './matchAct'
+import { actBlock, noMatches } from './matchAct'
 import { type BlindPanel, blindNote, blindShown } from './filterBlind'
 import { LoadFailure, mapSlot } from './LoadFailure'
 import { REJECT_MESSAGES, rejectQuery } from '../functions/_lib/indexedOnly'
@@ -597,13 +597,14 @@ function AppContent() {
   const coverIntent = useCallback(() => { if (coverOk && !coverScoped) void prefetchCover(qc, sfetch, store.key, coverArgs) }, [coverOk, coverScoped, qc, sfetch, store.key, coverArgs])
   const noScan = (): Promise<never> => Promise.reject(new HttpError('This scan isn’t loaded yet; try again in a moment.', 409))
   const coverResolve = useCallback(() => coverArgs.date ? fetchCover(qc, sfetch, store.key, coverArgs) : noScan(), [qc, sfetch, store.key, coverArgs])
-  // A view whose answer doesn't list its matches — refused, a rollup or catalog answer, approximate — offers no
-  // action on them (`actBlock`): the bulk bar says why, muted, and no row offers one.
+  // A view whose answer doesn't list its matches — refused, a rollup or catalog answer, approximate — or has
+  // none (the drilled root's matched total is empty, as the filter note's "no matches" says) offers no action
+  // on them (`actBlock`): the bulk bar says why, muted, and no row offers one.
   const actBlocked = useMemo(() => {
     if (!fq) return null
     const d = subtreeQs[subtreeQs.length - 1]?.data ?? coarseQs[coarseQs.length - 1]?.data ?? subtreeQs[0]?.data
     const r = (d as { rollup?: { bucketsOnly?: true } } | undefined)?.rollup
-    return actBlock({ refused: !!refusalOf(viewErr), rollup: !!r, bucketsOnly: !!r?.bucketsOnly, approximate: !!d?.approximateReason, dirsOnly: !!(d as { dirsOnly?: true } | undefined)?.dirsOnly })
+    return actBlock({ refused: !!refusalOf(viewErr), rollup: !!r, bucketsOnly: !!r?.bucketsOnly, approximate: !!d?.approximateReason, dirsOnly: !!(d as { dirsOnly?: true } | undefined)?.dirsOnly, none: noMatches(dataFor(subtreePaths.length - 1)) })
   }, [fq, subStamp, viewErr]) // eslint-disable-line react-hooks/exhaustive-deps
   const tblFilter = useMemo((): RowSource | undefined => {
     if (!fq) return undefined

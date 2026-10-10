@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { HttpError } from './batches'
 import { CoverError, type Resolved } from './filterCover'
-import { actBlock, actController, type ActDeps, type ActState, afterResolve, CONFIRM_OVER, ROW_CONFIRM_OVER } from './matchAct'
+import { actBlock, actController, noMatches, type ActDeps, type ActState, afterResolve, CONFIRM_OVER, ROW_CONFIRM_OVER } from './matchAct'
 
 // The action's state machine with its sends stubbed: each test records every state it passes through, and
 // every request it would send.
@@ -169,7 +169,7 @@ describe('not acted on: muted in place (never red), unless it failed', () => {
 })
 
 describe('actBlock: which filtered views offer no action on their matches', () => {
-  it('a refusal, a catalog (per-bucket) answer, a rollup, a dir-only scan, an approximate read — each its reason, in that precedence; a listed view: none', () => {
+  it('a refusal, a catalog (per-bucket) answer, a rollup, a dir-only scan, an approximate read, no matches — each its reason, in that precedence; a listed view: none', () => {
     expect([
       actBlock({ refused: true, rollup: true, bucketsOnly: true, approximate: true }),
       actBlock({ rollup: true, bucketsOnly: true }),
@@ -177,8 +177,11 @@ describe('actBlock: which filtered views offer no action on their matches', () =
       actBlock({ rollup: true }),
       actBlock({ dirsOnly: true, approximate: true }),
       actBlock({ approximate: true }),
+      actBlock({ approximate: true, none: true }),
+      actBlock({ dirsOnly: true, none: true }),
+      actBlock({ none: true }),
       actBlock({}),
-      actBlock({ refused: false, rollup: false, bucketsOnly: false, approximate: false }),
+      actBlock({ refused: false, rollup: false, bucketsOnly: false, approximate: false, none: false }),
     ]).toEqual([
       'This view was refused, so it has no matches to act on. Narrow the term, or drill to where it is answered.',
       'Only per-bucket totals are known for this term here, not its matches. Narrow the term to act on them.',
@@ -186,8 +189,25 @@ describe('actBlock: which filtered views offer no action on their matches', () =
       'This term is too common to list here: the view shows per-folder totals, not its matches. Narrow the term, or drill in.',
       'This scan lists folders only, so its file matches aren’t known here. Pick a newer scan to act on the matches.',
       'These matches are approximate (read without the search index), so some may be missing. Narrow the term, or drill in.',
+      'These matches are approximate (read without the search index), so some may be missing. Narrow the term, or drill in.',
+      'This scan lists folders only, so its file matches aren’t known here. Pick a newer scan to act on the matches.',
+      'Nothing matches this term here, so there is nothing to act on. Widen the term, or drill out.',
       null,
       null,
     ])
+  })
+})
+
+describe('noMatches: a filtered root with nothing under it', () => {
+  it('empty (no bytes, objects or children): true; not loaded, or any bytes, objects (zero-byte files) or children: false', () => {
+    expect([
+      noMatches({ b: 0, o: 0 }),
+      noMatches({ b: 0, o: 0, c: [] }),
+      noMatches(null),
+      noMatches(undefined),
+      noMatches({ b: 5, o: 1 }),
+      noMatches({ b: 0, o: 2 }),
+      noMatches({ b: 0, o: 0, c: [{}] }),
+    ]).toEqual([true, true, false, false, false, false, false])
   })
 })
