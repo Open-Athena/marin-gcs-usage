@@ -9,6 +9,7 @@ from threading import Barrier, Lock
 import pytest
 
 from dt_cloud import static_runner as sd
+from dt_cloud.static_merge import manifest_keys, manifest_name, parse_manifest, plan_carries, rebase
 from dt_cloud.static_profile import Profile, load_profile
 from dt_cloud.static_profile_examples import CW
 
@@ -83,16 +84,42 @@ class Fake:
     def calls(self, v: list[tuple]) -> None:
         self._calls = v
 
-    def runs(self, d: str) -> list[dict]:
-        ms = sorted(k for k in self.keys if k.startswith(f"{ROOT}/manifests/"))
-        prev = self.keys[ms[-1]]["runs"] if ms else []
-        return [*prev, {"key": f"deltas/{d}", "scans": [d]}]
+    def newest(self) -> str | None:
+        ms = manifest_keys([k.removeprefix(f"{ROOT}/") for k in self.keys if k.startswith(f"{ROOT}/manifests/")])
+        return f"{ROOT}/{ms[-1]}" if ms else None
 
-    def run_job(self, name: str, spec: dict) -> None:
+    def runs(self, d: str) -> list[dict]:
+        """`publish`'s runs: the newest earlier manifest's, then `d`'s at level 0."""
+        ms = [k for k in manifest_keys([k.removeprefix(f"{ROOT}/") for k in self.keys if k.startswith(f"{ROOT}/manifests/")])
+              if parse_manifest(k.removeprefix("manifests/"))[0] < d]
+        prev = self.keys[f"{ROOT}/{ms[-1]}"]["runs"] if ms else []
+        return [*prev, *_runs(d)]
+
+    def publish(self, d: str) -> None:
+        self._calls.append(("publish", d))
+        self.keys[f"{ROOT}/manifests/{d}.json"] = {"date": d, "runs": self.runs(d)}
+
+    def carry(self) -> None:
+        """What `static_merge carry` does: each due carry's run, then a revision of the newest manifest listing it."""
+        while True:
+            key = self.newest()
+            m = self.keys[key]
+            drilled = {r["key"] for r in m["runs"] if f"{ROOT}/{r['key']}/drill/meta.json" in self.keys}
+            _, merges = plan_carries(m["runs"], drilled)
+            if not merges:
+                return
+            ins, out = merges[0]
+            self.keys[f"{ROOT}/{out['key']}/meta.json"] = None
+            if all(r["key"] in drilled for r in ins):
+                self.keys[f"{ROOT}/{out['key']}/drill/meta.json"] = None
+            scan, rev = parse_manifest(key.rsplit("/", 1)[-1])
+            self.keys[f"{ROOT}/manifests/{manifest_name(scan, rev + 1)}"] = {**m, "runs": rebase(m["runs"], [r["key"] for r in ins], out)}
+
+    def run_job(self, name: str, spec: dict, wait: float | None = None) -> None:
         stage = spec["labels"]["stage"]
         call = (stage, spec["taskGroups"][0]["taskCount"], spec["taskGroups"][0]["taskSpec"]["runnables"][0]["container"]["commands"][1])
         with self.lock:
-            self._calls.append(call)
+            self._calls.append((*call, wait) if stage == "merge" else call)
         if stage in self.barrier[0]:
             self.barrier[1].wait()
         if stage in self.fail:
@@ -106,15 +133,18 @@ class Fake:
                "anchors": [f"{ROOT}/deltas/{d}/anchors/meta.json", *([f"{ROOT}/deltas/{d}/anchors/start/meta.json"] if f"{ROOT}/anchors/start/meta.json" in self.keys else [])]}.get(stage, [])
         for key in out:
             self.keys[key] = None
-        if stage == "publish":
-            self.keys[f"{ROOT}/manifests/{d}.json"] = {"runs": self.runs(d)}
+        if stage == "merge":
+            # The job does its work whatever the wait; a wait of 0 (`runs add`'s default) stops watching it at once.
+            self.carry()
+            if wait == 0:
+                raise sd.StillRunning(f"Batch job {name}: still running after 0s")
 
     def daily(self, cfg: Profile = CFG, **kw) -> sd.Runner:
         return sd.Runner(
             cfg=cfg, exists=lambda key: key in self.keys, count=lambda p, s: sum(1 for x in self.keys if x.startswith(p) and x.endswith(s)),
             read_json=lambda key: self.keys[key], published=lambda layouts, start: [s for s in self.pub if s > start],
             run_job=self.run_job, prepare=lambda d: self._calls.append(("prepare", d)) or self.keys.__setitem__(f"{ROOT}/deltas/{d}/scans.json", None),
-            prune=lambda d: self._calls.append(("prune", d)), list_keys=lambda p: [x for x in self.keys if x.startswith(p)],
+            prune=lambda d: self._calls.append(("prune", d)), publish=self.publish, list_keys=lambda p: [x for x in self.keys if x.startswith(p)],
             now=lambda: NOW, **{"log": lambda m: None, **kw})
 
 
@@ -123,9 +153,14 @@ def _py(module: str, *args: str, mount: bool = True) -> str:
     return f"set -euo pipefail; mkdir -p /stage/tmp /stage/out && cd /stage && python3 -u -m dt_cloud.{module} {' '.join(args)}{m}"
 
 
-def _r2(d: str, runs: list[str]) -> tuple:
+def _runs(*ids: str) -> list[dict]:
+    """Level-0 runs of scans `ids`, as `publish` lists them."""
+    return [{"key": f"deltas/{d}", "first": d, "last": d, "level": 0, "scans": [d]} for d in ids]
+
+
+def _r2(d: str, runs: list[str], manifest: str | None = None) -> tuple:
     """The R2 job: each run's served files but its `drill/meta.json` and `anchors/meta.json`, then those; a check of them all;
-    the manifests last."""
+    the manifest (`d`'s, or a revision) last, alone."""
     cmds = []
     for r in runs:
         cmds.append(_py("static_names", "r2-copy", "-g", f"{GEN}/deltas/{r}", "-x", "drill/meta.json", "-x", "anchors/meta.json",
@@ -133,9 +168,14 @@ def _r2(d: str, runs: list[str]) -> tuple:
         cmds.append(_py("static_names", "r2-copy", "-g", f"{GEN}/deltas/{r}", "-o", "drill/meta.json", mount=False))
         cmds.append(_py("static_names", "r2-copy", "-g", f"{GEN}/deltas/{r}", "-o", "anchors/start/meta.json", mount=False))
         cmds.append(_py("static_names", "r2-copy", "-g", f"{GEN}/deltas/{r}", "-o", "anchors/meta.json", mount=False))
-    cmds.append(_py("static_names", "r2-verify", "-g", GEN, "-m", d, mount=False))
-    cmds.append(_py("static_names", "r2-copy", "-g", GEN, "-o", "manifests/", mount=False))
+    cmds.append(_py("static_names", "r2-verify", "-g", GEN, "-m", manifest or d, mount=False))
+    cmds.append(_py("static_names", "r2-copy", "-g", GEN, "-o", f"manifests/{manifest or d}.json", mount=False))
     return ("r2", 1, " && ".join(f"( {c} )" for c in cmds))
+
+
+def _merge(wait: float | None = 0) -> tuple:
+    """The merge stage's job: one task, `static_merge carry` on the mount, watched for `wait` s."""
+    return ("merge", 1, _py("static_merge", "carry", "-g", GEN), wait)
 
 
 def _chain(d: str, runs: list[str], drill: bool = False, anchors: bool = False) -> list[tuple]:
@@ -147,7 +187,7 @@ def _chain(d: str, runs: list[str], drill: bool = False, anchors: bool = False) 
         ("catalog", 1, _py("static_append", "catalog", g)),
         *([("drill", 2, _py("static_drill", "build", g, "-k", "task", "-M", "90GB", "-p", "16"))] if drill else []),
         *([("anchors", 1, _py("static_anchors", "run", g, "-M", "90GB", "-p", "16"))] if anchors else []),
-        ("publish", 1, _py("static_append", "publish", g)),
+        ("publish", d),
         _r2(d, runs),
         ("prune", d),
     ]
@@ -166,7 +206,12 @@ def test_catch_up_appends_each_pending_scan_in_order():
         f.daily().run("2026-10-09T0601")
     assert f.calls == []
     assert f.daily().run("2026-10-09T0601", catch_up=True) == ["2026-10-09T0001", "2026-10-09T0601"]
-    assert f.calls == [*_chain("2026-10-09T0001", ["2026-10-09T0001"]), *_chain("2026-10-09T0601", ["2026-10-09T0001", "2026-10-09T0601"])]
+    assert f.calls == [*_chain("2026-10-09T0001", ["2026-10-09T0001"]), *_chain("2026-10-09T0601", ["2026-10-09T0001", "2026-10-09T0601"]),
+                       _merge()]
+    # the merge job (not waited on) went on to publish its revision: the two runs as one
+    assert f.keys[f"{ROOT}/manifests/2026-10-09T0601.m001.json"]["runs"] == [
+        {"key": "deltas/2026-10-09T0001_2026-10-09T0601", "first": "2026-10-09T0001", "last": "2026-10-09T0601", "level": 1,
+         "scans": ["2026-10-09T0001", "2026-10-09T0601"]}]
 
 
 def test_a_rerun_resumes_at_the_first_missing_output():
@@ -181,7 +226,7 @@ def test_a_rerun_resumes_at_the_first_missing_output():
 
 def test_an_appended_scan_reruns_only_the_r2_copy_and_prune():
     d = "2026-10-09T0001"
-    f = Fake({f"{ROOT}/manifests/{d}.json": {"runs": [{"key": f"deltas/{d}", "scans": [d]}]}}, [d])
+    f = Fake({f"{ROOT}/manifests/{d}.json": {"date": d, "runs": _runs(d)}}, [d])
     assert f.daily().run(d) == []
     assert f.calls == _chain(d, [d])[5:]
 
@@ -211,8 +256,8 @@ def test_an_appended_scan_without_its_drill_gets_it_then_the_r2_copy():
     """gcs 2026-10-09T1236: appended (its manifest lists `deltas/<id>` itself) before the drill stage existed: a rerun builds
     its drill, then copies it (its `meta.json` last) and prunes."""
     d = "2026-10-09T1236"
-    runs = [{"key": "deltas/2026-10-09", "scans": ["2026-10-09"]}, {"key": f"deltas/{d}", "scans": [d]}]
-    f = Fake({f"{ROOT}/manifests/{d}.json": {"runs": runs}}, [d])
+    runs = _runs("2026-10-09", d)
+    f = Fake({f"{ROOT}/manifests/{d}.json": {"date": d, "runs": runs}}, [d])
     assert f.daily(DRILL).run(d) == []
     assert f.calls == [_chain(d, [], drill=True)[4], _r2(d, ["2026-10-09", d]), ("prune", d)]
 
@@ -340,8 +385,8 @@ def test_a_run_without_the_starts_with_catalog_gets_its_anchors_stage_again():
     """With the base's `anchors/start/` there, a run whose `anchors/meta.json` is there but not its `anchors/start/meta.json`
     reruns the stage (`anchors run` builds what's missing); once both are there it's done."""
     d = "2026-10-09T1236"
-    runs = [{"key": "deltas/2026-10-09", "scans": ["2026-10-09"]}, {"key": f"deltas/{d}", "scans": [d]}]
-    keys = {f"{ROOT}/manifests/{d}.json": {"runs": runs}, f"{ROOT}/deltas/{d}/drill/meta.json": None, f"{ROOT}/deltas/{d}/anchors/meta.json": None,
+    runs = _runs("2026-10-09", d)
+    keys = {f"{ROOT}/manifests/{d}.json": {"date": d, "runs": runs}, f"{ROOT}/deltas/{d}/drill/meta.json": None, f"{ROOT}/deltas/{d}/anchors/meta.json": None,
             f"{ROOT}/anchors/start/meta.json": None}
     f = Fake(keys, [d])
     assert f.daily(ANCHORS).run(d) == []
@@ -354,8 +399,8 @@ def test_a_run_without_the_starts_with_catalog_gets_its_anchors_stage_again():
 
 def test_an_appended_scan_without_its_anchors_gets_them_then_the_r2_copy():
     d = "2026-10-09T1236"
-    runs = [{"key": "deltas/2026-10-09", "scans": ["2026-10-09"]}, {"key": f"deltas/{d}", "scans": [d]}]
-    f = Fake({f"{ROOT}/manifests/{d}.json": {"runs": runs}, f"{ROOT}/deltas/{d}/drill/meta.json": None}, [d])
+    runs = _runs("2026-10-09", d)
+    f = Fake({f"{ROOT}/manifests/{d}.json": {"date": d, "runs": runs}, f"{ROOT}/deltas/{d}/drill/meta.json": None}, [d])
     assert f.daily(ANCHORS).run(d) == []
     assert f.calls == [_chain(d, [], drill=True, anchors=True)[5], _r2(d, ["2026-10-09", d]), ("prune", d)]
 
@@ -386,8 +431,8 @@ def test_drill_and_anchors_are_in_flight_at_once():
 
 def test_an_appended_scan_missing_both_gets_them_at_once():
     d = "2026-10-09T1236"
-    runs = [{"key": "deltas/2026-10-09", "scans": ["2026-10-09"]}, {"key": f"deltas/{d}", "scans": [d]}]
-    f = Fake({f"{ROOT}/manifests/{d}.json": {"runs": runs}}, [d], barrier=("drill", "anchors"))
+    runs = _runs("2026-10-09", d)
+    f = Fake({f"{ROOT}/manifests/{d}.json": {"date": d, "runs": runs}}, [d], barrier=("drill", "anchors"))
     assert f.daily(ANCHORS).run(d) == []
     chain = _chain(d, [], drill=True, anchors=True)
     assert f.calls == [chain[4], chain[5], _r2(d, ["2026-10-09", d]), ("prune", d)]
@@ -443,3 +488,108 @@ def test_the_cli_exits_1_on_a_drill_or_anchors_failure(monkeypatch):
     r = CliRunner().invoke(sd.add_cmd, [d])
     assert (r.exit_code, r.output) == (1, "")
     assert errs == [f"static-names runs add {d}: Batch job sn-anchors-2026-10-09-0001-123456: FAILED"]
+
+
+# ── The merge stage (deferred carries, `static_merge`) ─────────────────────
+
+
+SCANS = ["2026-10-09T0001", "2026-10-09T0601", "2026-10-09T1202", "2026-10-09T1801"]
+
+
+def _levels(f: Fake, key: str) -> list[tuple[str, int]]:
+    return [(r["key"], r["level"]) for r in f.keys[f"{ROOT}/manifests/{key}.json"]["runs"]]
+
+
+def test_publish_adds_level_0_runs_and_the_merge_stage_carries_them_later():
+    """Four scans with the merge stage off: each publish (local, no Batch job) only adds its level-0 run. The stage on its own
+    then submits one merge job (the four runs into one L2) and, once it's done, the R2 job for the revision it published."""
+    f = Fake({}, SCANS)
+    for d in SCANS:
+        assert f.daily(merge=False).run(d) == [d]
+    assert [_levels(f, d) for d in SCANS] == [[(f"deltas/{d}", 0) for d in SCANS[:i + 1]] for i in range(4)]
+    assert [c for c in f.calls if c[0] in ("publish", "merge")] == [("publish", d) for d in SCANS]
+    f.calls = []
+    f.daily(merge_wait=None).carries()
+    a_d = f"{SCANS[0]}_{SCANS[-1]}"
+    assert f.calls == [_merge(None), _r2(SCANS[-1], [a_d], f"{SCANS[-1]}.m001")]
+    assert _levels(f, f"{SCANS[-1]}.m001") == [(f"deltas/{a_d}", 2)]
+
+
+def test_a_waited_merge_reaches_r2_in_the_same_run():
+    f = Fake({}, SCANS[:2])
+    assert f.daily(merge_wait=None).run(SCANS[1], catch_up=True) == SCANS[:2]
+    a_b = f"{SCANS[0]}_{SCANS[1]}"
+    assert f.calls == [*_chain(SCANS[0], SCANS[:1]), *_chain(SCANS[1], SCANS[:2]), _merge(None), _r2(SCANS[1], [a_b], f"{SCANS[1]}.m001")]
+
+
+def test_a_detached_merge_reaches_r2_with_the_next_scan():
+    """`runs add`'s default: the merge job is submitted and not waited on. Its revision lands on GCS; the next scan's manifest
+    builds on it, so that scan's R2 job copies the merged run; no carry is due then, and no revision to copy."""
+    f = Fake({}, SCANS[:3])
+    logs = []
+    f.daily(log=logs.append).run(SCANS[1], catch_up=True)
+    a_b = f"{SCANS[0]}_{SCANS[1]}"
+    assert f.calls[-1] == _merge(0)
+    assert [m for m in logs if "still running" in m] == [
+        f"merge: Batch job sn-merge-{SCANS[1].lower().replace('t', '-')}-123456: still running after 0s; it publishes its revision on GCS when done, "
+        "and R2 gets it with a later run"]
+    assert _levels(f, f"{SCANS[1]}.m001") == [(f"deltas/{a_b}", 1)]
+    f.calls = []
+    assert f.daily().run(SCANS[2]) == [SCANS[2]]
+    assert f.calls == _chain(SCANS[2], [a_b, SCANS[2]])
+    assert _levels(f, SCANS[2]) == [(f"deltas/{a_b}", 1), (f"deltas/{SCANS[2]}", 0)]
+
+
+def test_a_failed_merge_never_fails_the_run():
+    f = Fake({}, SCANS[:2], fail=("merge",))
+    logs = []
+    assert f.daily(log=logs.append, merge_wait=None).run(SCANS[1], catch_up=True) == SCANS[:2]
+    assert f.calls[-1] == _merge(None)
+    assert [m for m in logs if m.startswith("merge: failed")] == [
+        f"merge: failed, not fatal (every listed run is whole; the next run plans again): Batch job sn-merge-{SCANS[1].lower().replace('t', '-')}-123456: FAILED"]
+    assert sorted(k.rsplit("/", 1)[-1] for k in f.keys if "/manifests/" in k) == [f"{d}.json" for d in SCANS[:2]]
+    # a rerun (already appended) plans the carry again
+    f.calls, f.fail = [], ()
+    assert f.daily(merge_wait=None).run(SCANS[1]) == []
+    a_b = f"{SCANS[0]}_{SCANS[1]}"
+    assert f.calls == [_r2(SCANS[1], SCANS[:2]), ("prune", SCANS[1]), _merge(None), _r2(SCANS[1], [a_b], f"{SCANS[1]}.m001")]
+
+
+def test_the_merge_cli_exits_1_on_a_failure_and_runs_add_skips_the_stage_with_M(monkeypatch):
+    from click.testing import CliRunner
+
+    f = Fake({}, SCANS[:2])
+    f.daily(merge=False).run(SCANS[1], catch_up=True)
+    monkeypatch.setattr(sd, "ready", lambda p, gen: CFG)
+    monkeypatch.setattr(sd, "profile", lambda: CFG)
+    seen = []
+    monkeypatch.setattr(sd, "gcs_runner", lambda cfg, **kw: seen.append(kw) or f.daily(cfg, merge=kw.get("merge", True), merge_wait=kw.get("merge_wait")))
+    errs = []
+    monkeypatch.setattr(sd, "err", errs.append)
+    f.fail = ("merge",)
+    r = CliRunner().invoke(sd.merge_cmd, [])
+    assert (r.exit_code, errs) == (1, [f"static-names runs merge: Batch job sn-merge-{SCANS[1].lower().replace('t', '-')}-123456: FAILED"])
+    f.fail, f.calls = (), []
+    r = CliRunner().invoke(sd.merge_cmd, ["-w", "600"])
+    assert r.exit_code == 0
+    assert f.calls == [_merge(600.0), _r2(SCANS[1], [f"{SCANS[0]}_{SCANS[1]}"], f"{SCANS[1]}.m001")]
+    f.calls = []
+    r = CliRunner().invoke(sd.add_cmd, ["-M", SCANS[1]])
+    assert (r.exit_code, f.calls) == (0, [_r2(SCANS[1], SCANS[:2]), ("prune", SCANS[1])])
+    assert seen[-1] == {"dry_run": False, "verify_terms": None, "merge": False, "merge_wait": 0}
+
+
+def test_batch_runner_stops_watching_after_its_wait(monkeypatch):
+    """`wait`: the job keeps running (nothing is cancelled); the runner stops polling once the wait is up."""
+    from dt_cloud import batch, gcp
+
+    submitted, polls = [], []
+    monkeypatch.setattr(batch, "submit_job", lambda spec, name, region: submitted.append(name))
+    states = iter(["RUNNING", "RUNNING", "SUCCEEDED"])
+    monkeypatch.setattr(gcp, "batch_job", lambda name, project, region: polls.append(name) or {"status": {"state": next(states)}})
+    run = sd.BatchRunner(CFG, lambda m: None, delay=0, max_delay=0)
+    with pytest.raises(sd.StillRunning) as e:
+        run("j1", {}, wait=0)
+    assert (str(e.value), submitted, polls) == ("Batch job j1: still running after 0s", ["j1"], [])
+    run("j2", {})
+    assert (submitted, polls) == (["j1", "j2"], ["j2", "j2", "j2"])
