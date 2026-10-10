@@ -98,6 +98,11 @@ export interface Env {
   STORE_SECRET_ACCESS_KEY?: string
   /** Global second cache tier behind the colo cache (`_lib/edgeCache.ts`). */
   CACHE_KV?: KVNamespace
+  /** The response cache's deployment environment (`_lib/edgeCache.ts` `cacheEnvTag`): set, it is the tag
+   *  (`""` = prod's keys); unset, the request host, except `PROD_HOST` itself (prod's keys). */
+  CACHE_NS?: string
+  /** This deployment's production host (also build-time: `vite.config.ts` → `src/hosts.ts`). */
+  PROD_HOST?: string
   /** The scope every viewer of this deployment needs (`gcs` | `cw`). */
   BASE_SCOPE?: string
   /** Public/no-gate deploys (r2.rbw.sh, per-project embeds): grant the base
