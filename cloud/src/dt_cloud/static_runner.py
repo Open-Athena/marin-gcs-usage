@@ -122,7 +122,7 @@ def job_spec(cfg: Profile, name: str, tasks: int, commands: list[str], *, stage:
             "parallelism": tasks,
             "taskSpec": {
                 "runnables": [{"container": {
-                    "imageUri": cfg.image,
+                    "imageUri": cfg.need("image"),
                     "entrypoint": "bash",
                     "commands": ["-c", " && ".join(f"( {c} )" for c in commands) if len(commands) > 1 else commands[0]],
                     "volumes": [*(f"/mnt/disks/gcs/{b}:/gcs/{b}:ro" for b in buckets), "/mnt/disks/stage:/stage:rw"],

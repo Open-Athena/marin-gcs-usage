@@ -13,7 +13,6 @@
   "r2_secrets": {"key_id": "gcs-static-index-r2-key-id", "secret": "gcs-static-index-r2-secret"},
   "project": "oa-internal-450019",
   "region": "us-east1",
-  "image": "us-central1-docker.pkg.dev/oa-internal-450019/cloud-run-source-deploy/gcs-usage-snapshot@sha256:6974a8b71e56469bb8180495c13c170decdc10aefe695cd0f8c5200fb3ac520a",
   "sa": "gcs-usage-job@oa-internal-450019.iam.gserviceaccount.com",
   "append_tasks": 16
  }

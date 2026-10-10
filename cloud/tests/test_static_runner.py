@@ -230,10 +230,15 @@ def test_job_ids_are_batch_safe():
 
 def test_profile_is_an_example_with_env_over_it():
     """cw's example, with a staged source tree and on-demand VMs by env; every other field the example's."""
-    env = {"STATIC_NAMES_PROFILE": "cw", "STATIC_NAMES_SPOT": "0", "STATIC_NAMES_SRC": "/gcs/a/x,/gcs/a/y", "R2_ENDPOINT": "https://e"}
+    env = {"STATIC_NAMES_PROFILE": "cw", "STATIC_NAMES_SPOT": "0", "STATIC_NAMES_SRC": "/gcs/a/x,/gcs/a/y", "R2_ENDPOINT": "https://e",
+           "STATIC_NAMES_IMAGE": "registry/job@sha256:1"}
     p = load_profile(env)
-    assert p == Profile(**{**CW.__dict__, "spot": False, "src": ("/gcs/a/x", "/gcs/a/y"), "r2_endpoint": "https://e"})
+    assert p == Profile(**{**CW.__dict__, "spot": False, "src": ("/gcs/a/x", "/gcs/a/y"), "r2_endpoint": "https://e", "image": "registry/job@sha256:1"})
     assert sd.ready(p) == p
+    # The examples pin no image: the caller passes the one it runs.
+    with pytest.raises(SystemExit) as e:
+        sd.ready(load_profile({k: v for k, v in env.items() if k != "STATIC_NAMES_IMAGE"}))
+    assert str(e.value) == "static names: no image in the deployment profile: set STATIC_NAMES_IMAGE (or STATIC_NAMES_PROFILE)"
     assert p.r2_env_secrets() == {"R2_ENDPOINT": "cw-s3-r2-endpoint", "R2_ACCESS_KEY_ID": "cw-s3-r2-access-key-id",
                                   "R2_SECRET_ACCESS_KEY": "cw-s3-r2-secret-access-key"}
 
