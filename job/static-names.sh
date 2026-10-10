@@ -10,12 +10,8 @@
 #                                                 # other intermediates, 7-day expiry, no soft delete) is mounted at /gcs/$S;
 #                                                 # waits for it and exits nonzero unless every task succeeded
 #   job/static-names.sh wait JOB                  # wait for a submitted job
-#   job/static-names.sh r2 GEN [ARGS…]            # `static-names r2-copy -g GEN` on the ch-store VM (it holds the R2 keys, /data/r2-index.env),
-#                                                 # from the staged source tree; GCS → R2 bucket oa-gcs-usage-index, idempotent
-#   job/static-names.sh r2-batch GEN [ARGS…]      # the same copy as a 1-task Batch job, the R2 key from Secret Manager
+#   job/static-names.sh r2-batch GEN [ARGS…]      # `static-names r2-copy -g GEN` (GCS → R2 bucket oa-gcs-usage-index, idempotent) as a 1-task Batch job, the R2 key from Secret Manager
 #                                                 # (`gcs-static-index-r2-{key-id,secret}`); R2_ENDPOINT or CLOUDFLARE_ACCOUNT_ID
-#   job/static-names.sh ch-answers DATES TERMS    # reference answers from the ch-store VM's ClickHouse (`mega_names.answer`, postings `m`),
-#                                                 # read-only, sequential; DATES comma-separated, TERMS a file of literals; JSON lines on stdout
 #
 # Env: MODULE (static_names), MACHINE (n2-highmem-16), SSD (750; n2 16-vCPU needs ≥2 local SSDs of 375), PARALLELISM (TASKS), SPOT (1: spot VMs,
 # 3 retries), MAX_RUN_SECONDS (14400), IMAGE (the pinned job image digest), SRC (a staged tree; default HEAD's; `image`: the image's
@@ -83,21 +79,10 @@ wait_job() {
   done
 }
 
-case ${1:?stage-src|run|r2|r2-batch|wait|ch-answers} in
+case ${1:?stage-src|run|r2-batch|wait} in
 stage-src) stage_src ;;
-r2)
-  GEN=${2:?GEN}
-  shift 2
-  SRC=${SRC:-$(stage_src)}
-  EXTRA=""
-  if [ "$#" -gt 0 ]; then EXTRA=$(printf '%q ' "$@"); fi
-  job/ch-store.sh sh "sudo rm -rf /data/sn/src && sudo mkdir -p /data/sn/src && sudo gcloud storage cp -r --verbosity=error gs://$B/static-names/src/$SRC/dt_cloud /data/sn/src/ && \
-    sudo docker run --rm --network host -v /data:/data -e PYTHONPATH=/data/sn/src:/data/src --env-file /data/r2-index.env \
-      -e R2_ENDPOINT=https://74981a43be0de7712369306c7b19133d.r2.cloudflarestorage.com -e R2_BUCKET=oa-gcs-usage-index \
-      --entrypoint nice \$(cat /data/image) -n 10 python3 -u -m dt_cloud.static_names r2-copy -g $GEN $EXTRA"
-  ;;
 r2-batch)
-  # The same copy as a 1-task Batch job: the R2 key from Secret Manager (`gcs-static-index-r2-{key-id,secret}`,
+  # The R2 copy as a 1-task Batch job: the R2 key from Secret Manager (`gcs-static-index-r2-{key-id,secret}`,
   # a token for bucket oa-gcs-usage-index only), the endpoint from R2_ENDPOINT (or CLOUDFLARE_ACCOUNT_ID).
   GEN=${2:?GEN}
   shift 2
@@ -108,11 +93,6 @@ print(json.dumps({"variables": {"R2_ENDPOINT": sys.argv[1], "R2_BUCKET": "oa-gcs
                   "secretVariables": {"AWS_ACCESS_KEY_ID": s % (sys.argv[2], "key-id"), "AWS_SECRET_ACCESS_KEY": s % (sys.argv[2], "secret")}}))' "$R2_ENDPOINT" "$PROJECT")
   ENV_JSON=$ENV_JSON MODULE=static_names NO_MOUNT=1 MACHINE=${R2_MACHINE:-n2-highmem-4} SSD=375 PARALLELISM=1 \
     JOB_ID=${JOB_ID:-sn-r2-$(date -u +%Y%m%d-%H%M%S)} exec "$0" run r2-copy 1 -g "$GEN" "$@"
-  ;;
-ch-answers)
-  job/ch-store.sh sh "sudo mkdir -p /data/sn && sudo tee /data/sn/ch-answers.py > /dev/null" < job/static-names/ch-answers.py
-  job/ch-store.sh sh "sudo tee /data/sn/terms.txt > /dev/null" < "${3:?TERMS}"
-  job/ch-store.sh sh "sudo docker run --rm --network host -v /data:/data -e PYTHONPATH=/data/src --entrypoint python3 \$(cat /data/image) -u /data/sn/ch-answers.py ${2:?DATES} /data/sn/terms.txt"
   ;;
 wait) wait_job "${2:?JOB}" ;;
 run)

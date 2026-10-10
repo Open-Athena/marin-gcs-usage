@@ -454,21 +454,6 @@ fi
 set -x
 phase index-sync
 
-# Optional (off unless CH_STORE_URL is set): append this scan to the ClickHouse
-# store the serving box answers from (specs/ch-store.md §3). `ch-ingest` streams
-# the local `path` sort to the store and diffs it against the open versions;
-# it is idempotent (a re-run is a no-op) and refuses a partial scan. A failure
-# warns and never fails the snapshot: the box keeps serving the scans it has,
-# and the Worker answers for this one (the box 409s a scan it lacks).
-# CLICKHOUSE_USER / CLICKHOUSE_PASSWORD (secrets) authenticate, if set.
-if [ -n "${CH_STORE_URL:-}" ]; then
-  if CLICKHOUSE_URL=$CH_STORE_URL dt-cloud ch-ingest -d "$SNAP_ID" "$PI_DIR/path-index.parquet"; then
-    phase ch-ingest
-  else
-    echo "WARN: ch-ingest failed for $SNAP_ID (re-run: dt-cloud ch-ingest -d $SNAP_ID)" >&2
-  fi
-fi
-
 # Serving invariant: the snapshot published + the footer synced — but is the
 # SITE actually serving this scan? `dt-cloud healthcheck` asserts the scan is
 # fresh and that subtree + the data JSONs serve (the 2026-08-31 outage was a

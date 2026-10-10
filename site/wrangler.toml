@@ -142,11 +142,6 @@ migrations_dir = "migrations/gcs"
 [env.preview.vars]
 PATH_STORE = "intervals"   # every request reads the interval store (INDEX_R2) for the scans its generation holds; others read per-scan (`_lib/index.ts`)
 INTERVAL_STORE_GEN = "2026-10-09b"   # the interval store generation the opt-in reads
-QUERY_BOX_HOT_L1 = "1"
-QUERY_BOX_HOT_L2 = "1"
-QUERY_BOX_NAME_SUMMARY = "1"
-QUERY_BOX_DATED_NAMES = "1"
-QUERY_BOX_HOT_L1_URL = "https://gcs-query.oa.dev"
 STATIC_BENCH = "1"   # /api/static-bench: R2 read timings for the static name-search prototype
 FILTER_STATIC = "1"   # the map's filter (`q=`): a single literal's match roots from the static name index on R2 (INDEX_R2; `_lib/staticFilter.ts`), exact on every scan of its generation
 FILTER_STATIC_HEAVY = "1"   # with FILTER_STATIC: heavy literals (catalog members, every 1–2 character one) from the drilldown (`drill/` on INDEX_R2; `_lib/staticDrill.ts`) — match roots, or a heavy directory's per-child rollup; the base generation's scans, and per-scan runs past the drill base once each run's `drill/` lands
@@ -158,9 +153,6 @@ META_TREE_URL = "https://cw-s3.oa.dev/meta"
 STORE = "gcs"
 AUTH_MODE = "app"
 ROOT_LABEL = "marin GCS (dev)"
-QUERY_BOX_URL = "https://liver-separation-premier-impression.trycloudflare.com"
-QUERY_BOX_TIMEOUT_MS = "60000"  # dev benchmark budget; production target remains 20s
-QUERY_BOX_COARSE = "1"
 OG_CARDS = "1"
 BASE_SCOPE = "gcs"
 JOB_SA = "gcs-usage-job@oa-internal-450019.iam.gserviceaccount.com"
