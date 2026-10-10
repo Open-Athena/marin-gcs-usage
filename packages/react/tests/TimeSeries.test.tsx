@@ -282,6 +282,62 @@ describe('<TimeSeries>', () => {
     expect([onBrush.mock.calls, onPickX.mock.calls]).toEqual([[], []])
   })
 
+  it('onBrush: a drag starting inside the window brushes a new range; only its grip (the top 12px) slides it', () => {
+    const onBrush = vi.fn()
+    const { container } = withSize(() =>
+      render(<TimeSeries series={brushSeries} getX={p => p.t} getY={p => p.y} window={[0, 1]} onBrush={onBrush} />),
+    )
+    const svg = container.querySelector('svg') as SVGSVGElement
+    const grip = () => container.querySelector('.dt-ts-grip')
+    expect([grip()?.getAttribute('x'), grip()?.getAttribute('width'), grip()?.getAttribute('height')]).toEqual(['56', '164', '12'])
+    // Hovering inside the window below the grip: crosshair (a press there brushes); on the grip: grab.
+    fireEvent.pointerMove(svg, { clientX: 60, clientY: 100 })
+    expect(svg.style.cursor).toBe('crosshair')
+    fireEvent.pointerMove(svg, { clientX: 60, clientY: 18 })
+    expect(svg.style.cursor).toBe('grab')
+    // Inside the window, below the grip: a fresh brush from t=0 to t=2.
+    fireEvent.pointerDown(svg, { clientX: 56, clientY: 100, button: 0, isPrimary: true, pointerId: 1 })
+    fireEvent.pointerMove(svg, { clientX: 384, clientY: 100 })
+    expect(svg.style.cursor).toBe('col-resize')
+    expect(grip()).toBeNull()
+    fireEvent.pointerUp(window, { clientX: 384, pointerId: 1 })
+    // On the grip: the window [0, 1] slides one point right, keeping its span.
+    fireEvent.pointerDown(svg, { clientX: 56, clientY: 18, button: 0, isPrimary: true, pointerId: 2 })
+    fireEvent.pointerMove(svg, { clientX: 220, clientY: 18 })
+    expect(svg.style.cursor).toBe('grabbing')
+    expect(bandOf(container)).toEqual({
+      x: 220,
+      width: 164,
+      fill: 'var(--dt-ts-brush, rgba(255,255,255,0.14))',
+      edges: [[220, null], [384, null]],
+    })
+    fireEvent.pointerUp(window, { clientX: 220, pointerId: 2 })
+    expect(onBrush.mock.calls).toEqual([[0, 2], [1, 2]])
+  })
+
+  it('the tooltip keeps clear of the trace (far side of the crosshair, the half the points miss) and hides while dragging', () => {
+    const { container } = withSize(() =>
+      render(<TimeSeries series={brushSeries} getX={p => p.t} getY={p => p.y} onBrush={() => {}} />),
+    )
+    const svg = container.querySelector('svg') as SVGSVGElement
+    const tip = () => {
+      const el = container.querySelector<HTMLElement>('.dt-ts-tip')
+      return el && { left: el.style.left, right: el.style.right, top: el.style.top, bottom: el.style.bottom }
+    }
+    // t=0 (left half, low point): right of the crosshair, at the top.
+    fireEvent.pointerMove(svg, { clientX: 56, clientY: 100 })
+    expect(tip()).toEqual({ left: '64px', right: '', top: '16px', bottom: '' })
+    // t=2 (right half, the series' top): left of the crosshair, at the bottom.
+    fireEvent.pointerMove(svg, { clientX: 384, clientY: 100 })
+    expect(tip()).toEqual({ left: '', right: '24px', top: '', bottom: '28px' })
+    fireEvent.pointerDown(svg, { clientX: 384, clientY: 100, button: 0, isPrimary: true, pointerId: 1 })
+    fireEvent.pointerMove(svg, { clientX: 220, clientY: 100 })
+    expect(tip()).toBeNull()
+    fireEvent.pointerUp(window, { clientX: 220, pointerId: 1 })
+    // Back after the release, at t=1 (the plot's middle: still right of the crosshair).
+    expect(tip()).toEqual({ left: '228px', right: '', top: '', bottom: '28px' })
+  })
+
   it('window renders a dashed band between the two x’s', () => {
     const { container } = withSize(() =>
       render(<TimeSeries series={brushSeries} getX={p => p.t} getY={p => p.y} window={[0, 1]} />),
