@@ -1238,7 +1238,7 @@ def _join_parts(db, dst: str) -> bool:
 
 def _tiers(bucket: str, gen: str, runs: str | None) -> list[Tier]:
     """The base drill and run drills: `runs` comma-separated run keys or `gs://` drill URLs (oldest first), `-` for none,
-    default the newest manifest's runs that have a drill."""
+    default the newest manifest's runs up to the first without a drill."""
     from .static_append import _latest_manifest
 
     prefix = f"{PREFIX}/{gen}"
@@ -1248,7 +1248,12 @@ def _tiers(bucket: str, gen: str, runs: str | None) -> list[Tier]:
         keys = runs.split(",")
     else:
         m = _latest_manifest(bucket, gen)
-        keys = [r["key"] for r in (m["runs"] if m else []) if _gcs().bucket(bucket).blob(f"{prefix}/{r['key']}/drill/meta.json").exists()]
+        # The tiers stop at the first run without a drill, as the Worker's (a later run's drill alone would miss its scans).
+        keys = []
+        for r in (m["runs"] if m else []):
+            if not _gcs().bucket(bucket).blob(f"{prefix}/{r['key']}/drill/meta.json").exists():
+                break
+            keys.append(r["key"])
     tiers: list[Tier] = [GcsTier(bucket, f"{prefix}/drill", "base")]
     for k in keys:
         if k.startswith("gs://"):
@@ -1264,7 +1269,7 @@ def _tiers(bucket: str, gen: str, runs: str | None) -> list[Tier]:
 @option("-c", "--cases", "cases_file", required=True, help="JSON lines `{q, P}`")
 @option("-d", "--date", "dates", multiple=True, required=True, help="Scan date; repeat")
 @option("-g", "--gen", required=True, help="Base generation")
-@option("-r", "--runs", help="Run keys or `gs://` drill URLs (comma-separated, oldest first; default: the newest manifest's runs with a drill); `-` for the base alone")
+@option("-r", "--runs", help="Run keys or `gs://` drill URLs (comma-separated, oldest first; default: the newest manifest's runs up to the first without a drill); `-` for the base alone")
 def query_cmd(bucket, cases_file, dates, gen, runs) -> None:
     """Answer drill cases over the base and its runs (the Worker's logic, GCS ranged reads): one JSON line per case."""
     tiers = _tiers(bucket, gen, runs)

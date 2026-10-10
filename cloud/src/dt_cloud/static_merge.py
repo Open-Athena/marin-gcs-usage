@@ -32,7 +32,7 @@ from pathlib import Path
 from time import monotonic
 from typing import Protocol
 
-from click import IntRange, group, option
+from click import Choice, IntRange, group, option
 
 from .static_names import PREFIX, connect, err
 from .static_profile import data_bucket, scratch_bucket
@@ -133,8 +133,9 @@ class RunStore(Protocol):
     def read_json(self, key: str) -> dict: ...
     def create(self, key: str, text: str) -> None:
         """Write a new key; `FileExistsError` if it exists (never overwrites)."""
-    def upload(self, local: Path, prefix: str) -> list[dict]:
-        """Every file under `local` → `prefix/<rel>`, the top `meta.json` last; `{key, size}` per file."""
+    def upload(self, local: Path, prefix: str, last: tuple[str, ...] = ("meta.json",)) -> list[dict]:
+        """Every file under `local` → `prefix/<rel>`, the `last` (relative paths, in that order) after all others;
+        `{key, size}` per file."""
     def lease(self, owner: str, now: datetime, ttl_s: int) -> dict | None:
         """Take the merge lease for `owner`: None when taken, else the holder's record."""
     def release(self, owner: str) -> None: ...
@@ -164,8 +165,9 @@ class LocalRunStore:
         with open(p, "x") as fh:
             fh.write(text)
 
-    def upload(self, local: Path, prefix: str) -> list[dict]:
-        files = sorted((p for p in local.rglob("*") if p.is_file()), key=lambda p: (p == local / "meta.json", p))
+    def upload(self, local: Path, prefix: str, last: tuple[str, ...] = ("meta.json",)) -> list[dict]:
+        rank = {r: i for i, r in enumerate(last)}
+        files = sorted((p for p in local.rglob("*") if p.is_file()), key=lambda p: (rank.get(p.relative_to(local).as_posix(), -1), p))
         out = []
         for p in files:
             key = f"{prefix}/{p.relative_to(local).as_posix()}"
@@ -227,10 +229,10 @@ class GcsRunStore:
         except PreconditionFailed as e:
             raise FileExistsError(key) from e
 
-    def upload(self, local: Path, prefix: str) -> list[dict]:
+    def upload(self, local: Path, prefix: str, last: tuple[str, ...] = ("meta.json",)) -> list[dict]:
         from .static_names import upload_tree
 
-        return upload_tree(local, self.bucket, f"{self.prefix}/{prefix}", last=("meta.json",))
+        return upload_tree(local, self.bucket, f"{self.prefix}/{prefix}", last=last)
 
     def lease(self, owner: str, now: datetime, ttl_s: int) -> dict | None:
         from google.api_core.exceptions import NotFound, PreconditionFailed
@@ -480,6 +482,58 @@ def merge_pending(store: RunStore, mount: Path, *, tmp: Path, rule=None, jobs: i
     return {"merged": done, "manifest": newest(store)[0]}
 
 
+# ── Backfilling a merged run's tier ────────────────────────────────────────
+
+
+#: A tier a merged run can be backfilled with: its liveness markers (uploaded last, in this order; the first is the one
+#: that says it's done), and the subdirs it writes.
+BACKFILL_TIERS = {
+    "drill": {"last": ("drill/meta.json",), "dirs": ("drill",)},
+    "anchors": {"last": ("names/sidecar.parquet", "anchors/start/meta.json", "anchors/meta.json"), "dirs": ("names", "anchors")},
+}
+
+
+def backfill_tier(store: RunStore, mount: Path, key: str, tier: str, *, tmp: Path, mem: str | None = None, threads: int | None = None,
+                  merge: Callable[..., tuple[str, float, dict]] = merge_tier, log: Callable[[str], None] = err) -> dict | None:
+    """A merged run a manifest lists (`key`; the newest's, or an older one's that an inner scan's build reads), published without `tier` (`drill`, or `anchors`: `names/` +
+    `anchors/`), gets it from its scans' level-0 runs (`deltas/<scan>`, each of which must have it: build those first,
+    oldest first), as a carry would have merged it (`merge_tier`; the tiers' merges are associative). Uploaded into the
+    run's dir with the tier's liveness markers last, so readers see it whole or not at all. None when it's there
+    already. Refuses a level-0 run (built, not merged), a run no manifest lists, and a tier dir holding keys this
+    doesn't write."""
+    spec = BACKFILL_TIERS[tier]
+    if store.exists(f"{key}/{spec['last'][-1]}"):
+        return None
+    # The newest manifest listing it: the newest's own runs, or (a run a later carry folded) an older one's, which an
+    # inner scan's build reads as its earlier tiers.
+    run = None
+    for m in reversed(manifest_keys(store.keys("manifests/"))):
+        if run := next((r for r in store.read_json(m)["runs"] if r["key"] == key), None):
+            break
+    if run is None:
+        raise ValueError(f"{key}: no manifest lists it")
+    if len(run["scans"]) < 2:
+        raise ValueError(f"{key}: a level-0 run (its {tier} is built, not merged)")
+    inputs = [f"deltas/{s}" for s in run["scans"]]
+    if lack := [k for k in inputs if not store.exists(f"{k}/{spec['last'][-1]}")]:
+        raise ValueError(f"{key}: its scans' runs lack {spec['last'][-1]}: {lack} (build them first, oldest first)")
+    outp = tmp / "backfill" / key
+    shutil.rmtree(outp, ignore_errors=True)
+    outp.mkdir(parents=True)
+    t0 = monotonic()
+    _, s, doc = merge(tier, [mount / k for k in inputs], outp, {k: run[k] for k in ("key", "first", "last", "level", "scans")}, None,
+                      tmp / f"backfill-{tier}", mem, threads)
+    ours = {f"{key}/{f.relative_to(outp).as_posix()}" for f in outp.rglob("*") if f.is_file()}
+    if stray := [f for f in ours if f.removeprefix(f"{key}/").split("/")[0] not in spec["dirs"]]:
+        raise RuntimeError(f"{key}: the {tier} merge wrote outside {spec['dirs']}: {sorted(stray)[:3]}")
+    if stale := sorted(k for d in spec["dirs"] for k in store.keys(f"{key}/{d}/") if k not in ours):
+        raise RuntimeError(f"{key}/ holds {len(stale)} {tier} objects this backfill doesn't write (e.g. {stale[0]}): not writing into it")
+    up = store.upload(outp, key, last=spec["last"])
+    shutil.rmtree(outp)
+    log(f"backfill {key} {tier}: {len(inputs)} runs merged in {s:.0f}s, {len(up)} files uploaded, {monotonic() - t0:.0f}s in all")
+    return {"key": key, "tier": tier, "inputs": inputs, "files": len(up), "doc": doc}
+
+
 # ── CLI (the Batch task) ───────────────────────────────────────────────────
 
 
@@ -506,6 +560,22 @@ def carry_cmd(bucket, gen, jobs, mount, max_merges, dry_run, scratch, tmp) -> No
     doc = merge_pending(store, Path(mount) / PREFIX / gen, tmp=Path(tmp), rule=gen_rule_at(bucket, gen), jobs=jobs, dry_run=dry_run,
                         max_merges=max_merges)
     print(json.dumps(doc, indent=1))
+
+
+@cli.command("tier")
+@option("-b", "--bucket", default=data_bucket, help="Data bucket")
+@option("-g", "--gen", required=True, help="Base generation")
+@option("-m", "--mount", required=True, help="Local mount of the data bucket (the merge reads the runs)")
+@option("-M", "--mem", default="100GB", help="DuckDB memory limit")
+@option("-p", "--threads", default=16, type=int, help="DuckDB threads")
+@option("-r", "--run", "key", required=True, help="The merged run's key (`deltas/<first>_<last>`), listed by a manifest")
+@option("-t", "--tier", required=True, type=Choice(sorted(BACKFILL_TIERS)), help="The tier to backfill")
+@option("-T", "--tmp", default="/stage/tmp", help="Scratch dir")
+def tier_cmd(bucket, gen, mount, mem, threads, key, tier, tmp) -> None:
+    """Backfill a listed merged run's missing `drill/` (or `names/` + `anchors/`) from its scans' level-0 runs, which must
+    each have it (`backfill_tier`); a no-op when it's there."""
+    doc = backfill_tier(GcsRunStore(bucket, None, gen), Path(mount) / PREFIX / gen, key, tier, tmp=Path(tmp), mem=mem, threads=threads)
+    print(json.dumps(doc or {"key": key, "tier": tier, "done": True}, indent=1))
 
 
 if __name__ == "__main__":

@@ -139,7 +139,7 @@ const fmtPct = (y: number) => {
   return a === 0 ? '0%' : signed(y, `${a >= 10 ? a.toFixed(0) : a.toFixed(1)}%`)
 }
 
-export function SizeOverTime({ scans, times, fmt = fmtScan, prefix, user, pool, ledgerRev, onPickDate, onBrush, window: win, scopeLabel = 'all buckets', refused, paths, pathsTotal, queryOnly, filterLabel, filterQs }: {
+export function SizeOverTime({ scans, times, fmt = fmtScan, prefix, user, pool, ledgerRev, scopeReady = true, onPickDate, onBrush, window: win, scopeLabel = 'all buckets', refused, paths, pathsTotal, queryOnly, filterLabel, filterQs }: {
   /** The store's root scope word for the unscoped subtitle (`all buckets`, `the whole bucket`). */
   scopeLabel?: string
   /** The page view's filter refusal (`term-too-common`, …): no match roots to sum, so the series is never asked
@@ -168,6 +168,9 @@ export function SizeOverTime({ scans, times, fmt = fmtScan, prefix, user, pool, 
   /** The ownership ledger's revision: a user or pool series folds the live
    * assignments server-side, so an assignment refetches it. */
   ledgerRev?: string
+  /** The owner axis is final (`ownerScopeReady`): until then `user` / `pool` may not be what the page
+   *  asked for, and the series waits rather than fetch a scope it will drop. */
+  scopeReady?: boolean
   /** The owner axis's pool — `unowned` = bytes no person owns, `owned`
    * = bytes some person owns — under `prefix`, per scan. `user` wins. */
   pool?: 'unowned' | 'owned' | null
@@ -222,7 +225,7 @@ export function SizeOverTime({ scans, times, fmt = fmtScan, prefix, user, pool, 
     queryKey: ['series', store.key, prefix, scope, scans.length, user || pool ? ledgerRev : null],
     // Under a filter, wait for its match roots: the whole-store series is not
     // what the page asked for.
-    enabled: scans.length > 1 && !(filterLabel && !paths?.length && !((queryOnly || overMax) && filterQs)) && !(overMax && !filterQs),
+    enabled: scopeReady && scans.length > 1 && !(filterLabel && !paths?.length && !((queryOnly || overMax) && filterQs)) && !(overMax && !filterQs),
     staleTime: 5 * 60_000,
     queryFn: async () => {
       const pf = perf.start('series', `${prefix || '/'}${scope}|n${scans.length}`)

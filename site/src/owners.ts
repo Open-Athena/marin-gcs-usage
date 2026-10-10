@@ -77,7 +77,11 @@ export function useOwnerIndex(data: { owners: OwnerRow[] } | undefined): OwnerIn
 
 /** D1 `user_emails` as an email → canonical-user map (signed-in readers only). */
 export function useUserEmails(enabled: boolean): Record<string, string> | undefined {
-  const { data } = useQuery<Record<string, string>, Error>({
+  return useUserEmailsQ(enabled).data
+}
+
+function useUserEmailsQ(enabled: boolean) {
+  return useQuery<Record<string, string>, Error>({
     queryKey: ['user-emails'],
     enabled,
     staleTime: 10 * 60_000,
@@ -89,11 +93,17 @@ export function useUserEmails(enabled: boolean): Record<string, string> | undefi
       return Object.fromEntries(rows.map(x => [x.email, x.user]))
     },
   })
-  return data
 }
 
 /** The viewer's canonical attribution user id, from D1 `user_emails`. */
 export function useMyUser(email: string | undefined, enabled: boolean): string | null {
-  const data = useUserEmails(enabled && !!email)
-  return (email && data?.[email.toLowerCase()]) || null
+  return useMyUserState(email, enabled).user
+}
+
+/** `useMyUser`, and whether it's final (`ready`: the map loaded or failed, or there's none to load) —
+ *  until then a null `user` means "not known yet", not "unmapped". */
+export function useMyUserState(email: string | undefined, enabled: boolean): { user: string | null; ready: boolean } {
+  const on = enabled && !!email
+  const q = useUserEmailsQ(on)
+  return { user: (email && q.data?.[email.toLowerCase()]) || null, ready: !on || !q.isPending }
 }
