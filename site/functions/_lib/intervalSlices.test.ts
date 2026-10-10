@@ -220,10 +220,9 @@ for (const GEN of ['g2', 'g5'] as const) {
         const [got, gets] = await perScanGets(() => buildView({ ...envs.iv, INTERVAL_STORE_GEN: GEN } as Env, o))
         expect({ path, tree: got.tree, index: got.index, gets }).toEqual({ path, tree: storeKinds(want.tree), index: `iv:${GEN}`, gets: [] })
       }
-      // carol's own rows come from the slice sort, whose footer says she has none: its groups go unread.
+      // carol's own rows come from the slice sort, whose footer says she has none: its groups go unread. On g5 the
+      // run (S3's, begun after S2) is not read either: a view reads the runs begun by its scan (`asOfScans`).
       expect([...new Set(r2Reads.slice(n0).filter(k => k.startsWith(`interval-store/${GEN}/`) && k.endsWith('.parquet') && !k.endsWith('.groups.parquet')))].sort()).toEqual([
-        // …and on g5 the run's (its close records end versions the base holds open).
-        ...(GEN === 'g5' ? [`interval-store/${GEN}/deltas/${S3}/served/bysize.parquet`] : []),
         `interval-store/${GEN}/served/bysize.parquet`,
       ])
     })

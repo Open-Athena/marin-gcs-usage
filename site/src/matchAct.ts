@@ -35,23 +35,36 @@ export const CONFIRM_OVER = 50
 
 /** What a filtered view's answer is, for whether its matches can be acted on: refused (`term-too-common`, …), a
  *  rollup (a heavy literal's per-child totals) or a catalog answer (`bucketsOnly`: per-bucket totals), or an
- *  approximate read. */
-export interface ActView { refused?: boolean; rollup?: boolean; bucketsOnly?: boolean | 'scoped'; approximate?: boolean; dirsOnly?: boolean }
+ *  approximate read — or one with no matches at all (`none`). */
+export interface ActView { refused?: boolean; rollup?: boolean; bucketsOnly?: boolean | 'scoped'; approximate?: boolean; dirsOnly?: boolean; none?: boolean }
 
 /** Why the matches can't be acted on in this view — the bulk bar shows it muted (its tooltip) in place of the
  *  actions, and no row offers any — or null: they can. None of these views lists its matches: a refusal has none,
- *  a rollup or catalog answer has totals, an approximate read may miss some. */
+ *  a rollup or catalog answer has totals, an approximate read may miss some; and a view with no matches has
+ *  nothing to act on (last: an approximate or dir-only read's reason says more about why none showed). */
 export function actBlock(v: ActView): string | null {
   if (v.refused) return 'This view was refused, so it has no matches to act on. Narrow the term, or drill to where it is answered.'
   if (v.bucketsOnly) return 'Only per-bucket totals are known for this term here, not its matches. Narrow the term to act on them.'
   if (v.rollup) return 'This term is too common to list here: the view shows per-folder totals, not its matches. Narrow the term, or drill in.'
   if (v.dirsOnly) return 'This scan lists folders only, so its file matches aren’t known here. Pick a newer scan to act on the matches.'
   if (v.approximate) return 'These matches are approximate (read without the search index), so some may be missing. Narrow the term, or drill in.'
+  if (v.none) return NO_MATCHES_REASON
   return null
 }
 
+/** Whether a filtered view's (drilled) root holds no matches at all — no bytes, no objects, no children; not
+ *  yet loaded (null) is not "none". */
+export const noMatches = (root: { b: number; o: number; c?: unknown[] } | null | undefined): boolean =>
+  !!root && root.b <= 0 && !root.o && !root.c?.length
+
+/** `actBlock`'s reason for a view with no matches. */
+export const NO_MATCHES_REASON = 'Nothing matches this term here, so there is nothing to act on. Widen the term, or drill out.'
+
 /** The muted label the bulk bar shows in place of its actions (`actBlock`'s reason in its tooltip). */
 export const ACT_BLOCKED_LABEL = 'no actions on these matches'
+/** The label when there are no matches at all. */
+export const NO_MATCHES_LABEL = 'no matches to act on'
+export const actBlockedLabel = (reason: string) => (reason === NO_MATCHES_REASON ? NO_MATCHES_LABEL : ACT_BLOCKED_LABEL)
 
 /** A table row's action asks before sending more than one item: its label names one path at most, so a click
  *  must never send more than that without listing what it would send. */

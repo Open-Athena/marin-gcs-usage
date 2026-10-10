@@ -134,8 +134,12 @@ interface D1Handle {
    *  handle on the run's own sort. A read plans every tier, and combines the rows of one version across tiers (the
    *  smallest `vt`: a run's close record ends a version an older tier still holds open) before testing liveness
    *  (`combineLive`). Every usable run, also at a scan before its first: liveness there doesn't need it, but a row's
-   *  `vt` does (a diff's lookups trust it to say whether the version is live at the other scan, `Ask`). */
+   *  `vt` does (a diff's lookups trust it to say whether the version is live at the other scan, `Ask`) — except for a
+   *  request that names every scan it compares (`asOfScans`), which leaves out the runs begun after them. */
   runs?: IndexHandle[]
+  /** An interval store's data file (its R2 key, revision-suffixed): its decoded row groups are held in the colo
+   *  under it (`coloGroups`). */
+  dataKey?: string
   /** A run's handle (its key, `deltas/<first>[_<last>]`): a group can matter at `asOf` when a version in it opened by
    *  then (`vfMin ≤ asOf`), live or not — a close record is not live, yet it ends one. */
   run?: string
@@ -211,6 +215,9 @@ interface FooterIndex {
   key: string
   metadata: FileMetaData
   groups: FooterGroup[]
+  /** A compact footer (`openIvFooter`): `metadata` holds only `key_value_metadata` and the groups no `meta`;
+   *  this parses the whole footer, for decoding a footer group the colo doesn't hold decoded. */
+  full?: () => Promise<FooterIndex>
 }
 export type IndexHandle = D1Handle | BlobHandle | PqHandle
 
@@ -445,6 +452,14 @@ export const perScan = (env: Env): Env => (intervalsOn(env) ? { ...env, PATH_STO
 export const slices = (env: Env): Env => (intervalsOn(env) ? { ...env, [IV_SLICED]: true } as Env : env)
 /** `env` reading the interval store's folded sorts (one row per path, exact totals) again. */
 export const folded = (env: Env): Env => (isSliced(env) ? { ...env, [IV_SLICED]: false } as Env : env)
+/** `env` for a request that reads the interval store as of `dates` alone (a view's scan, a diff's two): its
+ *  handles leave out the runs that begin after the newest of them (`openInterval`). A run's rows there are
+ *  versions opened later (live at none of the dates) and close records ending versions later (each still
+ *  live at every date it was), so the rows a read keeps are the same; only their `vt` differs — a version a
+ *  later run closes reads as open — and a read comparing rows across scans (a diff's bounded lookups)
+ *  compares only scans it named, all at or before that horizon. */
+export const asOfScans = (env: Env, dates: string[]): Env => (intervalsOn(env) ? { ...env, [IV_ASOF]: dates } as Env : env)
+export const IV_ASOF = Symbol('interval-store request scans')
 /** The marker `slices` sets on an env (a symbol: not a binding or var; object spreads carry it). */
 export const IV_SLICED = Symbol('interval-store slices')
 const isSliced = (env: Env): boolean => !!(env as Env & { [IV_SLICED]?: boolean })[IV_SLICED]
@@ -466,7 +481,7 @@ const IV_SIBLING = new Map([['path', 'bysize'], ['bysize', 'path'], ['slices', '
 const ivFooters = new Map<string, Promise<FooterIndex>>()
 function ivFooter(env: Env, file: string): Promise<FooterIndex> {
   const key = ivKey(env, `${IV_PREFIX}/${env.INTERVAL_STORE_GEN!}/served/${file}.groups.parquet`)
-  return shared(ivFooters, `${storeKey(env)}|${key}`, () => openFooter(env, key, r2Bytes(env.INDEX_R2!)), 30_000)
+  return shared(ivFooters, `${storeKey(env)}|${key}`, () => openIvFooter(env, key, r2Bytes(env.INDEX_R2!)), 30_000)
 }
 
 /** `INDEX_R2` as a `ByteStore`. */
@@ -565,14 +580,29 @@ async function ivManifest(env: Env): Promise<IvManifest | null> {
   return m
 }
 
-async function loadIvState(env: Env): Promise<IvState> {
+/** The generation's `scans.json` and newest manifest, as one document. */
+interface IvStateDoc { scans: { id: string; ts: number }[]; manifest: IvManifest | null }
+
+/** `IvStateDoc` through the colo cache for `IV_STATE_TTL`: a new isolate's first read starts from it instead of
+ *  three R2 operations in series (`scans.json`, the manifests' `list`, the newest's `get`). A new scan's run
+ *  shows up within the colo's TTL plus the isolate's. */
+async function ivStateDoc(env: Env): Promise<IvStateDoc> {
   const gen = env.INTERVAL_STORE_GEN!
-  const o = await env.INDEX_R2!.get(`${IV_PREFIX}/${gen}/scans.json`)
+  const ck = coloKey(env, ivKey(env, `${IV_PREFIX}/${gen}/scans.json`), 'state=1')
+  const hit = await colo().match(ck)
+  if (hit) return hit.json<IvStateDoc>()
+  const [o, manifest] = await Promise.all([env.INDEX_R2!.get(`${IV_PREFIX}/${gen}/scans.json`), ivManifest(env)])
   if (!o) throw new Error(`interval store ${gen}: no scans.json`)
-  const doc = await o.json<{ scans: { id: string; ts: number }[] }>()
+  const doc: IvStateDoc = { scans: (await o.json<{ scans: { id: string; ts: number }[] }>()).scans, manifest }
+  await colo().put(ck, new Response(JSON.stringify(doc), { headers: { 'content-type': 'application/json', 'cache-control': `max-age=${IV_STATE_TTL / 1000}` } }))
+  return doc
+}
+
+async function loadIvState(env: Env): Promise<IvState> {
+  const doc = await ivStateDoc(env)
   const scans = new Map(doc.scans.map(x => [x.id, x.ts]))
   const base = new Set(scans.keys())
-  const m = await ivManifest(env)
+  const m = doc.manifest
   const runs: IvState['runs'] = []
   let cut = false
   for (const r of m?.runs ?? []) {
@@ -614,7 +644,7 @@ function ivRunFooter(env: Env, run: string, file: string): Promise<FooterIndex> 
   const key = ivKey(env, `${dir}/${file}.groups.parquet`)
   return shared(ivFooters, `${storeKey(env)}|${key}`, async () => {
     const r2 = env.INDEX_R2! as R2Bucket & { head?: R2Bucket['head'] }
-    const [footer, data] = await Promise.all([openFooter(env, key, r2Bytes(env.INDEX_R2!)), typeof r2.head === 'function' ? r2.head(`${dir}/${file}.parquet`) : Promise.resolve(true)])
+    const [footer, data] = await Promise.all([openIvFooter(env, key, r2Bytes(env.INDEX_R2!)), typeof r2.head === 'function' ? r2.head(`${dir}/${file}.parquet`) : Promise.resolve(true)])
     if (!data) throw Object.assign(new Error(`${dir}/${file}.parquet: not found`), { name: 'NotFoundError' })
     return footer
   }, 30_000)
@@ -641,7 +671,10 @@ export async function openInterval(env: Env, date: string, variant: string, retr
   if (asOf == null) return null
   // The standalone `reads` sort has no runs: it answers the base's scans only.
   if (variant === 'reads' && !st.base.has(date)) return null
-  const runs = variant === 'reads' ? [] : st.runs
+  // A request naming its scans (`asOfScans`) reads the runs that begin by the newest of them (and `date`).
+  const named = (env as Env & { [IV_ASOF]?: string[] })[IV_ASOF]
+  const horizon = named ? Math.max(asOf, ...named.map(d => st.scans.get(d) ?? Infinity)) : Infinity
+  const runs = variant === 'reads' ? [] : st.runs.filter(r => st.scans.get(r.first)! <= horizon)
   const gen = env.INTERVAL_STORE_GEN!
   if (sliced) {
     const at = ivNoSlices.get(gen)
@@ -659,7 +692,7 @@ export async function openInterval(env: Env, date: string, variant: string, retr
       const schema = JSON.parse(kv.get('schema')!) as SchemaElement[]
       const version = Number(kv.get('version'))
       const file: FileSlice = { get byteLength() { return 0 }, slice: async (s0, e) => toBuffer((await src.get(key, { offset: s0, length: (e ?? s0) - s0 })).bytes) }
-      const h: PqHandle = { mode: 'pq', file, env, date, variant, gen: `iv:${gen}${ivRev(env)}${sliced ? ':s' : ''}`, dir, schema, version, columns: variant === 'reads' ? null : rowColumns(version, schema), floor: null, footer, asOf, src }
+      const h: PqHandle = { mode: 'pq', file, env, date, variant, gen: `iv:${gen}${ivRev(env)}${sliced ? ':s' : ''}`, dir, schema, version, columns: variant === 'reads' ? null : rowColumns(version, schema), floor: null, footer, asOf, src, dataKey: key }
       if (!runs.length) return h
       return { ...h, runs: await Promise.all(runs.map(r => openIvRun(env, h, r.key, file0))) }
     }, 300_000)
@@ -687,7 +720,7 @@ async function openIvRun(env: Env, base: PqHandle, run: string, file: string): P
   const version = Number(kv.get('version'))
   const src = base.src!
   const fileSlice: FileSlice = { get byteLength() { return 0 }, slice: async (s0, e) => toBuffer((await src.get(key, { offset: s0, length: (e ?? s0) - s0 })).bytes) }
-  return { ...base, file: fileSlice, gen: `${base.gen}/${run}`, dir, schema, version, columns: rowColumns(version, schema), footer, run, runs: undefined }
+  return { ...base, file: fileSlice, gen: `${base.gen}/${run}`, dir, schema, version, columns: rowColumns(version, schema), footer, run, runs: undefined, dataKey: key }
 }
 
 /** Each path's `last_read` at a scan, from the interval store's `reads` sort (absent = never read): per
@@ -946,24 +979,100 @@ function chunksSpan(fg: FooterGroup, cols: Set<string>): [number, number] {
   return [lo, hi]
 }
 
-/** Decode some columns of one footer group (one range read of their chunks, colo-cached). An interval
- *  store's footer group is read whole, once (`fb:<n>` bytes, held beside its decodes): a read that
- *  plans on a group's bounds then wants its `rg_json`, and reading the two apart would cost a round
- *  trip per planning step. A per-scan footer reads the columns asked (its bounds are a fifth of the
- *  bytes). */
+/** Decode some columns of one per-scan footer group (one range read of their chunks, colo-cached): the
+ *  columns asked (its bounds are a fifth of the bytes). An interval store's are read whole, `ivFooterDoc`. */
 async function readFooterCols(h: PqHandle, fg: FooterGroup, columns: string[]): Promise<Record<string, unknown>[]> {
-  const whole = h.asOf != null
-  const [start, end] = whole ? [fg.byteStart, fg.byteEnd] : chunksSpan(fg, new Set(columns))
-  const buf = whole
-    ? (await footerOnce<ArrayBuffer>(h, `fb:${fg.n}`, async () => {
-        const b = await cachedRange(h.env, h.footer.key, start, end, h.src)
-        return [[b], b.byteLength]
-      }))[0]
-    : await cachedRange(h.env, h.footer.key, start, end, h.src)
+  const [start, end] = chunksSpan(fg, new Set(columns))
+  const buf = await cachedRange(h.env, h.footer.key, start, end, h.src)
   const file: FileSlice = { byteLength: end, slice: async (s, e) => buf.slice(s - start, (e ?? end) - start) }
   const metadata = { ...h.footer.metadata, row_groups: [fg.meta], num_rows: fg.meta.num_rows }
   return (await parquetReadObjects({ file, metadata, columns, compressors })) as Record<string, unknown>[]
 }
+
+// --- the interval store's footers, pre-decoded through the colo cache ---------------------------------
+//
+// A Worker's CPU decodes parquet several times slower than a laptop's (~100 ms per 8K-row group, 2026-09-15), and
+// a new isolate opens every footer it reads: an interval store's sort footer (~0.5 MB of thrift, 276 footer
+// groups) and each run's, then tens of footer groups (bounds and `rg_json`, ~95 KB each). Each is immutable per
+// generation (and revision), so each is decoded once per colo and held there as JSON, which a new isolate parses
+// natively: the footer as its groups' byte ranges and bounds (~40 KB), a footer group as its columns.
+
+/** A footer as `openIvFooter` holds it in the colo. */
+interface CompactFooter { kv: { key: string; value?: string }[]; groups: [number, number, number, number, number, FooterGroup['bounds']][] }
+
+/** An interval store's footer (`openFooter`'s shape, compact: `FooterIndex.full`), from the colo's decoded copy;
+ *  on a miss parsed whole and the copy put. */
+async function openIvFooter(env: Env, key: string, src: ByteStore): Promise<FooterIndex> {
+  const ck = coloKey(env, key, 'compact=1')
+  let whole: Promise<FooterIndex> | undefined
+  const full = () => (whole ??= openFooter(env, key, src))
+  const hit = await colo().match(ck)
+  if (hit) {
+    const d = await hit.json<CompactFooter>()
+    const metadata = { key_value_metadata: d.kv } as FileMetaData
+    const groups = d.groups.map(([n, rgStart, rgEnd, byteStart, byteEnd, bounds]): FooterGroup => ({ n, rgStart, rgEnd, byteStart, byteEnd, bounds, meta: undefined as unknown as RowGroup }))
+    return { key, metadata, groups, full }
+  }
+  const f = await full()
+  const doc: CompactFooter = { kv: f.metadata.key_value_metadata ?? [], groups: f.groups.map(g => [g.n, g.rgStart, g.rgEnd, g.byteStart, g.byteEnd, g.bounds]) }
+  await colo().put(ck, new Response(JSON.stringify(doc), { headers: { 'content-type': 'application/json', 'cache-control': `max-age=${BLOB_CACHE_TTL}` } }))
+  return { ...f, full }
+}
+
+/** The columns of an interval store's footer group (bounds, time bounds, metadata). */
+const IV_FOOTER_COLS = [...FOOTER_BOUNDS, 'vf_min', 'vf_max', 'vt_min', 'vt_max', 'rg_json']
+/** A footer group as the colo holds it: one array per column of `IV_FOOTER_COLS`, in its rows' (`rg`) order. */
+type FooterDoc = Record<string, (number | string | null)[]>
+const docsInFlight = new Map<string, Promise<{ groups: BlobGroup[]; json: [number, string][] }>>()
+
+/** One footer group of an interval store, whole — its tier groups' bounds and their metadata — once per isolate
+ *  (the two halves seeded into the footer LRU as `fg:<n>` and `fj:<n>`, read back by `readFooterGroup` /
+ *  `readFooterJson`), from the colo's decoded copy, or on a miss fetched, decoded and put there. A read that
+ *  plans on a group's bounds then wants its `rg_json`: reading the two apart would cost a round trip each. */
+async function ivFooterDoc(h: PqHandle, fg: FooterGroup): Promise<{ groups: BlobGroup[]; json: [number, string][] }> {
+  const fk = (part: string) => `${storeKey(h.env)}|iv|${h.variant}|${h.gen}|${part}`
+  const k = fk(`fd:${fg.n}`)
+  const pending = docsInFlight.get(k)
+  if (pending) return pending
+  const p = (async () => {
+    const t0 = now()
+    const ck = coloKey(h.env, h.footer.key, `fd=${fg.n}`)
+    const hit = await colo().match(ck)
+    let doc: FooterDoc
+    if (hit) doc = await hit.json<FooterDoc>()
+    else {
+      const full = h.footer.full ? await h.footer.full() : h.footer
+      const ffg = full.groups[fg.n]
+      const buf = toBuffer((await h.src!.get(h.footer.key, { offset: ffg.byteStart, length: ffg.byteEnd - ffg.byteStart })).bytes)
+      const file: FileSlice = { byteLength: ffg.byteEnd, slice: async (s, e) => buf.slice(s - ffg.byteStart, (e ?? ffg.byteEnd) - ffg.byteStart) }
+      const metadata = { ...full.metadata, row_groups: [ffg.meta], num_rows: ffg.meta.num_rows }
+      const rows = (await parquetReadObjects({ file, metadata, columns: IV_FOOTER_COLS, compressors })) as Record<string, unknown>[]
+      doc = Object.fromEntries(IV_FOOTER_COLS.map(c => [c, rows.map(r => r[c] == null ? null : typeof r[c] === 'string' ? r[c] as string : num(r[c]))]))
+      await colo().put(ck, new Response(JSON.stringify(doc), { headers: { 'content-type': 'application/json', 'cache-control': `max-age=${BLOB_CACHE_TTL}` } }))
+    }
+    const col = (c: string) => doc[c]
+    const [rg, d0, d1, p0, p1, bx, u0, u1, rs, re, vf0, vf1, vt0, vt1, js] = IV_FOOTER_COLS.map(col)
+    const groups = rg.map((_, i): BlobGroup => ({
+      rg: rg[i] as number, dMin: d0[i] as number, dMax: d1[i] as number, pMin: p0[i] as string, pMax: p1[i] as string, bMax: bx[i] as number,
+      uMin: u0[i] as string | null, uMax: u1[i] as string | null, rowStart: rs[i] as number, rowEnd: re[i] as number, rgJson: '',
+      vfMin: vf0[i] as number, vfMax: vf1[i] as number, vtMin: vt0[i] as number, vtMax: vt1[i] as number,
+    }))
+    // Footer rows are in `rg` order from the group's first.
+    const json = js.map((j, i): [number, string] => [fg.rgStart + i, j as string])
+    h.trace?.('footer', now() - t0, h.variant)
+    footerCache.put(fk(`fg:${fg.n}`), groups, groupsBytes(groups))
+    footerCache.put(fk(`fj:${fg.n}`), json, jsonBytes(json))
+    return { groups, json }
+  })()
+  docsInFlight.set(k, p)
+  try {
+    return await p
+  } finally {
+    docsInFlight.delete(k)
+  }
+}
+const groupsBytes = (gs: BlobGroup[]): number => gs.reduce((n, g) => n + 96 + 2 * (g.pMin.length + g.pMax.length), 0)
+const jsonBytes = (js: [number, string][]): number => js.reduce((n, [, j]) => n + 32 + 2 * j.length, 0)
 
 /** Decode one footer group's bounds into the blob handle's group shape (`rgJson` left empty: the
  * metadata of the few groups a read selects is fetched apart, `readFooterJson`) — cached per isolate
@@ -971,17 +1080,19 @@ async function readFooterCols(h: PqHandle, fg: FooterGroup, columns: string[]): 
  * footer group is a fifth of the bytes to fetch, decode and hold. */
 async function readFooterGroup(h: PqHandle, fg: FooterGroup): Promise<BlobGroup[]> {
   return footerOnce(h, `fg:${fg.n}`, async () => {
+    if (h.asOf != null) {
+      const { groups } = await ivFooterDoc(h, fg)
+      return [groups, groupsBytes(groups)]
+    }
     const t0 = now()
-    const timed = h.asOf != null
-    const rows = await readFooterCols(h, fg, timed ? [...FOOTER_BOUNDS, 'vf_min', 'vf_max', 'vt_min', 'vt_max'] : FOOTER_BOUNDS)
+    const rows = await readFooterCols(h, fg, FOOTER_BOUNDS)
     const out = rows.map((r): BlobGroup => ({
       rg: num(r.rg), dMin: num(r.d_min), dMax: num(r.d_max), pMin: str(r.p_min), pMax: str(r.p_max), bMax: num(r.b_max),
       uMin: r.u_min == null ? null : str(r.u_min), uMax: r.u_max == null ? null : str(r.u_max),
       rowStart: num(r.row_start), rowEnd: num(r.row_end), rgJson: '',
-      ...(timed ? { vfMin: num(r.vf_min), vfMax: num(r.vf_max), vtMin: num(r.vt_min), vtMax: num(r.vt_max) } : {}),
     }))
     h.trace?.('footer', now() - t0, h.variant)
-    return [out, out.reduce((n, g) => n + 96 + 2 * (g.pMin.length + g.pMax.length), 0)]
+    return [out, groupsBytes(out)]
   })
 }
 
@@ -1008,12 +1119,16 @@ async function footerOnce<T>(h: PqHandle, part: string, make: () => Promise<[T[]
 /** The stored metadata (`rg_json`) of one footer group's tier groups, by `rg` (cached per isolate). */
 async function readFooterJson(h: PqHandle, fg: FooterGroup): Promise<Map<number, string>> {
   return new Map(await footerOnce<[number, string]>(h, `fj:${fg.n}`, async () => {
+    if (h.asOf != null) {
+      const { json } = await ivFooterDoc(h, fg)
+      return [json, jsonBytes(json)]
+    }
     const t0 = now()
     // Footer rows are in `rg` order from the group's first: `rg_json` alone is one chunk to fetch.
     const rows = await readFooterCols(h, fg, ['rg_json'])
     const out = rows.map((r, i): [number, string] => [fg.rgStart + i, str(r.rg_json)])
     h.trace?.('fjson', now() - t0, h.variant)
-    return [out, out.reduce((n, [, j]) => n + 32 + 2 * j.length, 0)]
+    return [out, jsonBytes(out)]
   }))
 }
 
@@ -1250,9 +1365,84 @@ async function readGroupVersions(h: IndexHandle, rgJson: string, columns?: strin
 
 /** A row group's every version (an interval-store handle), unfiltered by time: what the group cache
  *  holds for it, shared by every scan the store serves. */
-async function readGroupAll(h: IndexHandle, rgJson: string, held?: FileSlice): Promise<Row[]> {
-  return (await readGroupRaw(h, rgJson, h.columns ?? undefined, held)).map(toRow(h))
+async function readGroupAll(h: IndexHandle, rgJson: string, held?: FileSlice): Promise<{ raw: Record<string, unknown>[]; rows: Row[] }> {
+  const raw = await readGroupRaw(h, rgJson, h.columns ?? undefined, held)
+  return { raw, rows: raw.map(toRow(h)) }
 }
+
+// --- an interval store's decoded row groups, through the colo cache ------------------------------------
+//
+// Decoding a row group is the cold read's CPU: ~25 ms on a laptop for an 8K-row group of the interval store, four
+// fifths of it zstd (`fzstd`, pure JS: Workers compile no wasm at runtime), and several times that on a Worker. An
+// interval store's group serves every scan (`ivGroupKey`) and never changes, so the first isolate in a colo to
+// decode it holds it there as gzipped columnar JSON (~2 MB, ~0.3 MB stored; inflated and parsed natively in a few
+// ms): every later isolate reads that instead of the range and its decode.
+
+/** A decoded group as the colo holds it: its columns, each an array over its rows. */
+type GroupDoc = { cols: string[]; v: unknown[][] }
+
+const groupColoKey = (h: IndexHandle, rg: number): Request => coloKey(h.env, h.dataKey!, `rg=${rg}`)
+
+/** `raw` (a group's decoded columns) as a `GroupDoc`, or null when a value wouldn't survive JSON exactly (an
+ *  integer past 2^53, a non-finite float, a byte array): such a group is decoded from parquet every time. */
+export function groupDoc(raw: Record<string, unknown>[], cols: string[]): GroupDoc | null {
+  const v: unknown[][] = cols.map(() => new Array(raw.length))
+  for (let i = 0; i < raw.length; i++) {
+    const r = raw[i]
+    for (let j = 0; j < cols.length; j++) {
+      let x = r[cols[j]]
+      if (typeof x === 'bigint') {
+        if (x > BigInt(Number.MAX_SAFE_INTEGER) || x < -BigInt(Number.MAX_SAFE_INTEGER)) return null
+        x = Number(x)
+      } else if (typeof x === 'number') {
+        if (!Number.isFinite(x)) return null
+      } else if (x === undefined) x = null
+      else if (x !== null && typeof x !== 'string' && typeof x !== 'boolean') return null
+      v[j][i] = x
+    }
+  }
+  return { cols, v }
+}
+
+/** A `GroupDoc` back as raw column records (`readGroupRaw`'s shape, every int as a number). */
+export function groupRows(d: GroupDoc): Record<string, unknown>[] {
+  const n = d.v[0]?.length ?? 0
+  const out: Record<string, unknown>[] = new Array(n)
+  for (let i = 0; i < n; i++) {
+    const r: Record<string, unknown> = {}
+    for (let j = 0; j < d.cols.length; j++) r[d.cols[j]] = d.v[j][i]
+    out[i] = r
+  }
+  return out
+}
+
+/** The colo's decoded copy of an interval store's group (null: not there). */
+async function coloGroup(h: IndexHandle, rg: number): Promise<Row[] | null> {
+  const hit = await colo().match(groupColoKey(h, rg))
+  if (!hit?.body) return null
+  const t0 = now()
+  const d = await new Response(hit.body.pipeThrough(new DecompressionStream('gzip'))).json<GroupDoc>()
+  const rows = groupRows(d).map(toRow(h))
+  h.trace?.('gjson', now() - t0, h.variant)
+  return rows
+}
+
+/** Put a group's decoded copy in the colo, best effort and not waited for (a read never waits on the cache). */
+function putColoGroup(h: IndexHandle, rg: number, raw: Record<string, unknown>[]): void {
+  const d = groupDoc(raw, h.columns ?? Object.keys(raw[0] ?? {}))
+  if (!d) return
+  const body = new Response(JSON.stringify(d)).body!.pipeThrough(new CompressionStream('gzip'))
+  // Buffered: the Cache API wants a known length.
+  const p: Promise<void> = new Response(body).arrayBuffer()
+    .then(buf => colo().put(groupColoKey(h, rg), new Response(buf, { headers: { 'content-type': 'application/octet-stream', 'cache-control': `max-age=${BLOB_CACHE_TTL}` } })))
+    .catch(() => {})
+    .finally(() => { coloPuts.delete(p) })
+  coloPuts.add(p)
+}
+/** Decoded row groups being put in the colo (`putColoGroup`). */
+const coloPuts = new Set<Promise<void>>()
+/** Resolves once every colo put of a decoded row group started so far has landed (or failed). */
+export const coloPutsSettled = async (): Promise<void> => { await Promise.all([...coloPuts]) }
 
 /** The versions of `rows` live at the handle's scan (all of them for a per-scan handle). */
 const liveAt = (h: IndexHandle, rows: Row[]): Row[] => {
@@ -1396,8 +1586,7 @@ async function readGroupsCached<T>(h: IndexHandle, groups: { rg: number; json: s
       groupsInFlight.set(fk, new Promise(r => { resolve = r }))
       mine.set(fk, resolve)
     }
-    const [start, end] = chunkSpan(reviveRowGroup(g.json, h.schema) as unknown as Parameters<typeof chunkSpan>[0], h.columns ?? undefined)
-    miss.push({ i, ...g, start, end })
+    miss.push({ i, ...g, start: 0, end: 0 })
   })
   const settle = (fk: string, rows: Row[] | null) => {
     const r = mine.get(fk)
@@ -1407,7 +1596,22 @@ async function readGroupsCached<T>(h: IndexHandle, groups: { rg: number; json: s
     r(rows)
   }
   try {
-    await mapLimit(planRuns(miss), RUN_READS, async run => {
+    // An interval store's misses: first the colo's decoded copies (`coloGroup`), then the rest from the file.
+    let fetch = miss
+    if (iv && h.dataKey && miss.length) {
+      // `RUN_READS` at once, as the range reads: each copy inflates to ~2 MB of JSON before it parses.
+      const got = await mapLimit(miss, RUN_READS, g => (stop?.() ? Promise.resolve(null) : coloGroup(h, g.rg)))
+      fetch = miss.filter((g, j) => {
+        const all = got[j]
+        if (!all) return true
+        h.trace?.('gcolo', 1)
+        take(g.i, g.rg, all, true)
+        settle(ivGroupKey(h, g.rg), all)
+        return false
+      })
+    }
+    for (const g of fetch) [g.start, g.end] = chunkSpan(reviveRowGroup(g.json, h.schema) as unknown as Parameters<typeof chunkSpan>[0], h.columns ?? undefined)
+    await mapLimit(planRuns(fetch), RUN_READS, async run => {
       if (stop?.()) return
       const file = bufferSlice(await fetchRange(h, run.start, run.end), run.start)
       for (const g of run.items) {
@@ -1418,9 +1622,10 @@ async function readGroupsCached<T>(h: IndexHandle, groups: { rg: number; json: s
           out[g.i] = f(rows)
           continue
         }
-        const all = await readGroupAll(h, g.json, file)
+        const { raw, rows: all } = await readGroupAll(h, g.json, file)
         take(g.i, g.rg, all, true)
         settle(ivGroupKey(h, g.rg), all)
+        if (h.dataKey) putColoGroup(h, g.rg, raw)
       }
     })
   } finally {
