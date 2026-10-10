@@ -25,7 +25,7 @@ if [ -n "${PIN:-}" ]; then unset IMAGE MACHINE MEMORY_MIB DATA_BUCKET SWEEP_BUCK
 PROJECT=oa-internal-450019
 REGION=us-central1
 SA=cw-s3-job@$PROJECT.iam.gserviceaccount.com
-IMAGE=${IMAGE:-us-central1-docker.pkg.dev/$PROJECT/cloud-run-source-deploy/gcs-usage-snapshot:cw}
+export IMAGE=${IMAGE:-us-central1-docker.pkg.dev/$PROJECT/cloud-run-source-deploy/gcs-usage-snapshot:cw}  # exported: stage 4f runs on it
 # Measured on a 92M-object scan: 1.1 GB RSS listing, 1.8 GB import. The lister
 # is network-bound (many concurrent range requests), so vCPUs buy more than RAM.
 MACHINE=${MACHINE:-n2-standard-8}
@@ -73,6 +73,10 @@ v = {
     # to (the `r2_bucket` output of the cw-s3 CF Pulumi stack; creds are the
     # `cw-s3-r2-*` secretVariables) — specs/done/r2-serving-migration.md
     "R2_BUCKET": g("R2_BUCKET", "oa-cw-s3-usage-index"),
+    # Stage 4f, the static name index (specs/cw-static-names.md): every scan appends itself as a run, its Batch
+    # stages on this job's own image (the profile pins none).
+    "STATIC_NAMES": g("STATIC_NAMES", "1"),
+    "STATIC_NAMES_IMAGE": g("STATIC_NAMES_IMAGE", os.environ["IMAGE"]),
 }
 if not pin:  # one-off overrides forwarded only for manual submits, never the cron spec
     for k in ["SCAN_BUCKETS", "SNAP_ID", "LISTING_PROCS", "LISTING_WORKERS", "IMPORT_JOBS"]:

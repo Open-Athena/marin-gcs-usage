@@ -276,10 +276,10 @@ phase index-gc
 
 # 4f. The static name index (specs/static-append.md): append this scan (and any earlier one still pending, in
 # scan-id order) to cw's generation as a run — Batch stages, then R2, then `manifests/<scan>.json` — so the map's
-# `?f=` filter and /names answer it statically. OFF unless STATIC_NAMES=1: the stages run as the account with the
-# scratch bucket (`gcs-usage-job`, cw's profile), which this job's account must be allowed to act as (and to submit
-# Batch jobs); see specs/cw-static-names.md. Never fatal: the filter falls back to the path store for a scan the
-# index doesn't hold. Exit 3 = not the next scan yet (a later run catches up).
+# `?f=` filter and /names answer it statically. On when STATIC_NAMES=1 (the cron sets it, with STATIC_NAMES_IMAGE =
+# this job's image): the stages run as this job's account (`cw-s3-job`, cw's profile; it holds the scratch bucket).
+# See specs/cw-static-names.md. Never fatal: a scan the index doesn't hold reads "not indexed" until a later run's
+# `-c` catches it up. Exit 3 = not the next scan yet.
 if [ "${STATIC_NAMES:-0}" = "1" ] && [ "${REPROC:-0}" != "1" ]; then
   STATIC_NAMES_PROFILE=cw dt-cloud static-names runs add -c "$SNAP_ID" \
     || echo "WARN: static-names runs add failed for $SNAP_ID (exit $?; the filter keeps its path-store fallback)" >&2
