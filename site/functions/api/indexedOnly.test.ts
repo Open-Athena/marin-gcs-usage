@@ -126,6 +126,31 @@ describe('rejectQuery: what an indexed-only deployment refuses', () => {
   })
 })
 
+describe('escaped `^`/`$`: a plain literal on an indexed-only deployment', () => {
+  it('`\^q`, `q\$`, `\\` and the quoted forms pass as literals, whatever their length; a bare anchor is still one', () => {
+    const code = (q: string) => rejectQuery(q)?.code ?? null
+    expect([
+      code('\\^tomat'), code('tomat\\$'), code('\\^a'), code('a\\$'), code('\\^tomat\\$'), code('a\\\\b'), code('"^a"'), code('"a$"'),
+      code('^a\\$'), code('^a'), code('a$'), code('\\^a*b'), code('\\^a -b'),
+    ]).toEqual([
+      null, null, null, null, null, null, null, null,
+      null, 'anchor-too-short', 'anchor-too-short', 'unsupported-glob', 'unsupported-exclusion',
+    ])
+  })
+  it('the map routes, flag set: subtree, diff and series answer them', async () => {
+    const got = []
+    for (const q of ['tomat\\$', '\\^tomat', '"^tomat"']) {
+      const qs = `q=${encodeURIComponent(q)}`
+      got.push(await Promise.all([
+        call(subtree, `date=${A}&path=bk&${qs}`, envOf(true)),
+        call(diff, `from=${A}&to=${B}&path=bk&${qs}`, envOf(true)),
+        call(series, `path=bk&${qs}`, envOf(true)),
+      ]))
+    }
+    expect(got).toEqual(Array(3).fill([[200, 'ok'], [200, 'ok'], [200, 'ok']]))
+  })
+})
+
 describe('anchor-too-short is worded for the anchor used', () => {
   it('`^q` says 2 after the caret, `q$` 3 before the dollar', () => {
     expect([rejectQuery('^a')?.message, rejectQuery('gz$')?.message]).toEqual([

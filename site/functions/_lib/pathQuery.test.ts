@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
+import { matchRoots } from './filter'
 import { parseQuery } from './pathQuery'
 import { regex } from './querySyntax'
+import { planPositive } from './searchQuery'
 
 const PATHS = [
   'bk/tmp/ttl=14d/run-a/ckpt',
@@ -68,6 +70,28 @@ describe('parseQuery: the predicate on the full path', () => {
       { alts: [[{ kind: 'sub', text: 'ckpt' }]], neg: [{ kind: 'sub', text: 'run' }] }, true, true, false, true,
     ])
     expect(parseQuery('ckpt')!.neg).toBeNull()
+  })
+})
+
+describe('escaped `^`/`$` end to end: a name with a literal `$` or `^`', () => {
+  // A listing whose names hold the characters themselves, beside names the anchors would match.
+  const ROWS = ['fx', 'fx/usd', 'fx/usd$', 'fx/usd$/q1', 'fx/usd$x', 'fx/^tmp', 'fx/^tmp/a', 'fx/tmp', 'fx/eur/usd']
+  /** The outermost matches under the store root, and which names the search index's plan accepts as a match root. */
+  const map = (q: string) => {
+    const pred = parseQuery(q)!
+    const plan = planPositive(pred.ast!)!
+    return { roots: matchRoots(ROWS, pred, ''), names: ['usd', 'usd$', 'usd$x', '^tmp', 'tmp'].filter(n => plan.branches.some(b => b.test(n))) }
+  }
+  it.each([
+    ['usd\\$', { roots: ['fx/usd$', 'fx/usd$x'], names: ['usd$', 'usd$x'] }],
+    ['"usd$"', { roots: ['fx/usd$', 'fx/usd$x'], names: ['usd$', 'usd$x'] }],
+    ['usd$', { roots: ['fx/eur/usd', 'fx/usd'], names: ['usd'] }],
+    ['^usd\\$$', { roots: ['fx/usd$'], names: ['usd$'] }],
+    ['\\^tmp', { roots: ['fx/^tmp'], names: ['^tmp'] }],
+    ['^tmp', { roots: ['fx/tmp'], names: ['tmp'] }],
+    ['^\\^tmp', { roots: ['fx/^tmp'], names: ['^tmp'] }],
+  ])('%s', (q, want) => {
+    expect(map(q)).toEqual(want)
   })
 })
 

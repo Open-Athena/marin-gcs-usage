@@ -33,10 +33,23 @@ const piecesMatcher = (pieces: string[], a: Anchors = {}): Matcher => {
   return pieces.length === 1 ? { kind: 'sub', text: pieces[0], ...anchors } : { kind: 'glob', pieces, ...anchors }
 }
 
-/** How a matcher reads back in the box (`^…$` around its literal, `*` between pieces). */
+/** The help's one line on literal `^`/`$` (the filter box's and the indexed-only deployment's). */
+export const ESCAPE_NOTE = '^/$ anchor a name; write \\^ or \\$ (or quote it) to search them literally.'
+
+/** The characters a `\` escapes in a `simple` term: `\^` and `\$` are literal (never anchors), `\\` one `\`. */
+const ESCAPABLE = '^$\\'
+
+/** A literal as written in a term: a `^` first or a `$` last escaped (else they'd read as anchors), and a `\`
+ *  escaped where it would otherwise escape what follows it (an escapable character, or the term's end, where an
+ *  anchor `$` may follow). */
+export const escapeLiteral = (text: string): string => [...text].map((c, i, cs) =>
+  (c === '^' && i === 0) || (c === '$' && i === cs.length - 1) ? `\\${c}`
+    : c === '\\' && (i === cs.length - 1 || ESCAPABLE.includes(cs[i + 1])) ? '\\\\' : c).join('')
+
+/** How a matcher reads back in the box (`^…$` around its literal, `*` between pieces; `escapeLiteral`). */
 export const matcherText = (m: Matcher): string => m.kind === 'regex'
   ? `/${m.source}/`
-  : `${m.start ? '^' : ''}${m.kind === 'sub' ? m.text : m.pieces.join('*')}${m.end ? '$' : ''}`
+  : `${m.start ? '^' : ''}${escapeLiteral(m.kind === 'sub' ? m.text : m.pieces.join('*'))}${m.end ? '$' : ''}`
 
 /** `simple` (the default): GitHub-search-like terms over the full path.
  *
@@ -48,7 +61,9 @@ export const matcherText = (m: Matcher): string => m.kind === 'regex'
  * - `^q` / `q$` / `^q$` — anchored: some name (path segment) starts with,
  *   ends with, or is `q` (an unquoted `^` first, `$` last);
  * - `"a b"` — a quoted term is literal (spaces, a leading `-`, `*`, `|`, `^`,
- *   `$`); an unterminated quote runs to the end;
+ *   `$`, `\`); an unterminated quote runs to the end;
+ * - `\^` / `\$` — the character itself, anywhere in a term (never an anchor);
+ *   `\\` is one `\`; any other `\` is itself;
  * - `/…/` — the whole query a full-path regex: an unadvertised fallback (the
  *   `regex` syntax is the advertised way), never served by the search index.
  *
@@ -95,7 +110,9 @@ export function makeSimple({ minTerm = MIN_TERM }: { minTerm?: number } = {}): Q
         while (i < s.length && (quoted || !sep(s[i]))) {
           const ch = s[i++]
           end = ch === '$' && !quoted
-          if (ch === '"') quoted = !quoted
+          // Unquoted `\^`, `\$`, `\\`: the character itself (never an anchor); any other `\` is literal.
+          if (ch === '\\' && !quoted && i < s.length && ESCAPABLE.includes(s[i])) pieces[pieces.length - 1] += s[i++]
+          else if (ch === '"') quoted = !quoted
           else if (ch === '*' && !quoted) pieces.push('')
           else pieces[pieces.length - 1] += ch
         }
@@ -140,6 +157,7 @@ export function makeSimple({ minTerm = MIN_TERM }: { minTerm?: number } = {}): Q
       notes: [
         `Each term needs at least ${minTerm} characters in a row (a * term: its longest part); exclusions, and a query of one word alone, are exempt.`,
         'Exclusions apply to the whole query (every | alternative); only exclusions = everything except them.',
+        ESCAPE_NOTE,
       ],
     }),
   }
