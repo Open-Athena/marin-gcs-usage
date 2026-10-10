@@ -50,6 +50,8 @@ BASE_SCOPE = "gcs"              # the viewer scope this deployment grants (`_lib
 JOB_SA = "gcs-usage-job@oa-internal-450019.iam.gserviceaccount.com"  # the account sweep-dispatched Batch jobs run as (`_lib/planDispatch.ts`)
 # Deployment resources (specs/oa-decoupling.md): `cloud` carries no defaults for these.
 STORE_BUCKET = "oa-gcs-usage-dvx"     # the path store's bucket (`_lib/index.ts`)
+PATH_STORE = "intervals"   # every request reads the interval store (INDEX_R2) for the scans its generation holds; others (and any sort it lacks) read per-scan from STORE_BUCKET
+INTERVAL_STORE_GEN = "2026-10-09b"   # the interval store generation (specs/interval-store.md); the job appends each scan
 DATA_BUCKET = "oa-gcs-usage-dvx"      # sweep runs / plans data (`sweepDispatch`, `api/sweep/*`)
 GCP_PROJECT = "oa-internal-450019"    # Batch dispatch (`_lib/gcp.ts`)
 GCP_LOG_VIEW = "projects/oa-internal-450019/locations/global/buckets/_Default/views/gcs-sweep-task-logs"
@@ -137,7 +139,7 @@ database_id = "e52398b7-5538-4bc4-83db-3355a1b5ef9a"
 migrations_dir = "migrations/gcs"
 
 [env.preview.vars]
-PATH_STORE = "opt-in"   # the interval store (INDEX_R2) for requests carrying `ps=iv`; others read per-scan (`_lib/index.ts`)
+PATH_STORE = "intervals"   # every request reads the interval store (INDEX_R2) for the scans its generation holds; others read per-scan (`_lib/index.ts`)
 INTERVAL_STORE_GEN = "2026-10-09b"   # the interval store generation the opt-in reads
 QUERY_BOX_HOT_L1 = "1"
 QUERY_BOX_HOT_L2 = "1"
