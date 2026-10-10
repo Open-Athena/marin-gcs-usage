@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Matcher, ParseResult, QueryError } from './queryAst'
-import { DEFAULT_SYNTAX, parseAst, regex, resolveSyntax, simple, SYNTAXES } from './querySyntax'
+import { DEFAULT_SYNTAX, matcherText, parseAst, regex, resolveSyntax, simple, SYNTAXES } from './querySyntax'
 import { queryParam } from './scope'
 import { planNegative, planPositive } from './searchQuery'
 
@@ -68,6 +68,49 @@ describe('`simple`: parse table', () => {
   })
   it('no minimum in the `/…/` fallback', () => {
     expect(simple.parse('/gr/')).toEqual({ ast: { alts: [[re('gr')]], neg: [] } })
+  })
+})
+
+describe('`simple`: `\^`, `\$`, `\\` escapes — literal `^`/`$`', () => {
+  const at = (text: string, a: { start?: true; end?: true }): Matcher => ({ kind: 'sub', text, ...a })
+  // [box text, the one matcher it parses to, that matcher written back by `matcherText`]
+  it.each<[string, Matcher, string]>([
+    ['\\^abc', sub('^abc'), '\\^abc'],
+    ['abc\\$', sub('abc$'), 'abc\\$'],
+    ['\\^abc\\$', sub('^abc$'), '\\^abc\\$'],
+    ['ab\\^c', sub('ab^c'), 'ab^c'],
+    ['ab\\$c', sub('ab$c'), 'ab$c'],
+    ['abc\\\\', sub('abc\\'), 'abc\\\\'],
+    ['a\\\\b', sub('a\\b'), 'a\\b'],
+    ['a\\\\\\$', sub('a\\$'), 'a\\\\\\$'],
+    ['\\^', sub('^'), '\\^'],
+    ['\\$', sub('$'), '\\$'],
+    ['"^abc"', sub('^abc'), '\\^abc'],
+    ['"abc$"', sub('abc$'), 'abc\\$'],
+    ['^abc', at('abc', { start: true }), '^abc'],
+    ['abc$', at('abc', { end: true }), 'abc$'],
+    ['^abc$', at('abc', { start: true, end: true }), '^abc$'],
+    ['^abc\\$', at('abc$', { start: true }), '^abc\\$'],
+    ['\\^abc$', at('^abc', { end: true }), '\\^abc$'],
+    ['abc\\\\$', at('abc\\', { end: true }), 'abc\\\\$'],
+    ['^^abc', at('^abc', { start: true }), '^\\^abc'],
+    ['\\^ab*cd', glob('^ab', 'cd'), '\\^ab*cd'],
+    ['ab*cd\\$', glob('ab', 'cd$'), 'ab*cd\\$'],
+  ])('%s', (q, m, text) => {
+    expect([simple.parse(q), matcherText(m), simple.parse(text)]).toEqual([{ ast: { alts: [[m]], neg: [] } }, text, { ast: { alts: [[m]], neg: [] } }])
+  })
+  it('any other `\\` is itself, as before (`\\x`, a trailing `\\`, `\\*` then a wildcard); quoted, a `\\` escapes nothing', () => {
+    expect(['a\\bc', 'abc\\', 'a\\*bcd', '"abc\\$"', '\\"abc"'].map(q => simple.parse(q))).toEqual(
+      [[sub('a\\bc')], [sub('abc\\')], [glob('a\\', 'bcd')], [sub('abc\\$')], [sub('\\abc')]].map(t => ({ ast: { alts: [t], neg: [] } })))
+  })
+  it('in an exclusion and among terms', () => {
+    expect(simple.parse('usd\\$ -\\^tmp ckpt$')).toEqual({ ast: { alts: [[sub('usd$'), at('ckpt', { end: true })]], neg: [sub('^tmp')] } })
+  })
+  it('an escape counts as one character toward the minimum', () => {
+    expect(['ab\\$ ckpt', 'a\\$ ckpt'].map(q => simple.parse(q))).toEqual<ParseResult[]>([
+      { ast: { alts: [[sub('ab$'), sub('ckpt')]], neg: [] } },
+      { error: 'type at least 3 characters (“a\\$”)', code: 'short-term' },
+    ])
   })
 })
 

@@ -10,7 +10,7 @@
  * box's inline message and help) share it.
  */
 import type { QueryAst, SyntaxHelp } from './queryAst.js'
-import { makeSimple, resolveSyntax } from './querySyntax.js'
+import { ESCAPE_NOTE, makeSimple, resolveSyntax } from './querySyntax.js'
 
 /** Why an indexed-only deployment refuses a filter. */
 export type FilterRejectCode =
@@ -115,5 +115,6 @@ export const INDEXED_HELP: SyntaxHelp = {
   notes: [
     'One term only: no exclusions (-x), several terms, a|b, wildcards (*), “/” or regular expressions.',
     'Unscoped: clear an owner, user or storage-class scope to search.',
+    ESCAPE_NOTE,
   ],
 }

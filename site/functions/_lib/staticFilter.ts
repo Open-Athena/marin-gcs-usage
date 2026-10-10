@@ -309,8 +309,9 @@ export function liveTotal(hits: Hit[], date: string, keep: (usr: string | null) 
  *  series' uncovered and dir-only scans are gaps named in `unindexed`, indexed-only or not — never zeros;
  *  12: a dir-only scan's answer flagged `dirsOnly`, a diff across a dir-only and a full scan `scan-dirs-only`;
  *  13: the hex-run rule — `hexRuns` on hex-affected literals, `occurs` in the fallback and the anchored reader;
- *  14: an anchored term on a generation with no anchors build is `anchor-not-indexed`, never the approximate walk). */
-const RESPONSE_V = 14
+ *  14: an anchored term on a generation with no anchors build is `anchor-not-indexed`, never the approximate walk;
+ *  15: `\^`, `\$`, `\\` escapes — `q\$` and `\^q` were anchored or `\`-holding literals before). */
+const RESPONSE_V = 15
 
 /** The query's substring matchers (positive and negative): the literals the hex-run rule applies to. */
 const subMatchers = (ast: QueryAst | undefined): Extract<Matcher, { kind: 'sub' }>[] =>

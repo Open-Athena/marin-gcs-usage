@@ -2,6 +2,7 @@ import { type Ctx, json, requireViewer } from '../_lib/auth.js'
 import { HotQueryError, privateHeaders } from '../_lib/hotL1.js'
 import { indexedOnly, reject } from '../_lib/indexedOnly.js'
 import { askNameSummary, datedNames, nameSummaryParams, namesEnabled, type NameSummaryEnv } from '../_lib/nameSummary.js'
+import { nameLiteral } from '../../src/nameModel.js'
 
 export async function onRequest(ctx: Ctx & { env: NameSummaryEnv }): Promise<Response> {
   const identity = await requireViewer({ request: ctx.request, env: { ...ctx.env, PUBLIC_READ: undefined } })
@@ -15,15 +16,22 @@ export async function onRequest(ctx: Ctx & { env: NameSummaryEnv }): Promise<Res
     const r = reject('unsupported-slash')
     return json({ error: r.message, code: r.code }, 400, privateHeaders)
   }
-  // A `^…` / `…$` name: /names reads literals only (no anchored reader on any deployment), so an anchored-looking
-  // name is refused as such — never answered as a literal `^`/`$` substring, which would read as zero matches.
-  const name = new URL(ctx.request.url).searchParams.get('name') ?? ''
-  if (name.length > 1 && (name.startsWith('^') || name.endsWith('$'))) {
-    const r = reject('anchor-not-indexed')
-    return json({ error: r.message, code: r.code }, 400, privateHeaders)
-  }
+  // The name as written reads as the map's term does (`nameLiteral`): `\^q`, `q\$` and `"^q"` are literals, sent to
+  // the backends as such; a bare `^q` / `q$` is an anchor, and /names reads literals only (no anchored reader on any
+  // deployment), so it is refused as such — never answered as a literal `^`/`$` substring, which would read as zero matches.
+  const url = new URL(ctx.request.url), dated = datedNames(ctx.env)
   let params: URLSearchParams
-  try { params = nameSummaryParams(new URL(ctx.request.url), datedNames(ctx.env)) } catch (error) {
+  try {
+    params = nameSummaryParams(url, dated)
+    const name = params.get('name')
+    const literal = name == null ? null : nameLiteral(name)
+    if (literal?.anchored) {
+      const r = reject('anchor-not-indexed')
+      return json({ error: r.message, code: r.code }, 400, privateHeaders)
+    }
+    // The literal, validated as the backends will read it (the params are clean once validated, so re-serializing is safe).
+    if (literal && literal.text !== name) { params.set('name', literal.text); params = nameSummaryParams(new URL(`?${params}`, url), dated) }
+  } catch (error) {
     if (error instanceof HotQueryError) return json({ error: error.message }, 400, privateHeaders)
     throw error
   }

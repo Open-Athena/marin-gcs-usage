@@ -1524,8 +1524,8 @@ async function readRootAllRows(env: Env, date: string, path: string, dP: number)
 /** Bumped when a filtered view's answer changes for the same inputs (the subtree and diff cache keys carry
  *  it with `q=`): 2 — phase 2 bounded (subdivision area, levels, read and time budgets), the tile budget;
  *  3 — a view the query matches draws its subtree again; 4 — `depth=N` caps phase 2 at dP + N;
- *  5 — level-capped interiors from the `path` sort. */
-export const FILTER_VIEW_V = 5
+ *  5 — level-capped interiors from the `path` sort; 6 — `\^`, `\$`, `\\` escapes in a `simple` term (`q=` is keyed raw). */
+export const FILTER_VIEW_V = 6
 
 /** A filter view's phase 2 (the insides of its match roots) subdivides a root only when its tile is at
  *  least this many px² — room for a title and a few legible cells; a smaller root is one exact tile. */
