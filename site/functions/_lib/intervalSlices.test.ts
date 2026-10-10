@@ -1,6 +1,6 @@
-import { beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { Env } from './auth'
-import { openIndex, slices } from './index'
+import { IV_JOIN, openIndex, slices } from './index'
 import type { OwnerScope } from './scope'
 import { LEDGER_KIND, sqliteD1 } from './testD1'
 import { type D1Variant, fixture, GETS, readJson, seedGeneration } from './testStore'
@@ -250,3 +250,57 @@ for (const GEN of ['g2', 'g5'] as const) {
     }, 60_000)  // every scan × scope against the per-scan reader: seconds alone, past the 5 s default under the parallel suite
   })
 }
+
+// A request's interval-store reads are shared with the isolate's other requests while in flight: the store's state,
+// handles, footers, footer groups and row groups. Workers freeze a cancelled request's promises, so a viewer leaving
+// a slow lens view left them pending for good, and every later lens read in the isolate waited on them with no
+// response (gcs, 2026-10-10: ~125 s, no headers). Here a first request's R2 reads at one stage never return (its
+// request cancelled, frozen); the same read again must answer exactly as the per-scan reader does, once it has
+// waited `IV_JOIN` on each frozen read and read for itself.
+describe('interval store g5: a lens read joining a cancelled request\'s frozen reads', () => {
+  type Range = { offset: number; length: number } | { suffix: number }
+  const STAGES: [string, (key: string, range?: Range) => boolean][] = [
+    ['state', k => k.endsWith('/scans.json')],
+    ['footer', (k, r) => k.endsWith('.groups.parquet') && !!r && 'suffix' in r],
+    ['footer group', (k, r) => k.endsWith('.groups.parquet') && !!r && 'offset' in r],
+    ['row group', k => /\/slices[^/]*\.parquet$/.test(k) && !k.endsWith('.groups.parquet')],
+  ]
+  const lens = { key: 'alice' }
+  type Answer = Awaited<ReturnType<typeof buildView>> | Awaited<ReturnType<typeof buildDiff>>
+  const READS: [string, (e: Env) => Promise<Answer>, (a: Answer) => unknown][] = [
+    ['view', e => buildView(e, { ...base, date: S3, path: '', lens }), a => storeKinds((a as Awaited<ReturnType<typeof buildView>>).tree)],
+    ['diff', e => buildDiff(e, { ...base, from: S1, to: S3, path: '', top: 500, lens }), a => {
+      const d = a as Awaited<ReturnType<typeof buildDiff>>
+      return { rows: d.rows.map(r => r.p.split('/').pop() === 'twin' ? { ...r, k: 'dir' } : r), totals: [d.total_a, d.total_b, d.objects_a, d.objects_b] }
+    }],
+  ]
+  const join0 = IV_JOIN.ms
+  beforeAll(() => { IV_JOIN.ms = 100 })
+  afterAll(() => { IV_JOIN.ms = join0 })
+  const after = <T>(ms: number, v: T) => new Promise<T>(r => setTimeout(() => r(v), ms))
+
+  for (const [stage, freeze] of STAGES) {
+    for (const [kind, read, shape] of READS) {
+      it(`${stage}: a lens ${kind} answers, exactly`, async () => {
+        const want = shape(await read(perScan))
+        let frozen = true
+        let reach!: () => void
+        const reached = new Promise<true>(r => { reach = () => r(true) })
+        const bucket = r2()
+        const get0 = bucket.get.bind(bucket) as (k: string, o?: { range?: Range }) => Promise<unknown>
+        const e = {
+          ...iv,
+          INTERVAL_STORE_GEN: 'g5',
+          INTERVAL_STORE_REV: `frozen-${stage}-${kind}`, // this test's own isolate caches
+          INDEX_R2: { ...bucket, get: (k: string, o?: { range?: Range }) => (frozen && freeze(k, o?.range) ? (reach(), new Promise(() => {})) : get0(k, o)) },
+        } as Env
+        void read(e) // the cancelled request: never settles
+        expect(await Promise.race([reached, after(2000, false)])).toBe(true)
+        await after(20, null) // its other reads, started beside the frozen one, register too
+        frozen = false
+        const got = await Promise.race([read(e), after(5000, 'no answer' as const)])
+        expect(got === 'no answer' ? got : shape(got)).toEqual(want)
+      }, 10_000)
+    }
+  }
+})
