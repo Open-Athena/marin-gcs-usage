@@ -509,3 +509,21 @@ def test_prune_keeps_only_the_newest_complete_state_of_sub_daily_scans():
         "deleted": 8,
     }
     assert store == keep
+
+
+def test_prune_keeps_every_run_and_manifest_after_merges():
+    """Deferred carries (`static_merge`): revisions and merged runs beside the scans' manifests and level-0 runs. Prune deletes
+    only earlier open-version states in the scratch bucket: every run any manifest lists (the superseded level-0 runs, whose
+    `cdelta` rebuilds a state, included) and every manifest stays. A scan published only through a revision's runs still
+    needs its own `manifests/<id>.json` to count as published."""
+    runs = {(DATA, f"{sn.PREFIX}/{GEN}/{k}/{f}"): 3 for k in ("deltas/2026-10-10", "deltas/2026-10-11", "deltas/2026-10-10_2026-10-11")
+            for f in ("meta.json", "sx/s0000.parquet", "catalog/meta.json")}
+    manifests = {(DATA, f"{sn.PREFIX}/{GEN}/manifests/{n}"): 1 for n in ("2026-10-10.json", "2026-10-11.json", "2026-10-11.m001.json")}
+    store = {**_day("2026-10-10"), **_day("2026-10-11"), **runs, **manifests, **OTHERS}
+    assert sa.prune_state(_GCS(store), GEN, "2026-10-11", 2, bucket=DATA, scratch=SCR) == {
+        "date": "2026-10-11", "keep": ["2026-10-11"], "delete": [{"day": "2026-10-10", "objects": 4, "bytes": 202}], "deleted": 4}
+    assert store == {**_day("2026-10-11"), **runs, **manifests, **OTHERS}
+    without = {k: v for k, v in store.items() if k[1] != f"{sn.PREFIX}/{GEN}/manifests/2026-10-11.json"}
+    with pytest.raises(sa.StateIncomplete) as e:
+        sa.prune_state(_GCS(without), GEN, "2026-10-11", 2, bucket=DATA, scratch=SCR)
+    assert str(e.value) == "state/2026-10-11 incomplete: no manifest"

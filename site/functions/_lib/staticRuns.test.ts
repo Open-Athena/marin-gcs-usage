@@ -15,12 +15,15 @@ const TIERS = ['base', ...RUNS.map(r => `deltas/${r}`)]
 const FILES = ['shards.json', 'sx/s0000.parquet', 'sx/s0001.parquet', 'catalog/cells.parquet', 'catalog/index.parquet', 'catalog/meta.json']
 const DATES = ['2026-08-01', '2026-09-01', ...RUNS]
 const MANIFESTS = RUNS.map(r => `manifests/${r}.json`)
+/** A deferred carry (`static_merge`): the first two runs merged, published by a revision of 2026-10-02's manifest. */
+const MERGED = 'deltas/2026-10-01_2026-10-02'
+const REV = 'manifests/2026-10-02.m001.json'
 const held = new Map<string, ArrayBuffer>()
 let expected: Record<string, Record<string, Record<string, [number, number]>>>
 let catalog: Record<string, [string, number, number, number][] | null>
 beforeAll(async () => {
   const fs = await import(/* @vite-ignore */ 'node:fs' as string) as { readFileSync(path: string): Uint8Array }
-  const keys = [...TIERS.flatMap(t => FILES.map(f => `${t}/${f}`)), 'base/scans.json', ...MANIFESTS, 'expected.json', 'catalog-expected.json']
+  const keys = [...[...TIERS, MERGED].flatMap(t => FILES.map(f => `${t}/${f}`)), 'base/scans.json', ...MANIFESTS, REV, 'expected.json', 'catalog-expected.json']
   for (const k of keys) { const b = fs.readFileSync(fixture(`static-runs/${k}`)); held.set(k, b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer) }
   const text = (k: string) => JSON.parse(new TextDecoder().decode(held.get(k)))
   expected = text('expected.json')
@@ -290,5 +293,35 @@ describe('a broken tier: the stack is cut at it, the scans before it answer exac
       if (JSON.stringify(num(answer!.answers)[pm]) !== JSON.stringify(expected[term][pm])) wrong.push(term)
     }
     expect(wrong).toEqual(['foo', 'foo.', 'qqq', 'qqq-', 'late', 'e-foo'])
+  })
+})
+
+describe('deferred carries: a merge\'s revision manifest (`static_merge`)', () => {
+  it('takes a merge\'s revision over its scan\'s manifest, and the next scan\'s over the revision (deferred carries)', async () => {
+    const upTo = [...MANIFESTS.slice(0, 2), REV]
+    expect((await latestManifest(files(upTo)))?.runs.map(r => [r.key, r.level])).toEqual([[MERGED, 1]])
+    expect((await latestManifest(files([...MANIFESTS, REV])))?.date).toEqual('2026-10-03T1800')
+    const revised = tiers(files(upTo)), before = tiers(files(MANIFESTS.slice(0, 2)))
+    const dates = DATES.slice(0, 4)
+    expect(await revised.scans()).toEqual(dates)
+    expect((await revised.tiers.state()).tiers.map(t => t.dir)).toEqual([null, MERGED])
+    expect((await revised.tiers.state()).version).toEqual('2026-10-02')
+    for (const term of long()) {
+      const got = await revised.names.answer(term, dates)
+      expect([term, got.io.tiers, num(got.answer!.answers)]).toEqual([term, 2, Object.fromEntries(dates.map(d => [d, expected[term][d]]))])
+      expect([term, (await before.names.read(term)).fold!.hits.length]).toEqual([term, (await revised.names.read(term)).fold!.hits.length])
+    }
+    const s = store(files(upTo))
+    for (const term of terms()) {
+      const { answers } = await answerKey(s, term, dates)
+      expect([term, num(answers)]).toEqual([term, Object.fromEntries(dates.map(d => [d, expected[term][d]]))])
+    }
+  })
+
+  it('orders revisions numerically (fixed width) and ignores what isn\'t a manifest', async () => {
+    const docs: Record<string, object> = Object.fromEntries(['2026-10-02.json', '2026-10-02.m009.json', '2026-10-02.m010.json']
+      .map(n => [`manifests/${n}`, { gen: 'fixture', date: '2026-10-02', scans: [], runs: [{ key: n }] }]))
+    const blobs = { ...files(), list: async () => [...Object.keys(docs), 'manifests/notes/x.json', 'manifests/2026-10-02.json.tmp'], json: async <T,>(k: string) => docs[k] as T }
+    expect((await latestManifest(blobs))?.runs.map(r => r.key)).toEqual(['2026-10-02.m010.json'])
   })
 })

@@ -14,7 +14,9 @@ A tier's contents are defined by cuts: `cut(T)` is the versions opened by `T`, a
   close records (a version closed at `D`, its rows with their final `vt`); its catalog is the rows of
   `catalog(cut(D))` not in `catalog(cut(P))` (new cells, new or changed headers);
 - `manifests/<scan>.json` per run lists the runs through it; `expected.json` is the oracle over every version on every scan,
-  and `catalog-expected.json` the full catalog's cells per term (members only).
+  and `catalog-expected.json` the full catalog's cells per term (members only);
+- a deferred carry (`static_merge`): `deltas/2026-10-01_2026-10-02` (level 1), the cut of 2026-10-02 not in the base's
+  (what merging the two runs holds), published by the revision `manifests/2026-10-02.m001.json` of 2026-10-02's manifest.
 
 Regenerate: `site/functions/_lib/fixtures/static-runs/gen.py` (uv runs it).
 """
@@ -120,6 +122,14 @@ def main() -> None:
         runs.append({"key": f"deltas/{d}", "first": d, "last": d, "level": 0, "scans": [d], "rows": len(rows)})
         (HERE / "manifests" / f"{d}.json").write_text(json.dumps({"gen": "fixture", "date": d, "base_scans": 2,
             "scans": list(DATES)[:2 + len(runs)], "runs": runs}, indent=1) + "\n")
+    # The deferred carry of the first two runs, and the revision listing it in their place.
+    (rp, cp), (rd, cd) = cuts["2026-09-01"], cuts["2026-10-02"]
+    have_r, have_c = {key(r) for r in rp}, {key(c) for c in cp}
+    rows = sorted((r for r in rd if key(r) not in have_r), key=lambda r: (r["s"], r["path"], r["usr"], r["vf"]))
+    tier(HERE / "deltas" / "2026-10-01_2026-10-02", rows, [c for c in cd if key(c) not in have_c])
+    merged = {"key": "deltas/2026-10-01_2026-10-02", "first": "2026-10-01", "last": "2026-10-02", "level": 1, "scans": RUNS[:2], "rows": len(rows)}
+    (HERE / "manifests" / "2026-10-02.m001.json").write_text(json.dumps({"gen": "fixture", "date": "2026-10-02", "base_scans": 2,
+        "scans": list(DATES)[:4], "runs": [merged], "rev": 1, "revises": "manifests/2026-10-02.json"}, indent=1) + "\n")
     g.VERSIONS = VERSIONS
     expected = {t: {d: g.oracle(t, day) for d, day in DATES.items()} for t in TERMS}
     (HERE / "expected.json").write_text(json.dumps(expected, indent=1, ensure_ascii=False) + "\n")
