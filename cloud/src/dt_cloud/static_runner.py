@@ -1,11 +1,17 @@
 """`dt-cloud static-names runs add SCAN_ID`: append one scan to the static name index as a run (specs/static-append.md),
 in Python, so a deployment's scan job calls it directly (no `gcloud`: GCS and Batch over their APIs):
 
+    [backfill: each listed run's missing drill / anchors, oldest first] →
     prepare → append (key ranges on Batch) → shards ∥ catalog → [drill (long ∥ short)] ∥ [anchors] → publish (local:
       `manifests/<id>.json`, the run at level 0) → R2 (each run the manifest lists, its `drill/meta.json` last; then a check
       that every served file of those runs is on R2; then the manifest, last) [→ verify] → prune
     then, once after the scans: merge (the newest manifest's due carries, `static_merge`, one Batch job waited on up to
       `-w` s; then R2 for the revision it publishes) — non-fatal: the store is servable whatever becomes of it
+
+First, every run the newest manifest lists gets the profile's drill and anchors when it lacks them (`Runner.backfill`):
+a level-0 run's built as its scan's stage builds it, a merged run's merged from its scans' level-0 runs (`static_merge
+tier`), oldest first, since each build reads the earlier runs' (a run published without one cuts the readers' stack there
+and fails every later scan's build). Its runs reach R2 with the scan's R2 job (or, nothing appended, the newest manifest's).
 
 The drill stage (the heavy-term drilldown, `static_drill`) runs when the profile says so (`drill`): one Batch job of two
 tasks, `build -k task` (task 0 the long kind, task 1 the short; the second to finish writes `meta.json`). The anchors
@@ -163,7 +169,7 @@ def job_spec(cfg: Profile, name: str, tasks: int, commands: list[str], *, stage:
 
 
 #: A stage's cost-attribution `component` (`cost_labels`); the rest of the chain is `static-names`.
-STAGE_COMPONENTS = {"drill": "drill", "anchors": "anchors"}
+STAGE_COMPONENTS = {"drill": "drill", "anchors": "anchors", "drill-merge": "drill", "anchors-merge": "anchors"}
 
 
 def _label(v: str) -> str:
@@ -262,14 +268,15 @@ class Runner:
         """Append `scan_id` (and with `catch_up` every earlier pending scan, in order). Returns the scans appended."""
         have, layouts = self.have()
         todo = pending_scans(have, self.published(layouts, have[-1]), scan_id, catch_up)
+        # Every listed run's drill / anchors first (a scan's own build reads its earlier runs').
+        built = self.backfill()
         if not todo:
-            self.log(f"{scan_id}: already appended; {'its drill, ' if self.cfg.drill else ''}the R2 copy and prune only")
+            self.log(f"{scan_id}: already appended; the R2 copy and prune only")
             if scan_id == have[-1]:
-                runs = self.read_json(self.manifests()[-1])["runs"] if self.manifests() else []
-                if f"deltas/{scan_id}" in {r["key"] for r in runs}:
-                    self.drill_anchors(scan_id)
                 self.r2(scan_id)
                 self.stage(f"{scan_id} prune", lambda: self.prune(scan_id))
+            elif built:
+                self.r2_newest()
             self.carries()
             return []
         if len(todo) > 1:
@@ -368,6 +375,84 @@ class Runner:
         # 8. prune: only the newest complete open-version state is kept.
         self.stage(f"{d} prune", lambda: self.prune(d))
 
+    # ── Backfill: every listed run's drill and anchors ───────────────────────
+
+    def tier_done(self, tier: str, key: str) -> bool:
+        """Whether run `key` has `tier` (`drill`: `drill/meta.json`; `anchors`: `anchors/meta.json`, and the starts-with
+        catalog's `anchors/start/meta.json` when the base carries one)."""
+        if tier == "drill":
+            return self.exists(f"{self.root}/{key}/drill/meta.json")
+        return self.exists(f"{self.root}/{key}/anchors/meta.json") and (
+            not self.exists(f"{self.root}/anchors/start/meta.json") or self.exists(f"{self.root}/{key}/anchors/start/meta.json"))
+
+    def backfill_plan(self, tier: str) -> list[tuple[str, str]]:
+        """The steps that give every run the newest manifest lists its `tier`, oldest first: `("build", scan)` a level-0 run's
+        (`static_drill build` / `static_anchors run`, which read the runs of the newest manifest before that scan, so
+        those come first), `("merge", key)` a merged run's from its scans' level-0 runs (`static_merge tier`, after
+        theirs). A run that has it is skipped, and so is everything it was built over: a build refuses missing earlier
+        tiers, so no existing drill or anchors was built over a stack that lacked one, and none needs rebuilding."""
+        from .static_append import latest_key
+
+        keys = self.manifests()
+        if not keys:
+            return []
+        names = [k.removeprefix(f"{self.root}/") for k in keys]
+        plan: list[tuple[str, str]] = []
+        seen: set[str] = set()
+
+        def ensure(key: str, scans: list[str]) -> None:
+            if key in seen or self.tier_done(tier, key):
+                return
+            seen.add(key)
+            if len(scans) == 1:
+                prior = latest_key(names, before=scans[0])
+                for r in self.read_json(f"{self.root}/{prior}")["runs"] if prior else []:
+                    ensure(r["key"], r["scans"])
+                plan.append(("build", scans[0]))
+            else:
+                for sc in scans:
+                    ensure(f"deltas/{sc}", [sc])
+                plan.append(("merge", key))
+
+        for r in self.read_json(keys[-1])["runs"]:
+            ensure(r["key"], r["scans"])
+        return plan
+
+    def backfill(self) -> bool:
+        """Every run the newest manifest lists gets the profile's drill (`drill`) and anchors (`anchors`, when the base has
+        them), each missing one in `backfill_plan`'s order: cw's 10-10 catch-up published the merged run
+        `deltas/2026-10-09T1801_2026-10-10T0001` without `drill/` (an image from before cw's `drill`), which cut the
+        readers' drill stack there and failed every later scan's drill build. The drill's and the anchors' steps run as
+        two chains at once (neither reads the other's); a failure fails the run, as the drill stage's does, once both
+        end. Returns whether any step ran (its runs then need the R2 copy: the caller's)."""
+        chains = []
+        for tier, on in (("drill", self.cfg.drill), ("anchors", self.cfg.anchors and self.exists(f"{self.root}/anchors/meta.json"))):
+            if on and (plan := self.backfill_plan(tier)):
+                self.log(f"backfill {tier}: {', '.join(f'{k} {x}' for k, x in plan)}")
+                chains.append((f"{tier} backfill ({len(plan)} steps)", partial(self._backfill_chain, tier, plan)))
+        self.concurrently("backfill", chains)
+        return bool(chains)
+
+    def _backfill_chain(self, tier: str, plan: list[tuple[str, str]]) -> None:
+        for kind, x in plan:
+            if kind == "build":
+                job = self.drill(x) if tier == "drill" else self.anchors(x)
+                if job:
+                    self.stage(f"{x} {job[0]}", job[1])
+            else:
+                self.stage(f"{x} {tier} merge", partial(self.tier_merge, tier, x))
+
+    def tier_merge(self, tier: str, key: str) -> None:
+        """Merged run `key`'s `tier` from its scans' level-0 runs: one job, `static_merge tier` (`backfill_tier`), then a
+        check that its liveness marker is there."""
+        vcpus = int(self.cfg.machine.rsplit("-", 1)[-1])
+        last = key.rsplit("_", 1)[-1]
+        name, spec = self.job(f"{tier}-merge", last, 1, "static_merge", ["tier", "-g", self.cfg.gen, "-r", key, "-t", tier,
+                                                                         "-M", f"{vcpus * 7700 * 3 // 4 // 1024}GB", "-p", str(vcpus)])
+        self.run_job(name, spec)
+        if not self.tier_done(tier, key):
+            raise RuntimeError(f"{self.root}/{key}: its {tier} not written (the merge job succeeded)")
+
     def drill_anchors(self, d: str) -> None:
         """The run's drill and anchors (each when the profile says so and its output is missing), at once: the drill reads
         the run's `sx/`, `cdelta/`, `sidecar.parquet` and catalog and the earlier runs' `drill/`; the anchors the run's
@@ -434,6 +519,13 @@ class Runner:
         name = job_id("r2", d, self.now())
         spec = job_spec(self.cfg, name, 1, cmds, stage="r2", scratch=False, r2=True, machine="n2-highmem-4", ssd_gb=375)
         self.stage(f"{d} r2 ({len(runs)} runs + manifests/{stem}.json)", lambda: self.run_job(name, spec))
+
+    def r2_newest(self) -> None:
+        """The R2 job for the newest manifest (a scan's, or a revision): its runs, then it."""
+        keys = self.manifests()
+        if keys:
+            stem = keys[-1].rsplit("/", 1)[-1].removesuffix(".json")
+            self.r2(parse_manifest(f"{stem}.json")[0], stem)
 
     def carries(self, fatal: bool = False) -> None:
         """The merge stage, once after the scans: the newest manifest's due carries (`static_merge.plan_carries`), when any,
@@ -547,12 +639,15 @@ def add_cmd(catch_up: bool, gen: str | None, no_merge: bool, dry_run: bool, veri
 @option("-n", "--dry-run", is_flag=True, help="Report the due carries; submit and write nothing")
 @option("-w", "--wait", type=float, help="Seconds to wait on the merge job (default: to its end, Batch's own cap)")
 def merge_cmd(gen: str | None, dry_run: bool, wait: float | None) -> None:
-    """The newest manifest's due carries, on their own: the merge job (`static_merge carry`), then R2 for the revision it
-    publishes (`runs add`'s merge stage, alone: for a schedule of its own, or to catch up). Exit 1 when it fails (the store
-    stays as it was)."""
+    """The newest manifest's due carries, on their own: first every listed run's missing drill / anchors (the profile's;
+    `Runner.backfill`, then the R2 job for the newest manifest), then the merge job (`static_merge carry`), then R2 for the
+    revision it publishes (`runs add`'s merge stage, alone: for a schedule of its own, or to catch up). Exit 1 when either
+    fails (the store stays as it was: servable)."""
     cfg = ready(profile(), gen)
     runner = gcs_runner(cfg, dry_run=dry_run, merge_wait=wait)
     try:
+        if runner.backfill():
+            runner.r2_newest()
         runner.carries(fatal=True)
     except RuntimeError as e:
         err(f"static-names runs merge: {e}")
