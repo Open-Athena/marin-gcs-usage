@@ -909,7 +909,8 @@ class Runner:
             m = self.read_json(keys[-1])
             top = self.p.compact_level
             after, merges = plan_carries(m["runs"], self.drilled(m["runs"]), top)
-            if top is not None and any(a["level"] == b["level"] == top - 1 for a, b in zip(after, after[1:])):
+            compact = top is not None and any(a["level"] == b["level"] == top - 1 for a, b in zip(after, after[1:]))
+            if compact:
                 self.log(f"merge: level {top} is due: compact into a new base generation (carries stop below it)")
             if merges:
                 desc = "; ".join(f"{len(ins)} runs → {out['key']} (level {out['level']})" for ins, out in merges)
@@ -922,6 +923,8 @@ class Runner:
                 if self.dry_run:
                     return
                 keys = self.manifests()
+            elif not compact:
+                self.log(f"merge: nothing due ({' '.join(f'L{r["level"]}' for r in m['runs']) or 'no runs'})")
             scan, rev = parse_manifest(keys[-1].rsplit("/", 1)[-1])
             if rev:
                 self.r2(scan, keys[-1].rsplit("/", 1)[-1].removesuffix(".json"))

@@ -136,6 +136,15 @@ def test_interval_level_3_is_left_to_a_compaction():
         [], ["merge: level 3 is due: compact into a new base generation (carries stop below it)"])
 
 
+def test_interval_nothing_due_is_logged():
+    """An L1 above an L0: no carry is due, and the merge stage says so (with the stack's levels)."""
+    f = IvFake(["2026-08-03"], compact_level=5)
+    runs = [{**_two(1)[0]}, {"key": "deltas/2026-08-06", "first": "2026-08-06", "last": "2026-08-06", "level": 0, "scans": ["2026-08-06"]}]
+    f.keys[f"{G1}/manifests/2026-08-06.json"] = {"date": "2026-08-06", "runs": runs}
+    f.runner(merge_wait=None).carries()
+    assert (f.jobs, [m for m in f.log if m.startswith("merge")]) == ([], ["merge: nothing due (L1 L0)"])
+
+
 @pytest.mark.parametrize("level, runs_level, arg, top", [(5, 2, "5", 3), (None, 4, "none", 5), (None, 9, "none", 10)])
 def test_interval_carries_below_the_level_or_unbounded(level, runs_level, arg, top):
     """Two L2s at level 5: one merge job, `carry -L 5`, into an L3; unbounded, two L4s (or L9s) carry on up, and no
