@@ -25,6 +25,7 @@ import { lensParam, ME_UNRESOLVED, resolveLens } from '../_lib/me.js'
 import { askBox, boxFor, boxStatus, type BoxEnv } from '../_lib/queryBox.js'
 import { isScanId } from '../../src/scanSlug.js'
 import { scanArg } from '../_lib/scanArg.js'
+import { traceJoins } from '../_lib/shared.js'
 
 export const onRequestGet = async (ctx0: { request: Request; env: Env; waitUntil?: (p: Promise<unknown>) => void }): Promise<Response> => {
   // `store=<key>`: a secondary store's env overlay (none = the primary, as is).
@@ -32,6 +33,7 @@ export const onRequestGet = async (ctx0: { request: Request; env: Env; waitUntil
   if (ctx1 instanceof Response) return ctx1
   const ctx = withPathStore(ctx1)
   const st = serverTiming()
+  traceJoins(ctx.env, st.trace)
   if (!storeReady(ctx.env)) {
     return new Response('diff API not configured (missing index store creds)', { status: 503 })
   }

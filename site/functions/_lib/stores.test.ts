@@ -4,7 +4,7 @@ import { requireViewer } from './auth'
 import { cacheKeyFor } from './edgeCache'
 import { indexDir, openIndex, pathScans, storeTarget, storeCreds } from './index'
 import { overTimeDataset } from './overTime'
-import { snapshotsPrefix } from './shared'
+import { REQ, Req, reqOf, snapshotsPrefix } from './shared'
 import { LENS_PRIMARY_ONLY, primaryOnly, secondaryStores, storeEnv, storeKey, withStore } from './stores'
 import { sqliteD1 } from './testD1'
 import { onRequestGet as owners } from '../api/owners'
@@ -89,16 +89,32 @@ describe('storeEnv', () => {
 })
 
 describe('withStore', () => {
-  it('no `store=` (or `store=primary`, or empty) is the very same context', () => {
+  /** `ctx`'s env split into its request (`REQ`) and the rest. */
+  const split = (ctx: { env: Env }) => {
+    const { [REQ]: r, ...env } = ctx.env as Env & { [REQ]?: Req }
+    return { r, env }
+  }
+  it('no `store=` (or `store=primary`, or empty) is the context, its env carrying the request', () => {
     for (const qs of ['date=2026-09-01', 'store=primary', 'store=']) {
-      const ctx = { request: req(qs), env: PRIMARY }
-      expect(withStore(ctx)).toBe(ctx)
+      const request = req(qs)
+      const out = withStore({ request, env: PRIMARY }) as { request: Request; env: Env }
+      const { r, env } = split(out)
+      expect([out.request === request, env, r instanceof Req, Object.keys(out).sort()]).toEqual([true, PRIMARY, true, ['env', 'request']])
     }
   })
   it('`store=meta` swaps in the overlay and keeps the request', () => {
     const request = req('store=meta')
-    const out = withStore({ request, env: PRIMARY })
-    expect(out).toEqual({ request, env: storeEnv(PRIMARY, 'meta', META) })
+    const out = withStore({ request, env: PRIMARY }) as { request: Request; env: Env }
+    const { r, env } = split(out)
+    expect([out.request === request, env, r instanceof Req]).toEqual([true, storeEnv(PRIMARY, 'meta', META), true])
+  })
+  it('the request\'s cancel kills its `Req` (its shared reads are evicted)', () => {
+    const ctl = new AbortController()
+    const out = withStore({ request: new Request(req('').url, { signal: ctl.signal }), env: PRIMARY }) as { env: Env }
+    const r = reqOf(out.env)!
+    const before = r.dead
+    ctl.abort()
+    expect([before, r.dead]).toEqual([false, true])
   })
   it('unknown / malformed / misconfigured stores are JSON errors', async () => {
     const res = async (qs: string, env: Env = PRIMARY) => {

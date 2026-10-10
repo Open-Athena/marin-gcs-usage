@@ -32,7 +32,7 @@
 import { S3Store } from '@rdub/file-tree/stores/s3'
 import { type FileMetaData, parquetMetadata, parquetMetadataAsync, parquetRead, parquetReadObjects, type RowGroup } from 'hyparquet'
 import type { Env } from './auth.js'
-import { inFlight, shared, STALLED, within } from './shared.js'
+import { inFlight, join, JOIN, type Join, reqOf, shared, STALLED, track } from './shared.js'
 import { d1Variant, isPrimary, PRIMARY_STORE, storeKey } from './stores.js'
 import { compressors } from './zstd.js'
 
@@ -485,7 +485,7 @@ const IV_SIBLING = new Map([['path', 'bysize'], ['bysize', 'path'], ['slices', '
 const ivFooters = new Map<string, Promise<FooterIndex>>()
 function ivFooter(env: Env, file: string): Promise<FooterIndex> {
   const key = ivKey(env, `${IV_PREFIX}/${env.INTERVAL_STORE_GEN!}/served/${file}.groups.parquet`)
-  return shared(ivFooters, `${storeKey(env)}|${key}`, () => openIvFooter(env, key, r2Bytes(env.INDEX_R2!)), 30_000, IV_JOIN.ms)
+  return shared(ivFooters, `${storeKey(env)}|${key}`, () => openIvFooter(env, key, r2Bytes(env.INDEX_R2!)), 30_000, ivJoin(env, 'footer'))
 }
 
 /** `INDEX_R2` as a `ByteStore`. */
@@ -527,11 +527,14 @@ export const IV_STATE_TTL = 60_000
 /** How long a broken run stays cut out (then it is tried again: a publish caught mid-copy heals). */
 export const IV_BROKEN_TTL = 30_000
 const ivStates = new Map<string, { at: number; p: Promise<IvState>; ok?: IvState }>()
-/** How long a read waits on an interval-store promise another request started (its state, a handle, a footer or
- *  footer group, a row group) before it evicts it and reads for itself. Workers freeze a cancelled request's
- *  promises (`shared`): a viewer leaving a slow lens view left its handle or groups pending forever, and every
- *  later read of them in the isolate waited on them with no response (gcs, 2026-10-10). A knob for tests. */
-export const IV_JOIN = { ms: 10_000 }
+/** The bounds on a read joining an interval-store promise another request started (its state, a handle, a footer
+ *  or footer group, a row group) before it evicts it and reads for itself (`shared.ts`' `JOIN`). Workers freeze a
+ *  cancelled request's promises: a viewer leaving a slow lens view left its handle or groups pending forever, and
+ *  every later read of them in the isolate waited on them with no response (gcs, 2026-10-10); a fixed 10 s wait per
+ *  memo then chained to ~60 s (prod, 2026-10-10). A knob for tests. */
+export const IV_JOIN = JOIN
+/** A memo `name` of the interval store, joined as `env`'s request (`Server-Timing`: `join-<name>`). */
+const ivJoin = (env: Env, name: string): Join => ({ name, req: reqOf(env) })
 const ivBroken = new Map<string, { at: number; error: string }>()
 const ivGenKey = (env: Env): string => `${storeKey(env)}|${env.INTERVAL_STORE_GEN}${ivRev(env)}`
 
@@ -632,10 +635,12 @@ async function ivState(env: Env): Promise<IvState> {
   const age = cur ? Date.now() - cur.at : Infinity
   if (cur && age < (cur.ok?.cut ? IV_BROKEN_TTL : IV_STATE_TTL)) {
     if (cur.ok) return cur.ok
-    // A load another request started: waited on up to `IV_JOIN`, then read afresh here.
-    const got = await within(cur.p, IV_JOIN.ms)
+    // A load another request started: joined (`IV_JOIN`), else read afresh here.
+    const got = await join(cur.p, ivJoin(env, 'state'))
     if (got !== STALLED) return got
     if (ivStates.get(k) === cur) ivStates.delete(k)
+    const now = ivStates.get(k)
+    if (now && now !== cur) return ivState(env)
   }
   const last = cur?.ok
   const entry: { at: number; p: Promise<IvState>; ok?: IvState } = { at: Date.now(), p: Promise.resolve(null as unknown as IvState) }
@@ -644,6 +649,7 @@ async function ivState(env: Env): Promise<IvState> {
     e => { if (ivStates.get(k) === entry) ivStates.delete(k); if (last) return last; throw e },
   )
   ivStates.set(k, entry)
+  track(entry.p, ivJoin(env, 'state'), () => { if (ivStates.get(k) === entry) ivStates.delete(k) })
   return entry.p
 }
 
@@ -662,7 +668,14 @@ function ivRunFooter(env: Env, run: string, file: string): Promise<FooterIndex> 
     const [footer, data] = await Promise.all([openIvFooter(env, key, r2Bytes(env.INDEX_R2!)), typeof r2.head === 'function' ? r2.head(`${dir}/${file}.parquet`) : Promise.resolve(true)])
     if (!data) throw Object.assign(new Error(`${dir}/${file}.parquet: not found`), { name: 'NotFoundError' })
     return footer
-  }, 30_000, IV_JOIN.ms)
+  }, 30_000, ivJoin(env, 'run-footer'))
+}
+
+/** A handle the isolate shares, as `env`'s request reads it: its reads (and its runs') are that request's work
+ *  (`reqOf`: what it joins, what it owns and what its cancel evicts), not the work of the request that opened it. */
+function ivOwn(env: Env, h: IndexHandle): IndexHandle {
+  if (reqOf(h.env) === reqOf(env)) return h
+  return { ...h, env, ...(h.runs ? { runs: h.runs.map(r => ({ ...r, env })) } : {}) } as IndexHandle
 }
 
 /** A served sort of the interval store as an index handle as of `date`'s scan (`pq` mode over its
@@ -698,7 +711,7 @@ export async function openInterval(env: Env, date: string, variant: string, retr
   for (const r of runs) for (const f of [file0, IV_SIBLING.get(file0)]) if (f) ivRunFooter(env, r.key, f).catch(() => {})
   const ck = `iv:${gen}${ivRev(env)}:${date}:${variant}${sliced ? ':s' : ''}|${runs.map(r => r.key).join(',')}`
   try {
-    return await shared(handles, ck, async (): Promise<IndexHandle> => {
+    return ivOwn(env, await shared(handles, ck, async (): Promise<IndexHandle> => {
       const src = r2Bytes(env.INDEX_R2!)
       const dir = `${IV_PREFIX}/${gen}/served`
       const key = ivKey(env, `${dir}/${file0}.parquet`)
@@ -710,7 +723,7 @@ export async function openInterval(env: Env, date: string, variant: string, retr
       const h: PqHandle = { mode: 'pq', file, env, date, variant, gen: `iv:${gen}${ivRev(env)}${sliced ? ':s' : ''}`, dir, schema, version, columns: variant === 'reads' ? null : rowColumns(version, schema), floor: null, footer, asOf, src, dataKey: key }
       if (!runs.length) return h
       return { ...h, runs: await Promise.all(runs.map(r => openIvRun(env, h, r.key, file0))) }
-    }, 300_000, IV_JOIN.ms)
+    }, 300_000, ivJoin(env, 'handle')))
   } catch (e) {
     // A run that won't open is cut out; the date is then the store's (an older run's or the base's) or per-scan.
     if (e instanceof IvTierBroken && !retried) return openInterval(env, date, variant, true)
@@ -1078,7 +1091,7 @@ async function ivFooterDoc(h: PqHandle, fg: FooterGroup): Promise<{ groups: Blob
     footerCache.put(fk(`fg:${fg.n}`), groups, groupsBytes(groups))
     footerCache.put(fk(`fj:${fg.n}`), json, jsonBytes(json))
     return { groups, json }
-  }, IV_JOIN.ms)
+  }, ivJoin(h.env, 'footer-doc'))
 }
 const groupsBytes = (gs: BlobGroup[]): number => gs.reduce((n, g) => n + 96 + 2 * (g.pMin.length + g.pMax.length), 0)
 const jsonBytes = (js: [number, string][]): number => js.reduce((n, [, j]) => n + 32 + 2 * j.length, 0)
@@ -1114,7 +1127,7 @@ async function footerOnce<T>(h: PqHandle, part: string, make: () => Promise<[T[]
   const k = `${storeKey(h.env)}|${h.asOf != null ? 'iv' : h.date}|${h.variant}|${h.gen}|${part}`
   const hit = footerCache.get<T>(k)
   if (hit) return hit
-  return inFlight(footersInFlight, k, () => make().then(([v, bytes]) => { footerCache.put(k, v, bytes); return v as unknown[] }), IV_JOIN.ms) as Promise<T[]>
+  return inFlight(footersInFlight, k, () => make().then(([v, bytes]) => { footerCache.put(k, v, bytes); return v as unknown[] }), ivJoin(h.env, 'footer-group')) as Promise<T[]>
 }
 
 /** The stored metadata (`rg_json`) of one footer group's tier groups, by `rg` (cached per isolate). */
@@ -1602,7 +1615,7 @@ async function readGroupsCached<T>(h: IndexHandle, groups: { rg: number; json: s
   const waits: Promise<void>[] = []
   const iv = h.asOf != null
   // The groups this read fetches for any waiting read (`ivGroupKey` → resolve with every version).
-  const mine = new Map<string, (g: IvGroup | null) => void>()
+  const mine = new Map<string, { resolve: (g: IvGroup | null) => void; p: Promise<IvGroup | null> }>()
   // A group's rows at this handle's scan (the entry holds every version: `cachedGroup`).
   const take = (i: number, rg: number, g: IvGroup, put: boolean) => {
     if (put) cachePut(ivGroupKey(h, rg), [g], g.length * ROW_BYTES)
@@ -1627,19 +1640,20 @@ async function readGroupsCached<T>(h: IndexHandle, groups: { rg: number; json: s
       const pending = groupsInFlight.get(fk)
       if (pending) {
         h.trace?.('gshared', 1)
-        // Up to `IV_JOIN`; a group its reader dropped (abandoned, failed, or frozen with its cancelled request) is
+        // Joined (`IV_JOIN`); a group its reader dropped (abandoned, failed, or frozen with its cancelled request) is
         // read here instead — an empty slot would be rows silently missing from the answer.
-        waits.push(within(pending, IV_JOIN.ms).then(async got => {
+        waits.push(join(pending, ivJoin(h.env, 'group')).then(async got => {
           if (got !== STALLED && got) return take(i, g.rg, got, false)
-          if (got === STALLED && groupsInFlight.get(fk) === pending) groupsInFlight.delete(fk)
           if (stop?.()) return
           out[i] = (await readGroupsCached(h, [g], f, stop, versions, pre))[0]
         }))
         return
       }
       let resolve!: (g: IvGroup | null) => void
-      groupsInFlight.set(fk, new Promise(r => { resolve = r }))
-      mine.set(fk, resolve)
+      const p = new Promise<IvGroup | null>(r => { resolve = r })
+      groupsInFlight.set(fk, p)
+      track(p, ivJoin(h.env, 'group'), () => { if (groupsInFlight.get(fk) === p) groupsInFlight.delete(fk) })
+      mine.set(fk, { resolve, p })
     }
     miss.push({ i, ...g, start: 0, end: 0 })
   })
@@ -1647,8 +1661,9 @@ async function readGroupsCached<T>(h: IndexHandle, groups: { rg: number; json: s
     const r = mine.get(fk)
     if (!r) return
     mine.delete(fk)
-    groupsInFlight.delete(fk)
-    r(got)
+    // Only this read's own entry: a joiner that evicted it may have put its own in place.
+    if (groupsInFlight.get(fk) === r.p) groupsInFlight.delete(fk)
+    r.resolve(got)
   }
   try {
     // An interval store's misses: first the colo's decoded copies (`coloGroup`), then the rest from the file.
