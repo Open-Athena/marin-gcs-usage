@@ -85,7 +85,9 @@ export function ChildrenTable({ node, segs, scheme, ownerIdx, userIdx, onPickUse
   // At the store root every row is a whole bucket (on a `*` store, a whole
   // top-level root), which a plan item can't name: no trash there.
   const canTrash = staging && (segs.length > 0 || !!filter)
-  const showSel = staging ? canStage && (canTrash || assigning) : assigning
+  // A filtered view whose matches can't be acted on (a refusal, a rollup, a catalog or approximate answer,
+  // `actBlock`): no row offers an action, and nothing selects — a row's whole prefix is never the stand-in.
+  const showSel = filter?.blocked ? false : staging ? canStage && (canTrash || assigning) : assigning
   // A file row stages that exact object, a folder row its prefix (specs/file-assign.md).
   const trash = (uri: string, k: TreeNode['k']) => stage.mutate({ prefixes: [actionItem(uri, k)] })
   // One memo for the whole multi-select gesture (stored on the stage batch).

@@ -23,6 +23,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from click import Choice, group, option
 
+from . import static_names as sn
 from . import static_roots as sr
 from .static_names import CODEC, OPEN, PREFIX, _batches, err, q
 from .static_profile import data_bucket
@@ -298,14 +299,16 @@ class TieredDrill:
     """A member's filtered view at `P` over tiers (base first): dispatch by the summed roots bound against `R + 2·Σ rg`;
     roots combined across tiers (smallest `vt`); rollups newest first, down to and including a full header."""
 
-    def __init__(self, tiers: list[Tier], kind: str):
-        self.tiers, self.kind = tiers, kind
+    def __init__(self, tiers: list[Tier], kind: str, rule=None):
+        self.tiers, self.kind, self.rule = tiers, kind, rule
         self.R = int(tiers[0].meta["R"])
         self.thr = self.R + 2 * sum(t.rg for t in tiers)
 
     def view(self, term: str, P: str, dates: list[str]) -> dict:
+        from .hex_runs import occurs
+
         t = term.lower()
-        if t in P.lower():
+        if occurs(t, P.lower(), self.rule):
             return {"q": t, "P": P, "source": "plain", "answers": None}
         cs = [tier.canon(t, self.kind) for tier in self.tiers]
         total, sels, heavy = 0, [], False
@@ -446,7 +449,7 @@ def full_rollups(con, rt: str, K: int, into: str) -> None:
 
 
 def long_day_roots(con, prev: pa.Table, new_members: list[str], sx_files: list[str], history: pa.Table | None,
-                   chunk_rows: int = 1 << 24, log=err) -> dict:
+                   chunk_rows: int = 1 << 24, log=err, rule=None) -> dict:
     """The long members' delta at a scan: digests of every member's delta roots (over the run's suffix rows `sx_files`)
     refine the previous classes `prev` `(q, canonical)` → table `cls (q, canonical)`; each class canonical's delta roots
     → table `dr` (`ROOT_COLS`). `new_members` (members first at this scan) are classes of their own, their roots their
@@ -463,7 +466,7 @@ def long_day_roots(con, prev: pa.Table, new_members: list[str], sx_files: list[s
     con.execute(f"DROP TABLE IF EXISTS dg; CREATE TABLE dg ({sr.DIGEST_COLS})")
     chunks = [(f, w) for f in sx_files for w in sr.chunk_wheres(f, chunk_rows)]
     for k, (f, where) in enumerate(chunks):
-        sr.member_roots(con, sr.sx_rows_sql(f"(SELECT * FROM read_parquet({q(f)}) WHERE {where})"), "mq", "dg", agg="digest")
+        sr.member_roots(con, sr.sx_rows_sql(f"(SELECT * FROM read_parquet({q(f)}) WHERE {where})"), "mq", "dg", agg="digest", rule=rule)
         log(f"drill long: digests, chunk {k + 1}/{len(chunks)} in {monotonic() - t0:.0f}s")
     con.execute("""CREATE OR REPLACE TABLE cls AS
         SELECT q, min(q) OVER (PARTITION BY canonical, n, h1, h2) AS canonical FROM (
@@ -473,11 +476,11 @@ def long_day_roots(con, prev: pa.Table, new_members: list[str], sx_files: list[s
     con.execute("CREATE OR REPLACE TABLE dm AS SELECT DISTINCT canonical AS q FROM cls WHERE canonical NOT IN (SELECT q FROM newq)")
     con.execute(f"DROP TABLE IF EXISTS dr; CREATE TABLE dr ({sr.ROOT_COLS})")
     for k, (f, where) in enumerate(chunks):
-        sr.member_roots(con, sr.sx_rows_sql(f"(SELECT * FROM read_parquet({q(f)}) WHERE {where})"), "dm", "dr")
+        sr.member_roots(con, sr.sx_rows_sql(f"(SELECT * FROM read_parquet({q(f)}) WHERE {where})"), "dm", "dr", rule=rule)
         log(f"drill long: delta roots, chunk {k + 1}/{len(chunks)} in {monotonic() - t0:.0f}s")
     if new_members and history is not None and history.num_rows:
         con.register("hist_in", history)
-        sr.member_roots(con, "SELECT * FROM hist_in", "newq", "dr")
+        sr.member_roots(con, "SELECT * FROM hist_in", "newq", "dr", rule=rule)
         con.unregister("hist_in")
     split = con.execute("SELECT count(DISTINCT p.canonical), count(DISTINCT c.canonical) FROM pm AS p JOIN cls AS c USING (q)").fetchone()
     doc = {"members": con.execute("SELECT count(*) FROM cls").fetchone()[0], "classes_before": split[0], "classes": split[1],
@@ -490,13 +493,13 @@ def long_day_roots(con, prev: pa.Table, new_members: list[str], sx_files: list[s
     return doc
 
 
-def short_day_roots(con, cdelta_files: list[str]) -> dict:
+def short_day_roots(con, cdelta_files: list[str], rule=None) -> dict:
     """The one- and two-character literals' delta roots at a scan, from its version delta → table `dr`."""
     con.execute(f"DROP TABLE IF EXISTS dr; CREATE TABLE dr ({sr.ROOT_COLS})")
     con.execute("CREATE OR REPLACE TABLE newq (q VARCHAR)")
     if cdelta_files:
         lst = "[" + ", ".join(q(f) for f in cdelta_files) + "]"
-        sr.short_roots(con, f"SELECT depth, path, usr, vf, vt, size, n_files FROM read_parquet({lst})", "dr")
+        sr.short_roots(con, f"SELECT depth, path, usr, vf, vt, size, n_files FROM read_parquet({lst})", "dr", rule=rule)
     return {"rows": con.execute("SELECT count(*) FROM dr").fetchone()[0]}
 
 
@@ -941,7 +944,7 @@ def base_meta(R: int, K: int, rg: int | None = None) -> dict:
 
 def build_day(con, prior: list[Tier], out: Path, *, D: int, R: int, K: int, floor: int, sx_files: list[str], cdelta_files: list[str],
               new_members: list[str], history: pa.Table | None, meas: dict[str, str], tier: dict, chunk_rows: int = 1 << 24,
-              file_rows: int = FILE_ROWS, rg: int | None = None, kinds: tuple[str, ...] = KINDS, log=err) -> dict:
+              file_rows: int = FILE_ROWS, rg: int | None = None, kinds: tuple[str, ...] = KINDS, log=err, rule=None) -> dict:
     """A scan's `drill/` in `out`: each kind's delta roots, rollups, indexes and `dcount` (long: and the run's alias map), and
     with both kinds `meta.json` last (one kind: its part, `meta.<kind>.json`; `join_meta` makes `meta.json` of the two). Needs
     table `pnew (depth, path)`; `meas[kind]` is a query of the base's `(q, dir, rows)` at ≥ `floor` rows."""
@@ -951,11 +954,11 @@ def build_day(con, prior: list[Tier], out: Path, *, D: int, R: int, K: int, floo
     for kind in kinds:
         t1 = monotonic()
         if kind == "long":
-            meta["classes"] = long_day_roots(con, prior[-1].alias_table(), new_members, sx_files, history, chunk_rows, log)
+            meta["classes"] = long_day_roots(con, prior[-1].alias_table(), new_members, sx_files, history, chunk_rows, log, rule)
             meta["new_members_list"] = new_members
             write_aliases(con, out)
         else:
-            meta["short_delta"] = short_day_roots(con, cdelta_files)
+            meta["short_delta"] = short_day_roots(con, cdelta_files, rule)
         con.execute(f"CREATE OR REPLACE TABLE meas AS {meas[kind]}")
         reads = TierReads(prior, kind)
         meta[f"{kind}_day"] = day_rollups(con, prior, kind, D, R=R, K=K, floor=floor, reads=reads, log=log)
@@ -1199,6 +1202,7 @@ def build_cmd(bucket, chunk_rows, date, floor_rows, gen, kind, K, mount, mem, dr
     shutil.rmtree(outp, ignore_errors=True)
     meta = build_day(con, prior, outp, D=scan_epoch(date), R=R, K=K, floor=floor_rows, sx_files=sx, cdelta_files=cdelta,
                      new_members=new_members, history=history, meas=meas, chunk_rows=chunk_rows, rg=RUN_RG, kinds=kinds,
+                     rule=sn.gen_rule_at(bucket, gen),
                      tier={"gen": gen, "first": date, "last": date, "level": 0, "scans": [date], "prior": [t.name for t in prior]})
     if not dry_run:
         held = {f.name: f.read_bytes() for f in outp.glob("meta*.json")}
@@ -1264,7 +1268,7 @@ def _tiers(bucket: str, gen: str, runs: str | None) -> list[Tier]:
 def query_cmd(bucket, cases_file, dates, gen, runs) -> None:
     """Answer drill cases over the base and its runs (the Worker's logic, GCS ranged reads): one JSON line per case."""
     tiers = _tiers(bucket, gen, runs)
-    drills = {kind: TieredDrill(tiers, kind) for kind in KINDS}
+    drills = {kind: TieredDrill(tiers, kind, sn.gen_rule_at(bucket, gen)) for kind in KINDS}
     for t, P in sr._cases(cases_file):
         t0 = monotonic()
         doc = drills["short" if len(t) <= 2 else "long"].view(t, P, list(dates))

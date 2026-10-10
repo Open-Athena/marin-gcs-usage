@@ -36,6 +36,8 @@ import type { RowSource } from './MatchActions'
 import { type MatchFields, seriesMatches } from './filterMatches'
 import { QueryHelpTip } from './QueryHelp'
 import { apiError, INDEXED_SYNTAX, refusalOf, useFilterCaps, useIndexedScans } from './filterCaps'
+import { actBlock } from './matchAct'
+import { type BlindPanel, blindNote, blindShown } from './filterBlind'
 import { LoadFailure, mapSlot } from './LoadFailure'
 import { REJECT_MESSAGES, rejectQuery } from '../functions/_lib/indexedOnly'
 import { FilterFlags, FilterNote, matchedNote } from './FilterNote'
@@ -422,7 +424,7 @@ function AppContent() {
           { credentials: 'include', signal },
         ))
         if (!r.ok) { pf.fail(); throw apiError(r.status, await r.text()) }
-        const j = await r.json() as MatchFields & { tree: TreeNode; tier?: string; matches?: string[]; threshold?: number; partialReason?: string; approximateReason?: string }
+        const j = await r.json() as MatchFields & { tree: TreeNode; tier?: string; matches?: string[]; threshold?: number; partialReason?: string; approximateReason?: string; hexRuns?: { min: number; tail: number } }
         pf.decoded()
         return j
       },
@@ -453,7 +455,7 @@ function AppContent() {
           { credentials: 'include', signal },
         ))
         if (!r.ok) { pf.fail(); throw new Error(`${r.status}`) }
-        const j = await r.json() as MatchFields & { tree: TreeNode; tier?: string; partialReason?: string; approximateReason?: string }
+        const j = await r.json() as MatchFields & { tree: TreeNode; tier?: string; partialReason?: string; approximateReason?: string; hexRuns?: { min: number; tail: number } }
         pf.decoded()
         return j
       },
@@ -594,16 +596,25 @@ function AppContent() {
   const coverIntent = useCallback(() => { if (coverOk && !coverScoped) void prefetchCover(qc, sfetch, store.key, coverArgs) }, [coverOk, coverScoped, qc, sfetch, store.key, coverArgs])
   const noScan = (): Promise<never> => Promise.reject(new HttpError('This scan isn’t loaded yet; try again in a moment.', 409))
   const coverResolve = useCallback(() => coverArgs.date ? fetchCover(qc, sfetch, store.key, coverArgs) : noScan(), [qc, sfetch, store.key, coverArgs])
+  // A view whose answer doesn't list its matches — refused, a rollup or catalog answer, approximate — offers no
+  // action on them (`actBlock`): the bulk bar says why, muted, and no row offers one.
+  const actBlocked = useMemo(() => {
+    if (!fq) return null
+    const d = subtreeQs[subtreeQs.length - 1]?.data ?? coarseQs[coarseQs.length - 1]?.data ?? subtreeQs[0]?.data
+    const r = (d as { rollup?: { bucketsOnly?: true } } | undefined)?.rollup
+    return actBlock({ refused: !!refusalOf(viewErr), rollup: !!r, bucketsOnly: !!r?.bucketsOnly, approximate: !!d?.approximateReason, dirsOnly: !!(d as { dirsOnly?: true } | undefined)?.dirsOnly })
+  }, [fq, subStamp, viewErr]) // eslint-disable-line react-hooks/exhaustive-deps
   const tblFilter = useMemo((): RowSource | undefined => {
     if (!fq) return undefined
     // Under an owner or class scope a match's scoped bytes aren't a prefix: the click says so, muted.
     const scoped = (): Promise<never> => Promise.reject(new HttpError('Clear the owner or storage-class scope to act on the matches.', 409))
     return {
-      key: `${coverKey}|${coverScoped}`,
+      key: `${coverKey}|${coverScoped}|${actBlocked ?? ''}`,
+      blocked: actBlocked,
       resolve: row => coverScoped ? scoped() : !coverArgs.date ? noScan() : rowCover(qc, sfetch, store.key, coverArgs, row),
       prefetch: row => coverScoped || !coverOk ? Promise.resolve() : rowCover(qc, sfetch, store.key, coverArgs, row).catch(() => {}),
     }
-  }, [fq, coverKey, coverScoped, coverOk, qc, sfetch, store.key, coverArgs]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [fq, coverKey, coverScoped, coverOk, qc, sfetch, store.key, coverArgs, actBlocked]) // eslint-disable-line react-hooks/exhaustive-deps
   // The filter's match roots (the deepest subtree response carries them);
   // the series sums them per scan (the age chart follows the drill instead —
   // its own per-path index, below).
@@ -629,7 +640,7 @@ function AppContent() {
     if (!fq) return undefined
     const d = subtreeQs[subtreeQs.length - 1]?.data ?? coarseQs[coarseQs.length - 1]?.data ?? subtreeQs[0]?.data
     const r = (d as { rollup?: { bucketsOnly?: true; scopedBelow?: true } } | undefined)?.rollup
-    return d && { partialReason: d.partialReason, approximateReason: d.approximateReason, bucketsOnly: r?.bucketsOnly ? (r.scopedBelow ? 'scoped' as const : true) : false }
+    return d && { partialReason: d.partialReason, approximateReason: d.approximateReason, bucketsOnly: r?.bucketsOnly ? (r.scopedBelow ? 'scoped' as const : true) : false, dirsOnly: !!(d as { dirsOnly?: true }).dirsOnly, hexRuns: d.hexRuns }
   }, [fq, subStamp]) // eslint-disable-line react-hooks/exhaustive-deps
   const meta: Meta | null = metaQ.data ?? null
   // Section `#hash` both ways (deep link in, scroll-spy out) and the scroll
@@ -1219,7 +1230,7 @@ function AppContent() {
           </span>
         )}
         {fq && !coverScoped && (
-          <BulkBar cover={coverQ.data} loading={coverQ.isFetching && !coverQ.data} onIntent={coverIntent} resolve={coverResolve} resetKey={coverKey}
+          <BulkBar cover={coverQ.data} loading={coverQ.isFetching && !coverQ.data} onIntent={actBlocked ? undefined : coverIntent} resolve={coverResolve} resetKey={coverKey} blocked={actBlocked}
             scheme={store.scheme} query={fq} canAssign={canAssignHere} canStage={canStageHere} />
         )}
       </SiteNav>
@@ -1407,8 +1418,8 @@ function AppContent() {
               {diff.lookups_capped && <> Some small one-sided names went unread (lookup budget); they may sit in “(other)”.</>}
               {diff.truncated && <> Largest changes shown — the diff walk was budget-capped, so the smallest movements aren’t enumerated (the totals are exact).</>}
             </>}><span className="info" tabIndex={0} aria-label="how this diff is read"> ⓘ</span></Tooltip>
-          )}{diff && fq && (diff.partialReason || diff.approximateReason) && (
-            <span className="fflags"><FilterFlags partialReason={diff.partialReason} approximateReason={diff.approximateReason} /></span>
+          )}{diff && fq && (diff.partialReason || diff.approximateReason || diff.dirsOnly || diff.hexRuns) && (
+            <span className="fflags"><FilterFlags partialReason={diff.partialReason} approximateReason={diff.approximateReason} dirsOnly={diff.dirsOnly} hexRuns={diff.hexRuns} /></span>
           )}</h2>
           {/* 2-row header band above the map: scan pickers + presets (with the
               status/error line) sit as `controls`, the colour legend beneath
@@ -1501,9 +1512,22 @@ function AppContent() {
       )}
 
 
+      {/* The panels that don't follow the name filter hide under one (`filterBlind.ts`), one muted line in
+          their place naming them. */}
+      {(() => {
+        const present: BlindPanel[] = [
+          ...(!lensScoped && (ageQ.isPending || age.length > 0) ? ['age' as const] : []),
+          ...(store.lifecycle ? ['lifecycle' as const] : []),
+          ...(meta && store.prices ? ['classes' as const] : []),
+          ...(hasAttr && mapTree ? ['ownership' as const] : []),
+        ]
+        const note = blindNote(!!fq, present)
+        return note && <p className="loading filter-blind">{note}</p>
+      })()}
+
       {/* Hidden when there's no age index for this deploy (e.g. r2 has no
           age-pyramid tier yet): show while loading or once rows arrive. */}
-      {!lensScoped && (ageQ.isPending || age.length > 0) && (
+      {blindShown(!!fq) && !lensScoped && (ageQ.isPending || age.length > 0) && (
       <section id="mtime">
         {/* Granularity is auto-picked (and user-switchable) inside AgeChart, so
             the heading stays unit-free rather than lying about "month". */}
@@ -1524,14 +1548,14 @@ function AppContent() {
 
       {/* Stores whose scan job snapshots the buckets' lifecycle rules get the
           fold here, last among the data sections; the rows diff against the previous scan. */}
-      {store.lifecycle && (
+      {blindShown(!!fq) && store.lifecycle && (
         <LifecycleFold
           store={store} asof={asof} prevScan={prevScan}
           note={<>Intended state is tracked in <code>{store.lifecycle.tracked}</code> (<code>dt-cloud lifecycle diff|push</code>).</>}
         />
       )}
 
-      {meta && store.prices && (() => {
+      {blindShown(!!fq) && meta && store.prices && (() => {
         // Class mix of the *drilled* node (each node carries descendant-inclusive
         // `cb`), so this tracks the treemap instead of always showing fleet totals.
         const node = mapPath ? mapPath[mapPath.length - 1] : tree
@@ -1571,7 +1595,7 @@ function AppContent() {
 
       {/* Static attribution reference — how ownership is inferred + the rule tables.
           Reference material, so it sits last rather than sandwiched mid-page. */}
-      {hasAttr && mapTree && <AttributionRules tree={mapTree} />}
+      {blindShown(!!fq) && hasAttr && mapTree && <AttributionRules tree={mapTree} />}
 
       <SiteKbd
         placeholder={store.owners ? 'Users, color modes, scans, pages…' : 'Color modes, scans, pages, actions…'}

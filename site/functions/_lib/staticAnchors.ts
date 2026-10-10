@@ -43,6 +43,7 @@ import { DRILL_RULES, type DrillMeta, GroupFile, type Rollup, type RollupCell, t
 import { type Blobs, cmp, FirstHits, type Hit, type IndexCache, type GroupIndex, type PathKeys, type SxColumns, StaticNames, underRange } from './staticNames.js'
 import { combineFolds, subBlobs, type Tiers, type TierState } from './staticRuns.js'
 import type { FilterRejectCode } from './indexedOnly.js'
+import { dropped, type HexRule, occurs, ruleOf, sameRule, segmentOccurs } from './hexRuns.js'
 
 export const NAMES_DIR = 'names'
 export const ANCHORS_DIR = 'anchors'
@@ -71,22 +72,25 @@ export function parseKey(key: string): { text: string; mode: Mode | null } {
   return { text, mode: start && end ? 'exact' : start ? 'start' : end ? 'end' : null }
 }
 
-/** Whether a lowercase segment matches `text` in `mode` (null: contains). */
-export const segmentMatches = (seg: string, text: string, mode: Mode | null): boolean =>
-  mode === 'start' ? seg.startsWith(text) : mode === 'end' ? seg.endsWith(text) : mode === 'exact' ? seg === text : seg.includes(text)
+/** Whether a lowercase segment matches `text` in `mode` (null: contains) under the generation's hex-run rule
+ *  (`segmentOccurs`; null: the full index). */
+export const segmentMatches = (seg: string, text: string, mode: Mode | null, rule: HexRule | null = null): boolean =>
+  segmentOccurs(seg, text, mode, rule)
 
 /** Whether `path` (any case) holds the keyed term: some segment of its lowercase matches (a contains literal: the
  *  lowercase path contains it, which for a `/`-free literal is the same). The view root P holding it is the plain view. */
-export function termInPath(key: string, path: string): boolean {
+export function termInPath(key: string, path: string, rule: HexRule | null = null): boolean {
   const { text, mode } = parseKey(key)
   const l = path.toLowerCase()
-  if (!mode) return l.includes(text)
-  return path !== '' && l.split('/').some(seg => segmentMatches(seg, text, mode))
+  if (!mode) return occurs(text, l, rule)
+  return path !== '' && l.split('/').some(seg => segmentMatches(seg, text, mode, rule))
 }
 
 /** An anchored term's first-hit fold over suffix rows (`q$`, `s` = the name's suffixes) or name rows (`^q`, `^q$`,
  *  `s` = `/` + the name): per row, the key test on `s`, depth ≥ 1, the paths under `under` (a scoped read's groups
- *  hold other paths too), and no ancestor segment matching. Each version holds at most one such row, so no dedup. */
+ *  hold other paths too), and no ancestor segment matching. Each version holds at most one such row, so no dedup.
+ *  `rule`: the generation's hex-run rule (`segmentOccurs`): a `q$` row (a kept suffix in a run's tail) whose
+ *  occurrence the rule drops is no match, and an ancestor segment matches only where the term occurs under it. */
 export class AnchoredHits extends FirstHits {
   readonly text: string
   readonly mode: Mode
@@ -94,8 +98,8 @@ export class AnchoredHits extends FirstHits {
   private hi = ''
   /** Past `cap` first hits: the read is abandoned (`hits` emptied, later rows skipped). */
   over = false
-  constructor(key: string, under?: string, readonly cap = Infinity) {
-    super(key)
+  constructor(key: string, under?: string, readonly cap = Infinity, rule: HexRule | null = null) {
+    super(key, rule)
     const k = parseKey(key)
     if (!k.mode) throw new Error(`static anchors: ${JSON.stringify(key)} is not an anchored key`)
     this.text = k.text
@@ -108,17 +112,21 @@ export class AnchoredHits extends FirstHits {
 
   override add(cols: SxColumns): void {
     if (this.over) return
-    const k = this.rowKey, exact = this.mode !== 'start', t = this.text, mode = this.mode
+    const k = this.rowKey, exact = this.mode !== 'start', t = this.text, mode = this.mode, rule = this.rule
     this.rows_read += cols.path.length
     for (let i = 0; i < cols.path.length; i++) {
       const s = cols.s[i]
       if (exact ? s !== k : !s.startsWith(k)) continue
       const p = cols.path[i]
       if (this.lo != null && (cmp(p, this.lo) < 0 || cmp(p, this.hi) >= 0)) continue
+      const slash = p.lastIndexOf('/')
+      if (rule && mode === 'end') {
+        const name = p.slice(slash + 1).toLowerCase()
+        if (dropped(name, name.length - t.length, t.length, rule)) continue
+      }
       this.rows_matching++
       if (cols.depth[i] < 1) continue
-      const slash = p.lastIndexOf('/')
-      if (slash >= 0 && p.slice(0, slash).toLowerCase().split('/').some(seg => segmentMatches(seg, t, mode))) continue
+      if (slash >= 0 && p.slice(0, slash).toLowerCase().split('/').some(seg => segmentMatches(seg, t, mode, rule))) continue
       this.hits.push({ path: p, depth: cols.depth[i], usr: cols.usr[i], vf: Number(cols.vf[i]), vt: Number(cols.vt[i]), size: cols.size[i], n: cols.n_files[i] })
       if (this.hits.length > this.cap) { this.over = true; this.hits.length = 0; return }
     }
@@ -133,8 +141,9 @@ function cappedHits(key: string, folds: AnchoredHits[], cap: number): Hit[] | nu
 }
 
 /** A tier's `anchors/meta.json`: R, K, the shards' row-group size `rg` (the dispatch slack), the rollup index's
- *  `idx_rg`, per rollup set its `row_groups` (`end_rollups`, `exact_rollups`), and a run's `scans`. */
-export interface AnchorsMeta extends DrillMeta { scans?: string[] }
+ *  `idx_rg`, per rollup set its `row_groups` (`end_rollups`, `exact_rollups`), a run's `scans`, and the hex-run rule
+ *  its rollups were built under (`hex_runs`; absent: none — a generation built before the rule). */
+export interface AnchorsMeta extends DrillMeta { scans?: string[]; hex_runs?: unknown }
 
 /** One tier's anchored readers: its name index, rollups and starts-with catalog (the base: `dir` null). */
 class AnchorTier {
@@ -225,7 +234,11 @@ export class AnchoredSource implements HitSource {
     const light = await this.light.state()
     const none = { version: 'none', scans: [], tiers: [], light, start: { tiers: [], scans: [] } }
     if (!light.tiers.length) return none
-    try { await this.tier(null).info() } catch { return none }
+    let meta: AnchorsMeta
+    try { meta = await this.tier(null).info() } catch { return none }
+    // Built under another hex-run rule than the generation's (`static_anchors.py` records the one it read): its
+    // `q$` rollups would answer another predicate, so the anchored tiers decline (`q$` still reads the light index).
+    if (!sameRule(ruleOf(meta.hex_runs), light.hexRuns)) return none
     const runs = light.tiers.slice(1).map(t => t.dir!)
     const prefix = async (ds: string[], marker?: string) => { const live = await Promise.all(ds.map(d => this.isLive(d, marker))); const n = live.indexOf(false); return n < 0 ? ds : ds.slice(0, n) }
     const kept = await prefix(runs)
@@ -297,7 +310,7 @@ export class AnchoredSource implements HitSource {
     const sels = await Promise.all(readers.map(r => r.select(k, newIo(), { under })))
     const upper = sels.reduce((n, s) => n + (s?.rows ?? 0), 0)
     if (upper > this.startMaxRows) return null
-    const fold = () => new AnchoredHits(key, under, this.startMaxHits)
+    const fold = () => new AnchoredHits(key, under, this.startMaxHits, st.light.hexRuns)
     const got = await Promise.all(readers.map(r => r.read(k, Infinity, { under, fold })))
     const hits = cappedHits(key, got.map(g => g.fold as AnchoredHits), this.startMaxHits)
     if (!hits) return null
@@ -341,7 +354,7 @@ export class AnchoredSource implements HitSource {
         if (cached) return { hits: cached, io: { from: 'cache', version }, scans }
         const k = mode === 'end' ? parseKey(key).text : `/${parseKey(key).text}`
         const cap = mode === 'start' ? this.startMaxHits : Infinity
-        const fold = () => new AnchoredHits(key, undefined, cap)
+        const fold = () => new AnchoredHits(key, undefined, cap, light.hexRuns)
         const exact = mode !== 'start'
         const readers = st ? st.tiers.map(t => t.names) : light.tiers.map(t => t.names)
         const sels = await Promise.all(readers.map(r => r.select(k, newIo(), { exact })))
@@ -372,7 +385,7 @@ export class AnchoredSource implements HitSource {
     const sels = await Promise.all(readers.map(r => r.select(k, newIo(), { exact: true, under })))
     const upper = sels.reduce((n, s) => n + (s?.rows ?? 0), 0)
     if (upper <= bound) {
-      const fold = () => new AnchoredHits(key, under)
+      const fold = () => new AnchoredHits(key, under, Infinity, st.light.hexRuns)
       const got = await Promise.all(readers.map(r => r.read(k, Infinity, { exact: true, under, fold })))
       const hits = combineFolds(key, got.map(g => g.fold!)).hits
       return { hits, io: { from: 'anchors', source: 'roots', upper, rows_read: got.reduce((n, g) => n + g.io.rows_read, 0), tiers: readers.length }, scans: st.scans }

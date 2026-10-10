@@ -66,6 +66,12 @@ describe('static runs', () => {
     expect(await tiers(files([])).scans()).toEqual(DATES.slice(0, 2))
   })
 
+  it('names the base\'s dir-only (v1) scans, with runs or without; an unversioned scans.json has none', async () => {
+    const versioned = (b: Blobs): Blobs => ({ ...b, json: async <T,>(key: string) => (key === 'scans.json' ? { scans: [{ id: '2026-08-01', version: 1 }, { id: '2026-09-01', version: 2 }] } : await b.json(key)) as T })
+    expect(await Promise.all([tiers(files()).dirOnly(), tiers(versioned(files())).dirOnly(), tiers(versioned(files([]))).dirOnly()]))
+      .toEqual([[], ['2026-08-01'], ['2026-08-01']])
+  })
+
   it('exercises close records, opens, and a literal that became a member in the last run', () => {
     expect(catalog.qqq?.length).toBeGreaterThan(1)
     expect(expected.foo['2026-10-02']).not.toEqual(expected.foo['2026-10-01'])
@@ -181,6 +187,18 @@ describe('a broken tier: the stack is cut at it, the scans before it answer exac
     return out
   }
   const wantHits = (dates: string[], scans: string[]) => long().map(term => [term, scans, oracle(term, dates)])
+
+  it('a run recording another hex-run rule than the base (specs/static-hex-runs.md) is cut at, never mixed in', async () => {
+    const logged: string[] = []
+    const base = files(MANIFESTS)
+    const json = async (key: string): Promise<unknown> => key === `${RUN3}/catalog/meta.json` ? { ...await base.json<object>(key), hex_runs: { min: 16, tail: 8 } } : base.json(key)
+    const ruled = { ...base, json } as Blobs
+    const t = tiers(ruled, { log: m => logged.push(m) })
+    const st = await t.tiers.state()
+    expect([st.version, st.scans, st.tiers.map(x => x.dir), st.broken?.dir, st.hexRuns]).toEqual(['2026-10-02', BEFORE, [null, 'deltas/2026-10-01', 'deltas/2026-10-02'], RUN3, null])
+    expect(await dispatch(storeOf(t), BEFORE)).toEqual(want(BEFORE, BEFORE))
+    expect(logged).toEqual([brokeMsg(RUN3, `static tiers: ${RUN3}/catalog/meta.json hex_runs {"min":16,"tail":8} disagrees with the base's null`)])
+  })
 
   it('a run listed before its `catalog/meta.json` is written (the gcs incident): cut at it, logged once with the key', async () => {
     const logged: string[] = []

@@ -1943,6 +1943,8 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
   &::before { content: '· '; color: var(--ink-3); }
 }
 .fflags { margin-left: 8px; }
+// The hex-run rule's note (`FilterNote.tsx` `HexRunsInfo`): an info icon, its text in a tooltip.
+.fhex { cursor: help; }
 
 // The filter box's syntax card (`QueryHelp.tsx`), inside a pinnable tooltip.
 .qhelp-card {
@@ -2255,6 +2257,9 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
   --dt-ts-brush: rgb(255 255 255 / 0.14);
   --dt-ts-window-edge: rgb(255 255 255 / 0.4);
 }
+
+// Size over time: the scans a filter's index doesn't cover (gaps in the line).
+.gap-note { color: var(--ink-3); font-size: 0.85em; margin: 2px 0 0; }
 
 // An anchored section parks a little below the sticky bar — not under it, not
 // flush against it (the bar's height is published as --topbar-h; it wraps to

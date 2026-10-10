@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render } from '@testing-library/react'
-import { BytesOverTime, TimeSeries } from '../src/TimeSeries'
+import { BytesOverTime, gapStretches, splitAtGaps, TimeSeries } from '../src/TimeSeries'
 
 // jsdom has no `PointerEvent`: without one, `fireEvent.pointer*` builds a bare
 // `Event` that drops `clientX`/`button`/`isPrimary`.
@@ -501,5 +501,39 @@ describe('<TimeSeries> series flags + band callouts', () => {
     expect(yLabelsOf(container)).toEqual(['-100', '-50', '0', '50'])
     const gridAt0 = [...container.querySelectorAll('svg g line')].find(l => l.nextElementSibling?.textContent === '0')!
     expect(gridAt0.getAttribute('stroke')).toBe('var(--dt-ts-axis, rgba(255,255,255,0.2))')
+  })
+})
+
+describe('gaps (x\'s without data)', () => {
+  it('splitAtGaps cuts a series wherever a gap falls strictly between two points; gapStretches merges adjacent gaps', () => {
+    expect([
+      splitAtGaps([3, 4, 6], [1, 2, 5]),
+      splitAtGaps([3, 4, 6], []),
+      splitAtGaps([3, 4, 6], [7]),
+      splitAtGaps([], [1]),
+      gapStretches([5, 1, 2], [3, 4, 6]),
+      gapStretches([1, 3], [2]),
+    ]).toEqual([
+      [[0, 1], [2, 2]],
+      [[0, 2]],
+      [[0, 2]],
+      [],
+      [[1, 2], [5, 5]],
+      [[1, 1], [3, 3]],
+    ])
+  })
+
+  it('draws one line per run and shades each stretch of gaps; the x-range spans the gaps', () => {
+    const series = [{ key: 'a', points: [{ t: 3, y: 10 }, { t: 4, y: 20 }, { t: 6, y: 30 }, { t: 7, y: 30 }] }]
+    const draw = (gaps?: number[]) => withSize(() => render(<TimeSeries series={series} getX={p => p.t} getY={p => p.y} area={false} gaps={gaps} />)).container
+    const shape = (c: HTMLElement) => [
+      [...c.querySelectorAll('.dt-ts-line')].map(p => p.getAttribute('d')!.split(' ').filter(t => t === 'M' || t === 'L').join('')),
+      [...c.querySelectorAll('.dt-ts-gap')].map(r => [+(+r.getAttribute('x')!).toFixed(1), +(+r.getAttribute('width')!).toFixed(1)]),
+    ]
+    // 400 px wide, PAD left 56 / right 16: x 1..7 → 56..384 px, 54.67 px per unit.
+    expect([shape(draw([1, 2, 5])), shape(draw())]).toEqual([
+      [['ML', 'ML'], [[56, 54.7], [273.7, 2]]],
+      [['MLLL'], []],
+    ])
   })
 })
