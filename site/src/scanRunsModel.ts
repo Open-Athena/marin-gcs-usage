@@ -2,7 +2,7 @@
 // backfill` writes, and the pure derivations `/scans` shows — each output's
 // delta against the previous scan, a run's summary row, phase lanes, links.
 // DOM-free: the Functions (`_lib/scanRuns.ts`) and the pages share it.
-import { exactSlug, isScanId } from './scanSlug'
+import { exactSlug, isScanId, scanTime } from './scanSlug'
 
 export type ScanRunStatus = 'running' | 'succeeded' | 'failed' | 'nop'
 
@@ -66,6 +66,18 @@ export const structureOf = (key: string, scan: string): string => key.split(scan
 export const topOf = (key: string): string => key.split('/')[0]
 
 /** A run's elapsed seconds (to `now` while it runs); null without a start. */
+/** When a run started (epoch s), for ordering runs: its `started_ts`, else its scan id's own time (a date-only id is
+ *  00:00 UTC), else its `updated_ts`. `started_ts` can be NULL on rows the job recorded before it knew its start (the
+ *  in-job runs before `6842ed63`), and those must not sort below every older run. */
+export function runTime(r: Pick<ScanRun, 'started_ts' | 'scan' | 'updated_ts'>): number {
+  if (r.started_ts != null) return r.started_ts
+  const t = scanTime(r.scan)
+  return Number.isNaN(t) ? r.updated_ts : Math.floor(t / 1000)
+}
+
+/** Oldest first by `runTime`, then by run id. */
+export const byRunTime = (a: ScanRun, b: ScanRun): number => runTime(a) - runTime(b) || a.run_id.localeCompare(b.run_id)
+
 export function runSecs(r: Pick<ScanRun, 'started_ts' | 'finished_ts' | 'status'>, now: number): number | null {
   if (r.started_ts == null) return null
   const end = r.finished_ts ?? (r.status === 'running' ? now : null)
@@ -154,7 +166,7 @@ export function summarize(runs: readonly ScanRun[], phases: readonly ScanRunPhas
   const byRun = new Map<string, ScanRunPhase[]>()
   for (const p of phases) byRun.set(p.run_id, [...(byRun.get(p.run_id) ?? []), p])
   return runs.filter(r => !r.parent || !runs.some(p => p.run_id === r.parent))
-    .sort((a, b) => (b.started_ts ?? 0) - (a.started_ts ?? 0) || b.run_id.localeCompare(a.run_id))
+    .sort((a, b) => byRunTime(b, a))
     .map(run => {
       const tops = withDeltas(run, outputs, index).filter(o => !o.key.includes('/'))
       const sum = (xs: (number | null)[]) => (xs.some(x => x != null) ? xs.reduce<number>((a, x) => a + (x ?? 0), 0) : null)
