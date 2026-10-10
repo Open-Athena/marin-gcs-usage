@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import type { Env } from './auth'
 import { parquetMetadata, parquetReadObjects } from 'hyparquet'
-import { type Ask, groupDoc, groupRows, IV_BROKEN_TTL, ivRetry, openIndex, pathGens, planRects, readAsks, readRows, type Row, type Span, usMap, withPathStore } from './index'
+import { asOfScans, type Ask, groupDoc, groupMatchesSize, groupRows, IV_BROKEN_TTL, ivRetry, IvGroup, openIndex, pathGens, planRects, planSizeRects, readAsks, readRows, readSizeRects, type Rect, type Row, sizeBucket, sizeNeighbours, type Span, usMap, withPathStore } from './index'
 import { sqliteD1 } from './testD1'
 import { compressors } from './zstd'
 import { type D1Variant, fixture, readJson, seedGeneration } from './testStore'
@@ -435,5 +435,100 @@ describe('interval store: base + runs', () => {
     } finally {
       now.mockRestore()
     }
+  })
+
+  it('takes a size key\'s bucket exactly, at every power of two', () => {
+    const ks = [0, 1, 2, 3, 49, 52]
+    expect(ks.map(k => [sizeBucket(2 ** k - 1), sizeBucket(2 ** k), sizeBucket(2 ** k + 1)])).toEqual([[-1, 0, 1], [0, 1, 1], [1, 2, 2], [2, 3, 3], [48, 49, 49], [51, 52, 52]])
+    expect([sizeBucket(0), sizeBucket(-1), sizeBucket(844469911398738)]).toEqual([-1, -1, 49])
+  })
+
+  it('bounds a bucket-straddling group by its whole-bucket neighbours', () => {
+    // A group of buckets 35 → 34 between a group all of 35 and one all of 34: its 35s follow `b/m`, its 34s precede `a/c`.
+    const B = (k: number) => 2 ** k
+    const prev = { pMin: 'a/a', pMax: 'b/m', bMin: B(35), bMax: B(35) + 1, seg: 0 }
+    const g = { pMin: 'a/a', pMax: 'c/z', bMin: B(34), bMax: B(35) + 9, seg: 0 }
+    const next = { pMin: 'a/c', pMax: 'c/c', bMin: B(34), bMax: B(34) + 5, seg: 0 }
+    const at = (pLo: string, pHi: string, thr = 0, p: typeof prev | null = prev, n: typeof next | null = next) => sizeNeighbours(g, p ?? undefined, n ?? undefined, [{ pLo, pHi }], thr)
+    expect([
+      at('a/b/', 'a/b0'), // a 34 (before `a/c`)
+      at('a/d/', 'a/d0'), // between: neither bucket's rows
+      at('b/x/', 'b/x0'), // a 35 (after `b/m`)
+      at('a/b/', 'a/b0', B(35)), // only 35s clear the floor, and they lie after `b/m`
+      at('a/d/', 'a/d0', 0, null), // no previous group: 35s from `a/a`
+      at('a/d/', 'a/d0', 0, prev, null), // no next group: 34s to `c/z`
+      at('a/d/', 'a/d0', 0, { ...prev, seg: 1 }, { ...next, seg: 1 }), // neighbours in another segment
+      at('a/d/', 'a/d0', 0, { ...prev, bMin: B(34) }, { ...next, bMax: B(35) }), // neighbours spanning buckets themselves
+      sizeNeighbours({ ...g, bMin: undefined }, prev, next, [{ pLo: 'a/d/', pHi: 'a/d0' }], 0), // an older footer: kept
+    ]).toEqual([true, false, true, false, true, true, true, true, true])
+  })
+
+  it('shapes only the rows a read\'s cheap test passes, as `all` would', () => {
+    const raw = [
+      { depth: 2, path: 'b1/a', size: 5, vf: 1, vt: 9 },
+      { depth: 3, path: 'b1/a/x', size: 50, vf: 1, vt: 9 },
+      { depth: 2, path: 'b2/c', size: 70, vf: 2, vt: 9 },
+    ]
+    const doc = groupDoc(raw, ['depth', 'path', 'size', 'vf', 'vt'])!
+    const pre = (d: number, p: string, sz: number) => p.startsWith('b1/') && sz >= 10 * d
+    const lazy = new IvGroup({ version: 3 }, doc)
+    const picked = lazy.pick(pre)
+    expect(picked.map(r => [r.depth, r.path, r.size])).toEqual([[3, 'b1/a/x', 50]])
+    expect(picked).toEqual(new IvGroup({ version: 3 }, doc).all().filter(r => pre(r.depth, r.path, r.size)))
+    // Shaped once, `pick` filters the shaped rows.
+    expect([lazy.all().length, lazy.pick(pre)]).toEqual([3, picked])
+  })
+
+  it('reads a size sort without the bucket-straddling groups its neighbours rule out, the same rows', async () => {
+    const nodeFs = async () => (await import(/* @vite-ignore */ 'node:fs' as string)) as { readFileSync(p: string): Uint8Array }
+    const pq = async (key: string) => {
+      const b = (await nodeFs()).readFileSync(fixture(`iv/${key}`))
+      const ab = b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer
+      return await parquetReadObjects({ file: ab, metadata: parquetMetadata(ab), compressors }) as Record<string, unknown>[]
+    }
+    const n = (v: unknown) => Number(v)
+    const totals = { cases: 0, candidates: 0, pruned: 0, rows: 0 }
+    for (const gen of ['g1', 'g4', 'g5']) {
+      const st = await readJson<{ scans: { id: string }[] }>(`iv/interval-store/${gen}/scans.json`)
+      const runScans = gen === 'g1' ? [] : gen === 'g4' ? ['2026-08-04', '2026-08-05'] : ['2026-09-30T0009']
+      for (const date of [...st.scans.map(x => x.id), ...runScans]) {
+        const h = await openIndex(asOfScans(at(gen), [date]), date, 'bysize')
+        const tiers = await Promise.all([h, ...(h.runs ?? [])].map(async (t, i) => {
+          const dir = `interval-store/${gen}/${i ? `${t.run}/` : ''}served/bysize`
+          const groups = (await pq(`${dir}.groups.parquet`)).map(r => ({
+            rg: n(r.rg), tier: i || undefined, dMin: n(r.d_min), dMax: n(r.d_max), pMin: String(r.p_min), pMax: String(r.p_max), bMax: n(r.b_max),
+            rowStart: n(r.row_start), rowEnd: n(r.row_end), vfMin: n(r.vf_min), vtMax: n(r.vt_max),
+          }))
+          return { i, groups, rows: await pq(`${dir}.parquet`) }
+        }))
+        for (const P of ['', 'b1', 'b2', 'b1/d', 'b2/e', 'b2/f']) {
+          const dP = P === '' ? 0 : P.split('/').length
+          const rects: Rect[] = [P === '' ? { dLo: 1, dHi: 1e9, pLo: '', pHi: '￿' } : { dLo: dP + 1, dHi: 1e9, pLo: `${P}/`, pHi: `${P}0` }]
+          for (const T of [0, 5, 10, 20, 40]) {
+            const thrAt = (d: number) => T * 2 ** Math.max(0, d - dP - 1)
+            const plan = await planSizeRects(h, rects, thrAt)
+            // Every group the min/max test selects (liveness as `pqGroups`: a run's group from its first version on).
+            const cands = tiers.flatMap(t => t.groups.filter(g => g.vfMin <= h.asOf! && (t.i > 0 || h.asOf! < g.vtMax) && groupMatchesSize(g, rects, thrAt(rects[0].dLo))))
+            const key = (s: Span) => `${s.tier ?? 0}:${s.rg}`
+            const kept = new Set(plan.map(key))
+            const pruned = cands.filter(g => !kept.has(key(g)))
+            expect(plan.every(s => cands.some(g => key(g) === key(s)))).toBe(true)
+            // A pruned group holds no row the read keeps, of any version.
+            const inRead = (r: Record<string, unknown>) => rects.some(q => n(r.depth) >= q.dLo && n(r.depth) <= q.dHi && String(r.path) >= q.pLo && String(r.path) < q.pHi) && n(r.size) >= thrAt(n(r.depth))
+            const held = pruned.map(g => tiers[g.tier ?? 0].rows.slice(g.rowStart, g.rowEnd).filter(inRead).map(r => [g.tier ?? 0, g.rg, r.path]))
+            expect({ gen, date, P, T, held: held.flat() }).toEqual({ gen, date, P, T, held: [] })
+            // The read over the pruned plan is the read over every candidate, row for row.
+            const order = (rs: Row[]) => rs.map(r => [r.depth, r.path, r.size, r.vf, r.vt, r.n_files, r.kind]).sort((x, y) => (`${x[0]}\0${x[1]}\0${x[3]}` < `${y[0]}\0${y[1]}\0${y[3]}` ? -1 : 1))
+            const [got, want] = await Promise.all([readSizeRects(h, rects, thrAt, undefined, plan), readSizeRects(h, rects, thrAt, undefined, cands)])
+            expect({ gen, date, P, T, rows: order(got) }).toEqual({ gen, date, P, T, rows: order(want) })
+            totals.cases++
+            totals.candidates += cands.length
+            totals.pruned += pruned.length
+            totals.rows += got.length
+          }
+        }
+      }
+    }
+    expect(totals).toEqual({ cases: 450, candidates: 1839, pruned: 58, rows: 108595 })
   })
 })
