@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { TreemapProps } from '@rdub/treemap'
 import { HotMaps } from './HotMaps'
-import { HotTotals } from './HotPage'
+import { HotTotals } from './HotSearch'
 import type { HotMapNode } from './hotTreemap'
 import type { HotView } from './hotModel'
 

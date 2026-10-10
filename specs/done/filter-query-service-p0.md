@@ -1,5 +1,7 @@
 # Filter query service, phase 0: measurements
 
+Retired 2026-10-10 with the serving box ([`filter-query-service.md`](filter-query-service.md)).
+
 Status: measured 2026-10-02 on gcs's 2026-10-01 generation (`listing/2026-10-01/index/20261002T113031Z/`, 778M `path` rows, 95,017 row groups; v1 search sidecars: 127.3M names, 5.23B trigram postings). This is phase 0 of [`filter-query-service.md`]. Measurement only: nothing in the product or infra changed.
 
 Absolute byte totals stay out of this doc (the repo is public). Byte coverage is given as percentages; the raw numbers are in the [job outputs].

@@ -1,6 +1,6 @@
 import { type Ctx, json, requireViewer } from '../_lib/auth.js'
-import { HotQueryError, privateHeaders } from '../_lib/hotL1.js'
-import { askNameSummaryRegistry, nameRegistryParams, namesEnabled, type NameSummaryEnv } from '../_lib/nameSummary.js'
+import { NameQueryError, nameRegistryParams, namesEnabled, type NameSummaryEnv } from '../_lib/nameSummary.js'
+import { privateHeaders, staticRegistry } from '../_lib/nameSummaryStatic.js'
 
 export async function onRequest(ctx: Ctx & { env: NameSummaryEnv }): Promise<Response> {
   const identity = await requireViewer({ request: ctx.request, env: { ...ctx.env, PUBLIC_READ: undefined } })
@@ -10,9 +10,9 @@ export async function onRequest(ctx: Ctx & { env: NameSummaryEnv }): Promise<Res
   if (ctx.request.method !== 'GET') return json({ error: 'Only GET is supported.' }, 405, { ...privateHeaders, allow: 'GET' })
   if (ctx.env.STORE_KEY !== undefined || ctx.env.STORE_SCOPE !== undefined) return json({ error: 'Name summaries serve the primary frozen index only.' }, 409, privateHeaders)
   try { nameRegistryParams(new URL(ctx.request.url)) } catch (error) {
-    if (error instanceof HotQueryError) return json({ error: error.message }, 400, privateHeaders)
+    if (error instanceof NameQueryError) return json({ error: error.message }, 400, privateHeaders)
     throw error
   }
-  return askNameSummaryRegistry(ctx.env)
+  return staticRegistry(ctx.env)
 }
 export const onRequestGet = onRequest

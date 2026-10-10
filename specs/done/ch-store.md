@@ -1,5 +1,7 @@
 # ClickHouse store: append-only history behind the Worker
 
+Status: **retired 2026-10-10.** The VM and its disk are deleted, and the code (`dt_cloud/chstore/`, `box/`, `serve-query`, the `ch-*` commands, the site's box hand-off and the `/hot` and `/coarse` previews) left `cloud` at tag `ch-store-final`. Name search is served by the [static name index](../architecture/static-name-search.md).
+
 For the high-level designs, diagrams and production/development distinctions, start with [the architecture overview][architecture-overview].
 
 **Current milestone (2026-10-06 UTC):** the auth-gated [dev /hot viewer][hot-preview] now serves exact root/six-bucket byte/count views and diffs for 4,228 registered predicates on frozen 10-04/10-05 catalogs. Oct 4 explicitly reuses Oct 5's registry. Hosted Chrome verifies all seven rows against the pinned reference, uppercase normalization, and unavailable unknown queries with no table; anonymous API access is 401 with `private, no-store`. Production is unchanged. This is root-only, with no daily refresh or arbitrary drill detail yet. The existing dev backend also retains its full-fleet numeric prototype, whose snapshots pass nine full-domain audits and selected complete canonical-body comparisons. The VM settings remain `NARROW_TARGET=narrow_fleet_stream_oct05 NARROW_RICH_NAME_INDEX=1 NARROW_PLAN=visible CONCURRENCY=1 THREADS=8 ROOT_PLAN=rich`.
@@ -643,7 +645,7 @@ The 100K-path synthetic identity screen publishes 100,102 bootstrap bindings in 
 - **Productionize the hand-off:** it now runs end to end on `dev.gcs.oa.dev` through an authenticated quick tunnel. Replace that ephemeral tunnel with a durable private/public endpoint, set production vars only after the full query bench, and rebuild the daily job image with `CH_STORE_URL` connectivity.
 - **Series** include all 67 published scans; verify the latest point and retained parity in the full sweep before production cutover.
 
-[serving-options]: serving-options.md
+[serving-options]: ../serving-options.md
 [filter-query-service]: filter-query-service.md
 [ch-group-order]: https://clickhouse.com/docs/reference/statements/select/group-by#group-by-optimization-depending-on-table-sorting-key
 [ch-processor-profiles]: https://clickhouse.com/docs/reference/system-tables/processors_profile_log
@@ -674,5 +676,5 @@ The 100K-path synthetic identity screen publishes 100,102 bootstrap bindings in 
 [wavelet-trie]: https://arxiv.org/abs/1204.3581
 [hot-preview]: https://dev.gcs.oa.dev/hot?name=.json&date=2026-10-05&from=2026-10-04
 [ch-set-engine]: https://clickhouse.com/docs/reference/engines/table-engines/special/set
-[architecture-overview]: architecture/README.md
-[short-query-index]: architecture/short-query-index.md
+[architecture-overview]: ../architecture/README.md
+[short-query-index]: ../architecture/short-query-index.md

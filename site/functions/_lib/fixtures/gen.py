@@ -28,10 +28,6 @@
   postings groups and `SEARCH_DIR_ROWS` rows per directory group — beside
   layout v1's `path-index.{names,search}.parquet`, kept as committed (the
   writer no longer emits them; their postings are v2's).
-- `v2-search-b/`: `v2-search` a scan later — a dir and objects gone, objects
-  resized and new, a new bucket (`yy`) — with its own search sidecars (layout
-  v2 only): the far side of the parity diffs with changes
-  (`boxParity.test.ts`).
 - `v2-slices/`: a store generation over owner slices (`usr` labels, one row per
   `(path, usr)` as gcs writes them) whose multi-owner dirs have slices under a
   view's threshold while their totals clear it (`m/big` drawn short of a slice,
@@ -283,16 +279,6 @@ def search_rows() -> dict[str, list[tuple[str, int]]]:
     return {'bk': bk, 'zz': zz}
 
 
-def search_rows_b() -> dict[str, list[tuple[str, int]]]:
-    """`v2-search-b`'s objects: `search_rows()` a scan later."""
-    rows = search_rows()
-    gone = {'tmp/ttl=7d/z.bin', 'iris/notes.txt', *(f'fill/f{i:05d}' for i in range(5990, 6000))}
-    resized = {'tmp/scratch/q.bin': 5 * MiB, 'models/tiny.safetensors': 12, 'fill/f00011': 1 << 20}
-    bk = [(n, resized.get(n, s)) for n, s in rows['bk'] if n not in gone]
-    bk += [('tmp/ttl=30d/new/ckpt/n.bin', MiB), ('models/llama/model-00003-of-00003.safetensors', 2 * MiB), ('runs/grug/swarm/ckpt-final-2.pt', 9500)]
-    return {'bk': bk, 'yy': [('a/b.bin', 3000), ('a/ttl/c.bin', 400)], 'zz': rows['zz']}
-
-
 def write_v2_search(here: str, name: str = 'v2-search', objects=search_rows) -> None:
     out_dir = join(here, name)
     v1 = {}
@@ -348,12 +334,11 @@ WRITERS = {
     'v2-lens': write_v2_lens,
     'v2-slices': write_v2_slices,
     'v2-search': write_v2_search,
-    'v2-search-b': lambda here: write_v2_search(here, 'v2-search-b', search_rows_b),
 }
 
 
 def main() -> None:
-    """Every fixture, or the ones named (`gen.py v2-search-b`)."""
+    """Every fixture, or the ones named (`gen.py v2-search`)."""
     here = dirname(__file__)
     for name in sys.argv[1:] or WRITERS:
         WRITERS[name](here)

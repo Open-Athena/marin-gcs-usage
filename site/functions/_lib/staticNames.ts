@@ -1,5 +1,5 @@
 /** Static name search (specs/architecture/static-name-search.md): answer a literal's per-bucket first-hit
- *  totals from the suffix shards on R2 alone — no D1, no query box, no footer parse on the hot path.
+ *  totals from the suffix shards on R2 alone — no D1, no footer parse on the hot path.
  *
  *  Layout (`dt-cloud static-names`, one generation under `static-names/<gen>/`): `sx/s####.parquet`, one
  *  row per (lowercase name suffix of ≥ 3 characters, version) — `s, depth, path, usr, vf, vt, size,

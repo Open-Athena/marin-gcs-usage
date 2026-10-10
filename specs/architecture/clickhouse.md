@@ -1,5 +1,7 @@
 # ClickHouse indexing and serving designs
 
+Status: **retired 2026-10-10.** The ClickHouse store, its VM and its code are gone (code at tag `ch-store-final`); this page records the designs that were tried.
+
 As of 2026-10-07. This document separates the append-only historical store, the frozen numeric read model, the deployed dev-only aggregate catalogs, and incremental research. The detailed experiment journal and acceptance gates remain in [the ClickHouse spec][ch-spec] and [short-query plan][short-query]. Production still uses the serverless path-store architecture; none of the following constitutes a production cutover.
 
 ## Status and boundaries
@@ -161,7 +163,7 @@ The [reservation journal][reservations] uses a process writer lock and SQLite EX
 
 The synthetic 100K identity screen publishes bootstrap bindings in 0.369 seconds, appends 100 in 0.153 seconds and retries without writes in 0.104 seconds. These exclude scalar/rich ingestion and billion-path lookups. End-to-end scalar/summary publication, new-scan refresh, concurrency tails, a durable service endpoint and reconstructed pre-09-30 object history remain production gates. No trillion-state query trie or universal subsecond guarantee is implied by these component results.
 
-[ch-spec]: ../ch-store.md
+[ch-spec]: ../done/ch-store.md
 [short-query]: short-query-index.md
 [agents]: ../../AGENTS.md
 [schema]: ../../cloud/src/dt_cloud/chstore/schema.py
