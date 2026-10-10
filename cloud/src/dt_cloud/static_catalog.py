@@ -18,11 +18,11 @@ allowed; `census` keeps every prefix down to a lower floor so `V` can be chosen 
 
 **Answers.** For a member and each scan date `D`, per bucket: Σ `size`, `n_files` over its first hits live
 on `D` — the version is live (`vf ≤ D < vt`), at depth ≥ 1, its lowercase name contains `q` and its
-lowercase parent path does not (`static_names.Reader.answer`, `mega_names.answer`). A version's rows in
+lowercase parent path does not (`static_names.Reader.answer`). A version's rows in
 `q`'s range are its occurrences of `q`; the first occurrence's row (`instr(name, q)` = the row's position)
 carries it, so no dedup state is needed. Each first hit is two events — `+(size, n_files)` at `vf`,
 `−(size, n_files)` at `vt` (none while open) — summed per `(q, bucket, t)` and accumulated in time order:
-the cells are `(q, bucket, vf, b, o)`, one per change, as the ClickHouse catalog's `catalog_cells`. A
+the cells are `(q, bucket, vf, b, o)`, one per change. A
 date's answer for a bucket is its newest cell at or before the date (none: zero).
 
 **Layout** (`gs://<data bucket>/static-names/<gen>/catalog/`, copied to R2): `cells.parquet`, sorted

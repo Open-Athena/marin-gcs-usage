@@ -1,5 +1,7 @@
 # Serving box: a stateful query backend behind the Worker
 
+Status: **retired 2026-10-10** with the ClickHouse store ([`ch-store.md`](ch-store.md)): the serving box (`dt_cloud/box/`, `serve-query`, the Worker's `QUERY_BOX_URL` hand-off) left `cloud` at tag `ch-store-final`. The filter bench's ground truth and scoring (`dt_cloud/bench/{queryset,truth,score}.py`, `bench-truth`, `probe -Q`) stay.
+
 Status: proposed (2026-10-02); phases 1–3 done 2026-10-03 (§6.1–6.3). Supersedes this spec's earlier scale-to-zero Cloud Run design (after [phase 0]). Reviewed by the root session. Owner: the gcs session. Code lands on `cloud` (shared); a deployment opts in with its own VM.
 
 **Scope:** the box is one serving tier among several, not the default. Its cost floor (~$260+/month) pays only at fleet scale (gcs: 778M rows). `cloud` keeps a range of tuned configs, and each deployment picks one (§8). Every engine is scored by the same harness, so the tiers stay comparable.

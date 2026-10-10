@@ -95,22 +95,6 @@ export function parseRootSummary(value: unknown, request: HotRequest, schemas: r
   })
   return { before, after, delta }
 }
-export function parseHot(value: unknown, request: HotRequest): HotResult {
-  return parseRootSummary(value, request, [
-    { view: 'hot-l1-catalog-v1', diff: 'hot-l1-catalog-diff-v1' },
-    { view: 'hot-l1-batch-catalog-v1', diff: 'hot-l1-batch-catalog-diff-v1' },
-  ])
-}
-export class HotUnavailable extends Error {}
-export async function loadHot(request: HotRequest, signal?: AbortSignal): Promise<HotResult> {
-  const checked = hotRequest(new URLSearchParams({ date: request.date, name: request.name, ...(request.from === undefined ? {} : { from: request.from }) }))
-  const response = await fetch(`/api/hot-l1?${new URLSearchParams({ date: checked.date, name: checked.name, ...(checked.from ? { from: checked.from } : {}) })}`, { signal })
-  if (!response.ok) {
-    if ([400, 404, 409, 422].includes(response.status)) throw new HotUnavailable('This pattern/date is unavailable in the frozen preview. It is not a zero-match result. Try .json or another registered literal.')
-    throw new Error(response.status === 401 ? 'Sign in to view the frozen preview.' : `Root-summary request failed (${response.status}). Try again.`)
-  }
-  return parseHot(await response.json(), checked)
-}
 export function exactInteger(value: number, signed = false): string {
   integer(value, signed)
   return `${signed && value > 0 ? '+' : ''}${value.toLocaleString()}`

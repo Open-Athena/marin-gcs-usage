@@ -19,8 +19,8 @@ layout and against brute force from the objects.
   and the match roots themselves `[path, bytes, objects]` where there are at most `ROOTS_LISTED` (`roots`;
   null: more); null when the path itself matches.
 
-Regenerate from the repo root, with a `dt_cloud` that has `static_roots` (branch `ch-store`) first on the path:
-`PYTHONPATH=<ch-store>/cloud/src:cloud/src:src .venv/bin/python site/functions/_lib/fixtures/static-drill/gen.py`
+Regenerate from the repo root:
+`PYTHONPATH=cloud/src:src .venv/bin/python site/functions/_lib/fixtures/static-drill/gen.py`
 """
 import importlib.util
 import json

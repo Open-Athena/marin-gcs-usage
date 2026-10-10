@@ -1,88 +1,49 @@
-import { json } from './auth.js'
-import { HotQueryError, hotParams, privateHeaders, type HotL1Env } from './hotL1.js'
-import { datedNameRequest, nameRequest, parseName, parseNameRegistry } from '../../src/nameModel.js'
-import { type StaticNameEnv, staticEnabled, staticRegistry, staticSummary } from './nameSummaryStatic.js'
+/** `/api/name-summary` and `/api/name-summary-registry`: request validation shared by both routes. The static name
+ *  index (`nameSummaryStatic.ts`) answers them; the routes are on with `NAME_SUMMARY_STATIC=1` and `INDEX_R2`. */
+import type { Env } from './auth.js'
+import { datedNameRequest } from '../../src/nameModel.js'
+import { isScanId } from '../../src/scanSlug.js'
+import { type StaticNameEnv, staticEnabled } from './nameSummaryStatic.js'
 
-export type NameSummaryEnv = HotL1Env & StaticNameEnv & { QUERY_BOX_NAME_SUMMARY?: string; QUERY_BOX_DATED_NAMES?: string }
-/** The routes are on with the box's flag or with the static name index alone (`NAME_SUMMARY_STATIC=1` + `INDEX_R2`):
- *  a deployment on the static index needs no `QUERY_BOX_*` var, so the box can go without the routes going with it. */
-export const namesEnabled = (env: NameSummaryEnv): boolean => env.QUERY_BOX_NAME_SUMMARY === '1' || staticEnabled(env)
-/** Dated requests (any scan, `from`): the static index is dated by construction. */
-export const datedNames = (env: NameSummaryEnv): boolean => env.QUERY_BOX_DATED_NAMES === '1' || staticEnabled(env)
-export const NAME_MAX_BYTES = 64 << 10
-export const NAME_TIMEOUT_MS = 8000
-export function nameSummaryParams(url: URL, dated = false): URLSearchParams {
-  const params = hotParams(url)
-  try { if (dated) datedNameRequest(params); else nameRequest(params) } catch (error) { throw new HotQueryError((error as Error).message) }
+export type NameSummaryEnv = Env & StaticNameEnv
+export const namesEnabled = (env: NameSummaryEnv): boolean => staticEnabled(env)
+
+export class NameQueryError extends Error {}
+
+/** URLSearchParams tolerates malformed UTF-8; decode strictly before constructing it. */
+export function nameParams(url: URL): URLSearchParams {
+  const parts = url.search.slice(1).split('&')
+  if (!url.search || parts.length > 3) throw new NameQueryError('Use date, name and optional from only.')
+  const params = new URLSearchParams()
+  for (const part of parts) {
+    const equals = part.indexOf('=')
+    if (equals < 0) throw new NameQueryError('Invalid query parameters.')
+    let key: string, value: string
+    try {
+      key = decodeURIComponent(part.slice(0, equals).replace(/\+/g, ' '))
+      value = decodeURIComponent(part.slice(equals + 1).replace(/\+/g, ' '))
+    } catch {
+      throw new NameQueryError('Invalid query parameters.')
+    }
+    if (!['date', 'name', 'from'].includes(key)) throw new NameQueryError('Use date, name and optional from only.')
+    if (params.has(key)) throw new NameQueryError('Duplicate query parameter.')
+    params.set(key, value)
+  }
+  const date = params.get('date') ?? '', name = params.get('name') ?? '', from = params.get('from')
+  if (!isScanId(date)) throw new NameQueryError('A valid scan date is required.')
+  if (!name || name.includes('/') || name.includes('\0') || Array.from(name).length > 512) {
+    throw new NameQueryError('Use one nonempty NUL/slash-free literal of at most 512 characters.')
+  }
+  if (from !== null && (!isScanId(from) || from >= date)) throw new NameQueryError('from must be a valid earlier scan date.')
   return params
 }
+
+export function nameSummaryParams(url: URL): URLSearchParams {
+  const params = nameParams(url)
+  try { datedNameRequest(params) } catch (error) { throw new NameQueryError((error as Error).message) }
+  return params
+}
+
 export function nameRegistryParams(url: URL): void {
-  if (url.search) throw new HotQueryError('The name-summary scan registry accepts no query parameters.')
-}
-const unavailable = (retry = '1'): Response => json({ error: 'Name summary is unavailable, busy or exceeded its work budget. This is not a zero-match result. Try again.' }, 503, { ...privateHeaders, 'retry-after': retry })
-export async function askNameSummary(env: NameSummaryEnv, params: URLSearchParams): Promise<Response> {
-  // The static name index answers every request when enabled (its failures are 503s, never a box call); unset, the box does.
-  if (staticEnabled(env)) return staticSummary(env, params)
-  return askNameBackend(env, params)
-}
-export async function askNameSummaryRegistry(env: NameSummaryEnv): Promise<Response> {
-  if (staticEnabled(env)) return staticRegistry(env)
-  return askNameBackend(env)
-}
-async function askNameBackend(env: NameSummaryEnv, params?: URLSearchParams): Promise<Response> {
-  if (!env.QUERY_BOX_HOT_L1_URL || !env.QUERY_BOX_TOKEN) return unavailable()
-  let endpoint: URL
-  try {
-    endpoint = new URL(env.QUERY_BOX_HOT_L1_URL)
-    if (!['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) return unavailable()
-    endpoint.pathname = endpoint.pathname.replace(/\/+$/, '') + (params ? '/api/name-summary' : '/api/name-summary-registry')
-    endpoint.search = params?.toString() ?? ''
-  } catch { return unavailable() }
-  const controller = new AbortController()
-  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined, timer: ReturnType<typeof setTimeout> | undefined
-  const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error('deadline')) }, NAME_TIMEOUT_MS) })
-  const work = async (): Promise<Response> => {
-    const response = await fetch(endpoint.toString(), { headers: { authorization: `Bearer ${env.QUERY_BOX_TOKEN}`, accept: 'application/json' }, signal: controller.signal, redirect: 'manual' })
-    if (response.status !== 200) {
-      const retry = response.headers.get('retry-after') ?? ''
-      await response.body?.cancel()
-      if (response.status === 400 && params) return json({ error: env.QUERY_BOX_DATED_NAMES === '1'
-        ? 'This literal or scan is unavailable in the current preview. New scans currently have precomputed answers only. This is not a zero-match result.'
-        : 'Invalid name-summary request. Check the literal and frozen scan dates; this is not a zero-match result.' }, 400, privateHeaders)
-      return unavailable(/^\d{1,3}$/.test(retry) && Number(retry) > 0 ? String(Math.min(Number(retry), 60)) : '1')
-    }
-    if (!response.body || Number(response.headers.get('content-length')) > NAME_MAX_BYTES) { await response.body?.cancel(); return unavailable() }
-    reader = response.body.getReader()
-    try {
-      const chunks: Uint8Array[] = []
-      let size = 0
-      for (;;) {
-        const { value, done } = await reader.read()
-        if (done) break
-        size += value.byteLength
-        if (size > NAME_MAX_BYTES) { await reader.cancel(); return unavailable() }
-        chunks.push(value)
-      }
-      const bytes = new Uint8Array(size)
-      let offset = 0
-      for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength }
-      const body: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(bytes))
-      if (params) {
-        if (env.QUERY_BOX_DATED_NAMES !== '1' && typeof body === 'object' && body !== null && 'schema' in body &&
-          (body.schema === 'dated-name-summary-v1' || body.schema === 'dated-name-summary-diff-v1')) return unavailable()
-        parseName(body, env.QUERY_BOX_DATED_NAMES === '1' ? datedNameRequest(params) : nameRequest(params))
-      }
-      else {
-        const registry = parseNameRegistry(body)
-        if (registry.dated && env.QUERY_BOX_DATED_NAMES !== '1') return unavailable()
-      }
-      return new Response(bytes, { headers: { 'content-type': 'application/json; charset=utf-8', ...privateHeaders, 'x-query-engine': params ? 'name-summary' : 'name-summary-registry' } })
-    } finally { reader.releaseLock(); reader = undefined }
-  }
-  try { return await Promise.race([work(), deadline]) } catch { return unavailable() } finally {
-    if (timer !== undefined) clearTimeout(timer)
-    controller.abort()
-    // Abort cleanup cannot extend the response deadline if a network stream stalls.
-    if (reader) void reader.cancel().catch(() => {})
-  }
+  if (url.search) throw new NameQueryError('The name-summary scan registry accepts no query parameters.')
 }

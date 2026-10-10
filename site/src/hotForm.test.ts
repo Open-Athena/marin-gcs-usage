@@ -1,12 +1,8 @@
 import { createElement, type ReactElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
-import { HotPage, HotSearchFields, HotSearchForm } from './HotPage'
+import { HotSearchFields, HotSearchForm } from './HotSearch'
 import { changeHotDraft, hotDraft, hotDraftParams } from './hotModel'
-
-vi.mock('./SiteKbd', () => ({ SiteKbd: () => null }))
 
 const render = (query: string) => renderToStaticMarkup(createElement(HotSearchForm, { params: new URLSearchParams(query), onSearch: () => {} }))
 const selected = (html: string) => [...html.matchAll(/<select name="([^"]+)"[^>]*>(.*?)<\/select>/g)].map(([, name, options]) =>
@@ -66,17 +62,5 @@ describe('URL-authoritative root search form', () => {
       .toBe('name=ab%26c%2B&date=2026-10-05&from=2026-10-04')
     expect(hotDraftParams({ date: '2026-10-05', name: '.json', from: '' }).toString())
       .toBe('name=.json&date=2026-10-05')
-  })
-  it('explains coverage comparison and the registered either-date threshold', () => {
-    const client = new QueryClient()
-    try {
-      const html = renderToStaticMarkup(createElement(QueryClientProvider, { client },
-        createElement(MemoryRouter, { initialEntries: ['/hot?date=2026-10-05&name=.json'] }, createElement(HotPage))))
-      expect([...html.matchAll(/<p(?: id="hot-availability")? class="hot-note">(.*?)<\/p>/g)].map(([, text]) => text))
-        .toEqual([
-          'Only registered literals of 1–16 characters are available: at least 100,000 file or directory paths have a matching final component name on either October 4 or October 5. Other literals are unavailable, not zero matches; they do not trigger a fleet scan.',
-          'With a baseline, the table shows all matching coverage in each snapshot and the selected scan minus the baseline. It does not restrict the results to paths that changed.',
-        ])
-    } finally { client.clear() }
   })
 })

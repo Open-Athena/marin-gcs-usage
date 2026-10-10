@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { consolidatedCatalogFixture, consolidatedCatalogNameRegistry, consolidatedCatalogRegistry, consolidatedCatalogSource, consolidatedNameFixture, consolidatedNameRegistry, consolidatedSource, dailyNameFixture, datedCapabilities, datedNameRegistry, legacyNameRegistry, mixedDatedNameDiff, staticNameFixture, staticNameRegistry } from './datedNameTestFixtures'
 import type { NameQualification } from './nameModel'
 import { SUB_DAILY_SCANS, fiveBucketFixture, fiveBucketRegistry } from './datedNameTestFixtures'
-import { datedNameRequest, loadName, loadNameRegistry, nameHasDetail, nameRequest, nameResultForRegistry, parseName, parseNameRegistry } from './nameModel'
+import { datedNameRequest, loadName, loadNameRegistry, nameRequest, nameResultForRegistry, parseName, parseNameRegistry } from './nameModel'
 
 const request = { date: '2026-10-06', name: 'datakit', from: '2026-10-05' }
 const scans = ['2026-10-04', '2026-10-05', '2026-10-06']
@@ -18,12 +18,10 @@ describe('independently numbered dated root summaries', () => {
     expect(result.after.buckets.map(row => [row.path, row.pre, row.post])).toEqual([
       ['bucket-a', 16, 18], ['bucket-b', 13, 15], ['bucket-c', 10, 12], ['bucket-d', 7, 9], ['bucket-e', 4, 6], ['bucket-f', 1, 3],
     ])
-    expect(nameHasDetail(result)).toBe(false)
   })
   it('accepts zero matches without a fake frozen history identity or drill capability', () => {
     const body = dailyNameFixture(); body.root = { b: 0, o: 0 }; body.buckets.forEach(row => { row.b = 0; row.o = 0 })
     expect(parseName(body, { date: request.date, name: request.name })).toEqual({ after: view(body), execution: { after: execution(body) }, logical_store: 'gcs', capabilities: datedCapabilities })
-    expect(nameHasDetail(parseName(body, { date: request.date, name: request.name }))).toBe(false)
   })
   it('accepts two independently pinned daily catalog dates, without enabling detail', () => {
     const body = mixedDatedNameDiff(), before = dailyNameFixture('2026-10-06')
@@ -36,7 +34,6 @@ describe('independently numbered dated root summaries', () => {
     }) })
     const result = parseName(body, { date: '2026-10-07', name: 'datakit', from: '2026-10-06' })
     expect(result).toEqual({ before: view(before), after: view(body.after), delta: { b: 0, o: 0 }, execution: { before: execution(before), after: execution(body.after) }, logical_store: 'gcs', capabilities: datedCapabilities })
-    expect(nameHasDetail(result)).toBe(false)
   })
   it('accepts a complete-length registry (`max_chars: null`: a miss of any length is below the threshold)', () => {
     const body = dailyNameFixture(); body.registry.max_chars = null
@@ -85,7 +82,6 @@ describe('independently numbered dated root summaries', () => {
     const body = { ...dailyNameFixture(), plan: 'bounded-name-postings', source: "bounded dated name postings over the scan's own name index; directory rollups are atomic" }
     const result = parseName(body, { date: request.date, name: request.name })
     expect(result).toEqual({ after: view(body), execution: { after: execution(body) }, logical_store: 'gcs', capabilities: datedCapabilities })
-    expect(nameHasDetail(result)).toBe(false)
     const registry = datedNameRegistry(); registry.dates[2].plans = ['catalog', 'bounded-name-postings']
     expect(nameResultForRegistry(result, parseNameRegistry(registry))).toBe(result)
     expect(() => nameResultForRegistry(result, parseNameRegistry(datedNameRegistry()))).toThrow('Name summary returned a different scan or execution plan from the available-scan registry.')
@@ -255,7 +251,6 @@ describe('the static name index', () => {
     for (const plan of ['catalog', 'bounded-name-postings'] as const) {
       const body = staticNameFixture(plan), result = nameResultForRegistry(parseName(body, { date: '2026-10-05', name: 'datakit' }), registry)
       expect([result.after, result.execution.after]).toEqual([{ target: body.target, date: body.date, pattern: body.pattern, root: body.root, buckets: [...body.buckets].sort((a, b) => a.path < b.path ? -1 : 1) }, { plan, source: body.source, validation: body.validation, source_identity: identity }])
-      expect(nameHasDetail(result)).toBe(false)
     }
   })
   it.each([
@@ -276,7 +271,7 @@ describe('the static name index', () => {
   ])('refuses %s', (_, override) => {
     expect(() => parseName({ ...staticNameFixture('catalog'), ...override }, { date: '2026-10-05', name: 'datakit' })).toThrow('Name summary returned an invalid dated contract.')
   })
-  it('refuses a static answer under the box\'s registry, and a box answer under the static one', () => {
+  it('refuses a static answer under a dated-store registry, and a dated-store answer under the static one', () => {
     const request = { date: '2026-10-06', name: 'datakit' }
     expect(() => nameResultForRegistry(parseName(staticNameFixture('catalog', '2026-10-06'), request), parseNameRegistry(datedNameRegistry()))).toThrow('Name summary returned a different scan or execution plan from the available-scan registry.')
     expect(() => nameResultForRegistry(parseName(dailyNameFixture(), request), parseNameRegistry(staticNameRegistry()))).toThrow('Name summary returned a different scan or execution plan from the available-scan registry.')

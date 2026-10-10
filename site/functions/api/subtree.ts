@@ -22,8 +22,6 @@ import { FilterRejected, indexedOnly, rejectBody, rejectQuery, rejectScope } fro
 import { cacheEnvTag, cacheKeyFor, cacheMatch, cacheStore, isPartial, keepFor, serverTiming, UPGRADE_PHASE2_MS, upgradePartial } from '../_lib/edgeCache.js'
 import { LENS_PRIMARY_ONLY, storeKey, withStore } from '../_lib/stores.js'
 import { lensParam, ME_UNRESOLVED, resolveLens } from '../_lib/me.js'
-import { askBox, boxFor, boxStatus, type BoxEnv, withProvenance } from '../_lib/queryBox.js'
-import { extrasFor } from '../_lib/extras.js'
 import { isScanId } from '../../src/scanSlug.js'
 import { indexedScan, noScan, scanArg } from '../_lib/scanArg.js'
 import { traceJoins } from '../_lib/shared.js'
@@ -176,31 +174,10 @@ async function subtree(ctx0: SubtreeCtx, gate: boolean): Promise<Response> {
     const hit = await st.time('match', cacheMatch(ctx.env, cacheKey))
     if (hit) return isPartial(hit) ? upgrade(hit) : hit
 
-    // The serving box first, when the deployment has one (`_lib/queryBox.ts`).
-    const env = ctx.env as Env & BoxEnv
-    const box = boxFor(env, url)
-    let engine = env.QUERY_BOX_URL ? 'worker;box=skip' : undefined
-    if (box) {
-      const a = await st.time('box', askBox(env, box, 'subtree', url.searchParams))
-      if (a.kind === 'answer' && a.status !== 200) return boxStatus(a)
-      if (a.kind === 'answer') {
-        let boxBody = a.body
-        // The box draws no index extras: the provenance rides on its tree here.
-        const ex = xtra ? await extrasFor(ctx.env, date, path) : null
-        if (ex) {
-          const o = JSON.parse(boxBody)
-          o.tree = withProvenance(o.tree, path, ex.provenance)
-          boxBody = JSON.stringify(o)
-        }
-        return await cacheStore(ctx.env, cacheKey, boxBody, { 'server-timing': st.header(), 'x-query-engine': a.engine }, ctx.waitUntil?.bind(ctx))
-      }
-      engine = `worker;fallback=${a.why}`
-    }
-
     const { body, keep } = await render({ trace: st.trace })
     // A phase 2 cut short by its time budget: kept briefly (`keepFor`), so a retry or a second viewer isn't
     // another full recompute; its totals and match counts are exact, only the drawn interiors partial.
-    const res = await cacheStore(ctx.env, cacheKey, body, { 'server-timing': st.header(), ...(engine ? { 'x-query-engine': engine } : {}) }, ctx.waitUntil?.bind(ctx), keep)
+    const res = await cacheStore(ctx.env, cacheKey, body, { 'server-timing': st.header() }, ctx.waitUntil?.bind(ctx), keep)
     return keep === true ? res : upgrade(res)
   } catch (e) {
     if (e instanceof NotFound) return new Response('path not found', { status: 404 })

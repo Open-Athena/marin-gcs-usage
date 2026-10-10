@@ -5,7 +5,7 @@ Evidence checkpoint: 2026-10-07. These documents distinguish production, develop
 | Document | What it explains |
 | --- | --- |
 | [Production serverless architecture][serverless] | Scanning/publication, D1 footer metadata, GCS/R2 range reads, Worker search/aggregation, auth and caching. Component and request-sequence diagrams. |
-| [ClickHouse designs and experiments][clickhouse] | Append-only history, frozen numeric indexes, aggregate-first coarse TM/dTM, directory coverage and incremental prototypes. Three diagrams, measured results and acceptance boundaries. |
+| [ClickHouse designs and experiments][clickhouse] (retired 2026-10-10) | Append-only history, frozen numeric indexes, aggregate-first coarse TM/dTM, directory coverage and incremental prototypes. Three diagrams, measured results and acceptance boundaries. |
 | [Architectural alternatives][alternatives] | RAM-resident historical change rows, disk-backed hybrids, DuckDB/parquet and surveyed services. Proposed RAM-node diagram, memory envelope and broad-search tradeoffs. |
 | [Short-query index sizing and next experiments][short-query] | Frequency-pruned hot-name prototype, exact root/drill benchmarks, compact leaf-block payloads, fleet frequency screens, dense-versus-sparse envelope and FM/document-range alternatives. |
 | [Static name search][static-name] | Rare-term search without a server: suffix-ordered postings on R2 (one range read per query, exact on 4 dates, ~430 GB), bounded by the cost-weighted catalog; alternatives (trigram/FTS5, FM-index, name-id indirection) and a plan to production. |
@@ -45,6 +45,6 @@ For exhaustive measurements, failed attempts and artifacts, see [the ClickHouse 
 [alternatives]: alternatives.md
 [short-query]: short-query-index.md
 [static-name]: static-name-search.md
-[journal]: ../ch-store.md
+[journal]: ../done/ch-store.md
 [dev-hot]: https://dev.gcs.oa.dev/hot?name=.json&date=2026-10-05&from=2026-10-04
 [dev-names]: https://dev.gcs.oa.dev/names?name=zarr.json&date=2026-10-06&from=2026-10-05

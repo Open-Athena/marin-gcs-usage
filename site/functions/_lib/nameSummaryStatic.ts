@@ -1,6 +1,5 @@
-/** `/api/name-summary` and its registry from the static name index on R2 alone (`NAME_SUMMARY_STATIC=1`
- *  with the `INDEX_R2` binding; specs/architecture/static-name-search.md): no query box. Unset, both routes
- *  ask the box as before (`nameSummary.ts`), the fallback while the static path beds in.
+/** `/api/name-summary` and its registry from the static name index on R2 (`NAME_SUMMARY_STATIC=1` with the
+ *  `INDEX_R2` binding; specs/architecture/static-name-search.md). Unset, both routes are off (`nameSummary.ts`).
  *
  *  - Registry: every scan in the generation's `scans.json`, the buckets from `STORE_BUCKETS`, the catalog's
  *    membership bound V from `catalog/meta.json`.
@@ -11,13 +10,12 @@
  *  - A dir-only (v1) scan (`scans.json` `version: 1`): its totals are its folder-name matches (exact as such),
  *    flagged `dirs_only: true`; compared with a full scan (`from`), a 400 `scan-dirs-only`.
  *  - Bucket geometry: the answer is root and bucket totals only (no drill), so each bucket's `pre`/`post`
- *    is its ordinal position in `bucket_paths` (the box's `ordinal` geometry). */
+ *    is its ordinal position in `bucket_paths` (`ordinal` geometry). */
 import { decodeScan, isScanId, resolveScan } from '../../src/scanSlug.js'
 import { indexedScan, noScan } from './scanArg.js'
 import { datedNameRequest, parseName, parseNameRegistry, STATIC_CATALOG_SOURCE, STATIC_SOURCE } from '../../src/nameModel.js'
 import { HOT_SCOPE } from '../../src/hotModel.js'
 import { type Env, json } from './auth.js'
-import { privateHeaders } from './hotL1.js'
 import { REJECT_MESSAGES } from './indexedOnly.js'
 import { catalogAnswer, type CatalogIo, type CatalogMeta, type Member } from './staticCatalog.js'
 import { type Answer, type Blobs, cacheIndexes, type Io, r2Blobs, staticGen, staticPrefix, type Totals } from './staticNames.js'
@@ -26,6 +24,7 @@ import { type HexRule, hexAffected } from './hexRuns.js'
 
 export type StaticNameEnv = { NAME_SUMMARY_STATIC?: string; INDEX_R2?: R2Bucket; STATIC_GEN?: string; STATIC_MAX_ROWS?: string; STORE_BUCKETS?: string; STORE?: string; DB?: D1Database }
 export const staticEnabled = (env: StaticNameEnv): boolean => env.NAME_SUMMARY_STATIC === '1' && !!env.INDEX_R2
+export const privateHeaders = { 'cache-control': 'private, no-store' }
 
 /** A non-member's static read above this many rows is refused (it should never exceed V + 2 row groups). */
 const MAX_ROWS = 400_000
@@ -137,7 +136,7 @@ const notIndexed = () => json({ error: 'This scan is not in the static name inde
 const dirsSplit = () => json({ error: `${REJECT_MESSAGES['scan-dirs-only']} This is not a zero-match result.`, code: 'scan-dirs-only' }, 400, privateHeaders)
 const unavailable = () => json({ error: 'Name summary is unavailable, busy or exceeded its work budget. This is not a zero-match result. Try again.' }, 503, { ...privateHeaders, 'retry-after': '1' })
 
-/** `/api/name-summary` from R2: a 400 for a scan outside the generation, a 503 on any failure (never a box answer). */
+/** `/api/name-summary` from R2: a 400 for a scan outside the generation, a 503 on any failure. */
 export async function staticSummary(env: StaticNameEnv, params: URLSearchParams, s?: Store): Promise<Response> {
   const t0 = Date.now()
   try {

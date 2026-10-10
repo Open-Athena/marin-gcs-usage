@@ -28,7 +28,6 @@ import { metaRoots, rootPoints, type RootRow } from '../_lib/series.js'
 import { cacheEnvTag, cacheKeyFor, cacheMatch, cacheStore, serverTiming } from '../_lib/edgeCache.js'
 import { LENS_PRIMARY_ONLY, storeKey, withStore } from '../_lib/stores.js'
 import { lensParam, ME_UNRESOLVED, resolveLens } from '../_lib/me.js'
-import { askBox, boxFor, boxStatus, type BoxEnv } from '../_lib/queryBox.js'
 import { isScanId } from '../../src/scanSlug.js'
 
 // The default store's snapshot dirs (`snapshots/<date>/`; other stores live in
@@ -151,24 +150,6 @@ export const onRequestGet = async (ctx0: Ctx & { waitUntil?: (p: Promise<unknown
   const hit = await st.time('cache', cacheMatch(env, cacheKey))
   if (hit) return hit
 
-  // The serving box first, when the deployment has one (`_lib/queryBox.ts`):
-  // it must hold exactly the scans this index knows (`n` / `first` / `last`,
-  // else it declines), and the tier-less scans' `meta.json` points are the
-  // Worker's alone.
-  const benv = env as typeof env & BoxEnv
-  const box = boxFor(benv, url)
-  let engine = benv.QUERY_BOX_URL ? 'worker;box=skip' : undefined
-  if (box && !extra.length && dates.length) {
-    const params = new URLSearchParams(url.searchParams)
-    params.set('n', String(dates.length))
-    params.set('first', dates[0])
-    params.set('last', dates[dates.length - 1])
-    const a = await st.time('box', askBox(benv, box, 'series', params))
-    if (a.kind === 'answer' && a.status !== 200) return boxStatus(a)
-    if (a.kind === 'answer') return cacheStore(env, cacheKey, a.body, { 'server-timing': st.header(), 'x-query-engine': a.engine }, ctx.waitUntil?.bind(ctx))
-    engine = `worker;fallback=${a.why}`
-  }
-
   // Fast path (specs/obs-axis-indexing.md Phase 1): a path's series (or a
   // filter's, one line per match root) reads the cross-scan over-time index —
   // ⌈scans/K⌉ pruned reads per root — instead of one point read per scan.
@@ -260,5 +241,5 @@ export const onRequestGet = async (ctx0: Ctx & { waitUntil?: (p: Promise<unknown
   }
   points.sort((a, b) => a.date.localeCompare(b.date))
   const body = JSON.stringify({ path, ...(qp.query ? hexNote(hx.hexRuns, qp.query.ast) : {}), ...(unindexed.length ? { unindexed: unindexed.sort() } : {}), ...(paths.length ? { paths } : {}), ...(lens ? { lens: lensTag } : {}), ...(owner ? { owner } : {}), points, ...(split ? { roots: rootPoints(rootsByDate) } : {}) })
-  return cacheStore(env, cacheKey, body, { 'server-timing': st.header(), ...(engine ? { 'x-query-engine': engine } : {}) }, ctx.waitUntil?.bind(ctx))
+  return cacheStore(env, cacheKey, body, { 'server-timing': st.header() }, ctx.waitUntil?.bind(ctx))
 }

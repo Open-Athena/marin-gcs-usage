@@ -1,10 +1,10 @@
 """Score a filter engine against a query set's ground truth
-(specs/filter-query-service.md §6 phase 1).
+(specs/done/filter-query-service.md §6 phase 1).
 
 An **engine** answers one (query, view) with its match roots, net totals,
 coverage flags and timings. `SubtreeEngine` is any server speaking the
 site's `/api/subtree?q=…&full=1` (the deployed Worker, a local `wrangler`
-stack with another index variant, later the serving box or a `qe=` override);
+stack with another index variant, or a `ps=` override);
 other engines plug in by implementing `answer`.
 
 **Verdicts** (per query × view):
@@ -87,7 +87,7 @@ def md5_paths(paths: list[str]) -> str:
 
 class SubtreeEngine:
     """`/api/subtree?…&q=&qs=&full=1` on any base URL `fetch` targets.
-    `params` are appended verbatim (e.g. `qe=box`); `cold` keys every request
+    `params` are appended verbatim (e.g. `ps=iv`); `cold` keys every request
     past the edge cache with a random `minArea` (`probe.cold_min_area`)."""
 
     def __init__(self, fetch: Fetch, date: str, *, name: str = "subtree", params: str = "", cold: bool = False, rng: random.Random | None = None):
