@@ -4,8 +4,8 @@
 // (one drilled, one not). Scan 07's job is still running.
 import { describe, expect, it } from 'vitest'
 import {
-  compaction, coverage, coverageTiers, freshness, type HealthRun, healthDoc, planCarries, stackTiers, type StackRun,
-  storeHealth, type StoreRead,
+  compaction, coverage, coverageTiers, freshness, type HealthRun, healthDoc, type MergeRecord, mergeLine, mergeState, planCarries,
+  stackTiers, type StackRun, storeHealth, type StoreRead,
 } from './healthModel'
 
 const D = (d: string) => `2026-10-${d}`
@@ -207,5 +207,74 @@ describe('stack → shards (CoverTimeline rows)', () => {
     expect(coverageTiers(doc.coverage, ['interval'], NOW * 1000).map(r => [r.tier, r.segments.map(s => [s.shardDur.slice(8), s.status])])).toEqual([
       ['iv', [['01', 'present'], ['02', 'present'], ['03', 'present'], ['04', 'missing'], ['05', 'present'], ['06', 'present'], ['07', 'pending']]],
     ])
+  })
+})
+
+describe('merges in progress (the status record, `merging.json`)', () => {
+  const T = NOW + 7 * 3600  // 2026-10-08 07:00 UTC
+  const AB = { inputs: ['deltas/2026-10-05', 'deltas/2026-10-06'], output: 'deltas/2026-10-05_2026-10-06', level: 1, first: D('05'), last: D('06'), scans: 2 }
+  const rec = (over: Partial<MergeRecord> = {}): MergeRecord => ({
+    holder: 'iv-merge-2026-10-06-060000', owner: 'uid:7', state: 'merging', started_ts: T - 3600, updated_ts: T - 120, heartbeat_s: 300, lease_s: 14400,
+    manifest: 'manifests/2026-10-06.json', merges: [AB], done: [], ...over,
+  })
+  const status = (r: MergeRecord) => { const m = mergeState(r, T)!; return [m.status, m.age, m.beat_age, m.why] }
+
+  it('merging while the heartbeat is fresh; stuck once it stops (30 min) or the lease runs out; failed as recorded', () => {
+    expect([
+      status(rec()),
+      status(rec({ updated_ts: T - 1800 })),
+      status(rec({ updated_ts: T - 1801 })),
+      status(rec({ started_ts: T - 14401, updated_ts: T - 60 })),
+      status(rec({ started_ts: T - 7200, updated_ts: T - 3700, lease_s: undefined })),
+      status(rec({ state: 'failed', updated_ts: T - 600, error: 'Boom: killed while building' })),
+      mergeState(null, T),
+    ]).toEqual([
+      ['merging', 3600, 120, null],
+      ['merging', 3600, 1800, null],
+      ['stuck', 3600, 1801, 'no heartbeat for 30m'],
+      ['stuck', 14401, 60, 'held 4h00m, past its 4h00m lease'],
+      ['stuck', 7200, 3700, 'no heartbeat for 1h01m'],
+      ['failed', 3600, 600, 'Boom: killed while building'],
+      null,
+    ])
+  })
+
+  it('one line: since when, each planned merge (runs → output, level); the date when it isn\'t today', () => {
+    const two = rec({ merges: [AB, { inputs: ['deltas/a_b', 'deltas/c', 'deltas/d'], output: 'deltas/a_d', level: 2, first: 'a', last: 'd', scans: 4 }] })
+    expect([
+      mergeLine(mergeState(rec(), T)!, T),
+      mergeLine(mergeState(two, T)!, T),
+      mergeLine(mergeState(rec({ started_ts: T - 8 * 3600, updated_ts: T - 3 * 3600 }), T)!, T),
+      mergeLine(mergeState(rec({ state: 'failed', updated_ts: T - 600 }), T)!, T),
+    ]).toEqual([
+      'merging since 06:00 UTC: 2 runs → deltas/2026-10-05_2026-10-06 (L1)',
+      'merging since 06:00 UTC: 2 runs → deltas/2026-10-05_2026-10-06 (L1); 3 runs → deltas/a_d (L2)',
+      'merging since 2026-10-07 23:00 UTC: 2 runs → deltas/2026-10-05_2026-10-06 (L1)',
+      'merge failed at 06:50 UTC: 2 runs → deltas/2026-10-05_2026-10-06 (L1)',
+    ])
+  })
+
+  it('the planned output is a pending shard on its level, in place of the due carry it is', () => {
+    const axis = ['01', '02', '03', '04', '05', '06', '07'].map(D)
+    const l1 = (r: MergeRecord | null) => {
+      const rows = stackTiers(storeHealth({ ...IV, merging: r }, T), axis, T * 1000)
+      return rows.find(x => x.tier === 'L1')!.segments.map(x => [x.start.slice(8, 10), x.end.slice(8, 10), x.status, x.shardDur, x.key])
+    }
+    expect([l1(null), l1(rec()), l1(rec({ updated_ts: T - 3600 })), l1(rec({ state: 'failed' }))]).toEqual([
+      [['05', '07', 'pending', 'due carry of 2 runs · 2 scans', AB.output]],
+      [['05', '07', 'pending', 'merging of 2 runs · 2 scans', AB.output]],
+      [['05', '07', 'pending', 'stuck merge of 2 runs · 2 scans', AB.output]],
+      // a failed merge holds nothing: its carry is due again
+      [['05', '07', 'pending', 'due carry of 2 runs · 2 scans', AB.output]],
+    ])
+    // a planned merge R2's manifest doesn't list yet (it lags GCS) is drawn on its own level; one already listed is not
+    const ahead = { inputs: ['x', 'y'], output: 'deltas/2026-10-01_2026-10-02', level: 3, first: D('01'), last: D('02'), scans: 8 }
+    const rows = stackTiers(storeHealth({ ...IV, merging: rec({ merges: [ahead, { ...AB, output: 'deltas/2026-10-05' }] }) }, T), axis, T * 1000)
+    expect(rows.filter(x => x.segments.some(g => g.shardDur.startsWith('merging'))).map(x => [x.tier, x.segments.map(g => g.key)])).toEqual([['L3', [ahead.output]]])
+  })
+
+  it('healthDoc ages each store\'s merge at its `now`', () => {
+    const doc = healthDoc([{ ...IV, merging: rec({ updated_ts: T - 2000 }) }, ST], PER_SCAN, JOBS, T)
+    expect(doc.stores.map(s => s.merge && [s.merge.status, s.merge.why, s.merge.holder])).toEqual([['stuck', 'no heartbeat for 33m', 'iv-merge-2026-10-06-060000'], null])
   })
 })

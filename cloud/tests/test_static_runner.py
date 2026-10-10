@@ -559,6 +559,25 @@ def test_a_detached_merge_reaches_r2_with_the_next_scan():
     assert _levels(f, SCANS[2]) == [(f"deltas/{a_b}", 1), (f"deltas/{SCANS[2]}", 0)]
 
 
+@pytest.mark.parametrize("r2_sa, r2_env", [(None, True), ("build@proj", True), ("copy@proj", False)])
+def test_the_merge_job_has_the_r2_env_when_it_runs_as_the_r2_account(r2_sa, r2_env):
+    """The merge job mirrors its lease to R2 (`merging.json`, for /health) with the R2 copy's env, which it gets when the
+    R2 account is the stages' own (gcs: none set; cw: the same): a job runs as one account, and the merge's writes the
+    data bucket. Its name is its status record's holder."""
+    f = Fake({}, SCANS[:2])
+    specs = []
+    run_job = f.run_job
+    f.run_job = lambda name, spec, wait=None: specs.append((name, spec)) or run_job(name, spec, wait)
+    f.daily(Profile(**{**CFG.__dict__, "r2_sa": r2_sa}), merge_wait=None).run(SCANS[1], catch_up=True)
+    name, spec = next((n, s) for n, s in specs if s["labels"]["stage"] == "merge")
+    r2 = {"R2_ACCESS_KEY_ID": "projects/proj/secrets/s-id/versions/latest", "R2_ENDPOINT": "projects/proj/secrets/s-end/versions/latest",
+          "R2_SECRET_ACCESS_KEY": "projects/proj/secrets/s-key/versions/latest"}
+    assert (spec["allocationPolicy"]["serviceAccount"]["email"], spec["taskGroups"][0]["taskSpec"]["environment"]) == ("build@proj", {
+        "variables": {"STATIC_NAMES_BUCKET": "data", "STATIC_NAMES_SCRATCH": "scr", **({"R2_BUCKET": "idx"} if r2_env else {}), "DT_JOB_NAME": name},
+        **({"secretVariables": r2} if r2_env else {}),
+    })
+
+
 def test_a_failed_merge_never_fails_the_run():
     f = Fake({}, SCANS[:2], fail=("merge",))
     logs = []
