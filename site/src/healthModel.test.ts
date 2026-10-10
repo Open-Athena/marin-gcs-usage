@@ -147,6 +147,14 @@ describe('a running job whose rows have `started_ts` NULL (gcs, 2026-10-10)', ()
       { path: 0, interval: 1, light: 1, drill: 1, anchors: 1, r2: 0 },
     ])
   })
+  it('a finished job\'s scan that nothing serves is `unserved`, not a coverage row with gaps', () => {
+    const doc = healthDoc([iv, st], per, [...jobs('running'), { scan: '2026-08-10', status: 'succeeded', started_ts: T('2026-08-10T07:01:25Z') }], NOW10)
+    expect([doc.scans, doc.unserved, doc.gaps]).toEqual([
+      [X('09T1236'), X('10'), X('10T1514')],
+      ['2026-08-10'],
+      { path: 0, interval: 0, light: 0, drill: 0, anchors: 0, r2: 0 },
+    ])
+  })
   it('a running job that names no scan (its id unmatched) still makes a scan past every store\'s newest pending — only that one', () => {
     const scans = ['09T1236', '10', '10T1514'].map(X)
     const stores = [{ ...iv, base: [X('09T1236')], runs: [] }, st].map(storeHealth)
