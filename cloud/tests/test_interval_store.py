@@ -133,6 +133,8 @@ def built(tmp_path_factory):
         ist.fold_range(str(out), i, out, con)
     for i in range(3):
         ist.build_slices_range(scans_doc, ranges, i, out, con, mount=str(root))
+    for i in range(3):
+        ist.slice_totals_range(str(out), i, out, con)
     return out, scans_doc, oracle, docs
 
 
@@ -172,6 +174,19 @@ def test_slice_versions_reconstruct_every_scan(built):
     assert n == sum(d["rows"] for d in json.loads((out / "sv-digest" / "r0000.json").read_text())["scans"]) + sum(
         d["rows"] for i in (1, 2) for d in json.loads((out / "sv-digest" / f"r{i:04d}.json").read_text())["scans"])
     assert [json.loads((out / "sv-digest" / f"r{i:04d}.json").read_text())["eq"] for i in range(3)] == [True, True, True]
+
+
+def test_slice_totals_carry_each_scans_path_total(built):
+    """Every slice live at a scan carries its path's total at that scan (Σ of its live slices)."""
+    out, scans, _, _ = built
+    for s in scans["scans"]:
+        live = _live(out, "svt", s["ts"])
+        tot: dict[tuple, int] = {}
+        for r in live:
+            tot[(r["depth"], r["path"])] = tot.get((r["depth"], r["path"]), 0) + r["size"]
+        assert [(r["path"], r["usr"], r["tot"]) for r in live] == [(r["path"], r["usr"], tot[(r["depth"], r["path"])]) for r in live], s["id"]
+        key = lambda r: (r["depth"], r["path"], r["usr"] or "")
+        assert sorted(map(key, live)) == sorted(map(key, _live(out, "sv", s["ts"])))
 
 
 def test_path_versions_reconstruct_every_scan(built):

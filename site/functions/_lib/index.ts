@@ -434,8 +434,9 @@ const ivRev = (env: Env): string => (env.INTERVAL_STORE_REV ? `@${env.INTERVAL_S
 const ivKey = (env: Env, key: string): string => (env.INTERVAL_STORE_REV ? `${key}?rev=${env.INTERVAL_STORE_REV}` : key)
 /** The sorts the store serves (the reads sort is looked up by `ivLastRead`). */
 const IV_SORTS = new Set(['path', 'bysize', 'reads'])
-/** Under `slices(env)`: each per-scan variant a sliced read opens → the store's owner-slice sort. */
-const IV_SLICE_SORTS = new Map([['path', 'slices'], ['bysize', 'slices-bysize'], ['bysize-user', 'slices-bysize-user']])
+/** Under `slices(env)`: each per-scan variant a sliced read opens → the store's owner-slice sort (`bysize`'s
+ *  keyed on each path's total, as the per-scan store's is: `keyedOnTotal`). */
+const IV_SLICE_SORTS = new Map([['path', 'slices'], ['bysize', 'slices-bytotal'], ['bysize-user', 'slices-bysize-user']])
 /** Generations found without slice sorts (their sliced reads go per-scan), held a minute. */
 const ivNoSlices = new Map<string, number>()
 

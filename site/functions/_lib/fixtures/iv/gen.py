@@ -105,6 +105,7 @@ def slices_gen() -> None:
     d = ist.build_range(doc, ranges, 0, work / "out", con, mount=str(fx))
     ist.fold_range(str(work / "out"), 0, work / "out", con)
     ds = ist.build_slices_range(doc, ranges, 0, work / "out", con, mount=str(fx))
+    ist.slice_totals_range(str(work / "out"), 0, work / "out", con)
     assert d["eq"] and ds["eq"], (d["eq"], ds["eq"])
     out = HERE / "interval-store" / G2
     shutil.rmtree(out, ignore_errors=True)

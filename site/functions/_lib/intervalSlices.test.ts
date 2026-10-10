@@ -138,8 +138,8 @@ describe('interval store: owner slices', () => {
     expect([...new Set(r2Reads.filter(k => k.includes('/served/')))].sort()).toEqual([
       'interval-store/g2/served/slices-bysize-user.groups.parquet',
       'interval-store/g2/served/slices-bysize-user.parquet',
-      'interval-store/g2/served/slices-bysize.groups.parquet',
-      'interval-store/g2/served/slices-bysize.parquet',
+      'interval-store/g2/served/slices-bytotal.groups.parquet',
+      'interval-store/g2/served/slices-bytotal.parquet',
       'interval-store/g2/served/slices.groups.parquet',
       'interval-store/g2/served/slices.parquet',
     ])

@@ -93,6 +93,8 @@ SV_SCHEMA = pa.schema([
     pa.field("usr", pa.string()),
     *[f for f in PVL_SCHEMA if f.name not in ("depth", "path", "us")],
 ])
+#: Owner slices with their path's total at each time (`fold -S`): what the total-keyed slice sort holds.
+SVT_SCHEMA = SV_SCHEMA.append(pa.field("tot", pa.int64(), nullable=False))
 SV_KEY = ["depth", "path", "usr"]
 SV_CHANGE = [c for c in CHANGE_COLS if c != "us"] + ["last_read"]
 SV_STATE = [*SV_CHANGE, "wts"]
@@ -341,6 +343,38 @@ def fold_range(root: str, i: int, out: Path, con) -> dict:
     return doc
 
 
+def slice_totals_sql(sv: str, pv: str) -> str:
+    """`sv`'s slice versions split where their path's total (`pv`'s `size`) changes, each piece carrying it
+    as `tot`: `SVT_SCHEMA` rows, unsorted. Every live slice lies inside a live path version (a scan's
+    slices sum to its path row), so the pieces cover the slices exactly."""
+    cols = ", ".join(f"s.{c}" for c in SV_SCHEMA.names if c not in ("vf", "vt"))
+    return f"""SELECT {cols}, greatest(s.vf, p.vf) AS vf, least(s.vt, p.vt) AS vt, p.size AS tot
+        FROM {sv} s JOIN {pv} p ON p.depth = s.depth AND p.path = s.path AND p.vf < s.vt AND s.vf < p.vt"""
+
+
+def slice_totals_range(root: str, i: int, out: Path, con) -> dict:
+    """Range `i`'s `svt/r####.parquet` from its `sv/` and `pv/`, sorted `(depth, path, usr, vf)`; the
+    pieces of each slice version must tile it (checked)."""
+    t0 = monotonic()
+    name = f"r{i:04d}"
+    sv, pv = f"read_parquet({q(f'{root}/sv/{name}.parquet')})", f"read_parquet({q(f'{root}/pv/{name}.parquet')})"
+    con.execute("DROP TABLE IF EXISTS svt")
+    con.execute(f"CREATE TABLE svt AS {slice_totals_sql(sv, pv)}")
+    sel = ", ".join(SVT_SCHEMA.names)
+    n = write_sorted(sn._batches(con, f"SELECT {sel} FROM svt ORDER BY depth, path, usr NULLS FIRST, vf"), out / "svt" / f"{name}.parquet",
+                     SVT_SCHEMA, RANGE_RG, dictionary=["kind", "usr"])
+    # The pieces tile each slice version (they're its intersections with disjoint path versions, so equal
+    # total spans mean full cover).
+    span_sv, n_sv = con.execute(f"SELECT sum(vt - vf)::HUGEINT, count(*) FROM {sv}").fetchone()
+    span_svt = con.execute("SELECT sum(vt - vf)::HUGEINT FROM svt").fetchone()[0]
+    con.execute("DROP TABLE svt")
+    if span_sv != span_svt:
+        raise RuntimeError(f"range {i}: slice pieces span {span_svt}, the slices {span_sv}")
+    doc = {"i": i, "sv": n_sv, "svt": n, "s": round(monotonic() - t0, 1)}
+    err(f"slice totals {i}: {n_sv:,} → {n:,} versions in {doc['s']}s")
+    return doc
+
+
 # ── Served sorts ───────────────────────────────────────────────────────────
 
 #: A version's size bucket, `⌊log2 size⌋` as a bit length (exact for any int64; the path store's
@@ -353,13 +387,14 @@ SORTS = {
     "path": ("pvl", "depth, path, vf", "size"),
     "bysize": ("pvl", f"({BUCKET}) DESC NULLS LAST, path, vf", "size"),
     "reads": ("rd", "depth, path, vf", None),
-    # Owner slices, as the per-scan store's `path`, `bysize` and `bysize-user` sorts.
+    # Owner slices, as the per-scan store's `path`, `bysize` (keyed on the path's total) and `bysize-user` sorts.
     "slices": ("sv", "depth, path, usr NULLS FIRST, vf", "size"),
-    "slices-bysize": ("sv", f"({BUCKET}) DESC NULLS LAST, path, usr NULLS FIRST, vf", "size"),
+    # Keyed on the path's total (`bysize-path-total.md`): a path's slices sit together, `b_max` = MAX(tot).
+    "slices-bytotal": ("svt", f"({BUCKET.replace('size', 'tot')}) DESC NULLS LAST, path, usr NULLS FIRST, vf", "tot"),
     "slices-bysize-user": ("sv", f"usr NULLS FIRST, ({BUCKET}) DESC NULLS LAST, path, vf", "size"),
 }
 #: Each range-file dir's schema.
-SUB_SCHEMA = {"pv": PV_SCHEMA, "pvl": PVL_SCHEMA, "rd": RD_SCHEMA, "sv": SV_SCHEMA}
+SUB_SCHEMA = {"pv": PV_SCHEMA, "pvl": PVL_SCHEMA, "rd": RD_SCHEMA, "sv": SV_SCHEMA, "svt": SVT_SCHEMA}
 GROUPS_SCHEMA = pa.schema([
     pa.field("rg", pa.int32(), nullable=False),
     pa.field("seg", pa.int32(), nullable=False),
@@ -619,10 +654,12 @@ def churn_stats(con, root: str, scans: dict) -> dict:
 @option("-o", "--out", default="/stage/out", help="Local output dir (uploaded, then removed)")
 @option("-p", "--threads", default=16, type=int, help="DuckDB threads")
 @option("-P", "--profile", help="Deployment profile (`interval_profiles/<name>.json` or a path; default $INTERVAL_STORE_PROFILE)")
+@option("-S", "--slice-totals", is_flag=True, help="Instead: each range's slice versions with their path's total (`svt/`, `slice_totals_range`)")
 @option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir")
 @option("-U", "--no-upload", is_flag=True, help="Keep the outputs local")
-def fold_cmd(bucket, gen, index, mount, mem, per_task, out, threads, profile, tmp, no_upload) -> None:
-    """Fold each range's read days into its path versions: `pvl/r####.parquet` (what `cut` serves)."""
+def fold_cmd(bucket, gen, index, mount, mem, per_task, out, threads, profile, slice_totals, tmp, no_upload) -> None:
+    """Fold each range's read days into its path versions: `pvl/r####.parquet` (what `cut` serves); with
+    `-S`, its slice versions with their path's total: `svt/r####.parquet`."""
     bucket = _bucket(bucket, profile)
     prefix = f"{PREFIX}/{gen}"
     ranges = read_json(f"gs://{bucket}/{prefix}/ranges.json")
@@ -630,10 +667,11 @@ def fold_cmd(bucket, gen, index, mount, mem, per_task, out, threads, profile, tm
     con = connect(threads, mem, tmp)
     root = f"{mount}/{prefix}" if mount else f"gs://{bucket}/{prefix}"
     for i in range(t * per_task, min((t + 1) * per_task, ranges["k"])):
-        doc = fold_range(root, i, Path(out), con)
+        sub = "svt" if slice_totals else "pvl"
+        doc = (slice_totals_range if slice_totals else fold_range)(root, i, Path(out), con)
         if not no_upload:
-            upload_tree(Path(out) / "pvl", bucket, f"{prefix}/pvl")
-            shutil.rmtree(Path(out) / "pvl")
+            upload_tree(Path(out) / sub, bucket, f"{prefix}/{sub}")
+            shutil.rmtree(Path(out) / sub)
         print(json.dumps(doc), flush=True)
 
 
@@ -758,7 +796,7 @@ def verify_cmd(bucket, profile, gen, index, mount, tasks, out, scan_ids, tmp) ->
 
 
 #: What the Worker reads: the scans and the served sorts with their group indexes.
-R2_SERVED = ("scans.json", "served/path.", "served/bysize.", "served/reads.", "served/slices.", "served/slices-")
+R2_SERVED = ("scans.json", "served/path.", "served/bysize.", "served/reads.", "served/slices.", "served/slices-bysize-user.", "served/slices-bytotal.")
 
 
 @cli.command("r2-copy")
