@@ -308,10 +308,12 @@ export async function pathGens(env: Env, dates: string[]): Promise<string> {
   for (let i = 0; i < uniq.length; i += 90) {
     const chunk = uniq.slice(i, i + 90)
     const marks = chunk.map(() => '?').join(', ')
+    // Both sorts' generations: a view may read either, and `bysize` is repointed on its own (a re-cut,
+    // `index-sync -v bysize`), so a key over `path` alone kept serving the old cut's cached views.
     const { results } = isPrimary(env)
-      ? await env.DB.prepare(`SELECT date, gen FROM index_schema WHERE variant = 'path' AND date IN (${marks})`).bind(...chunk).all<{ date: string; gen: string | null }>()
-      : await env.DB.prepare(`SELECT date, gen FROM index_schema WHERE store = ? AND variant = ? AND date IN (${marks})`).bind(storeKey(env), d1Variant(env, 'path'), ...chunk).all<{ date: string; gen: string | null }>()
-    for (const r of results) gens.set(r.date, r.gen ?? '')
+      ? await env.DB.prepare(`SELECT date, variant, gen FROM index_schema WHERE variant IN ('path', 'bysize') AND date IN (${marks}) ORDER BY date, variant`).bind(...chunk).all<{ date: string; variant: string; gen: string | null }>()
+      : await env.DB.prepare(`SELECT date, variant, gen FROM index_schema WHERE store = ? AND variant IN (?, ?) AND date IN (${marks}) ORDER BY date, variant`).bind(storeKey(env), d1Variant(env, 'path'), d1Variant(env, 'bysize'), ...chunk).all<{ date: string; variant: string; gen: string | null }>()
+    for (const r of results) gens.set(r.date, `${gens.get(r.date) ?? ''}${r.variant}:${r.gen ?? ''},`)
   }
   let h = 0x811c9dc5
   // The interval store's dates: their answers are the store's generation's, keyed apart.
