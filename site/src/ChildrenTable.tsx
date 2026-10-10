@@ -20,7 +20,7 @@ import { fmtN } from './types'
 import { useUnits } from './units'
 import { usePerfCommit } from './perf'
 import { pathText } from './pathCrumbs'
-import { chainOf, rowsCover } from './filterCover'
+import { rowLabel, type RowMatches, rowsCover } from './filterCover'
 import { ActStatus, RowActs, type RowSource, useActDeps, useKeepFocus, useMatchAct } from './MatchActions'
 
 // Sortable, paged listing of the treemap's current node's children — the
@@ -37,7 +37,7 @@ const PAGE_SIZES = [20, 50, 100, 200]
  *  tooltip); ~60 chars fills the column's 480px at 12px mono. */
 const NAME_MAX = 60
 
-export function ChildrenTable({ node, segs, scheme, ownerIdx, userIdx, onPickUser, onOpen, onOpenObject, filter, brush, onBrush }: {
+export function ChildrenTable({ node, segs, scheme, ownerIdx, userIdx, onPickUser, onOpen, onOpenObject, filter, rowMatches, brush, onBrush }: {
   /** The treemap's currently-viewed node. */
   node: TreeNode
   /** Path segments from the tree root to `node` (no scheme, no root). */
@@ -57,6 +57,10 @@ export function ChildrenTable({ node, segs, scheme, ownerIdx, userIdx, onPickUse
    *  prefix). Every row offers them at once; the matches are fetched on intent and awaited on the click.
    *  Absent: no filter, every row acts on its own prefix. */
   filter?: RowSource
+  /** Under a filter: each row's listed match roots (`rowMatchesOf`), `null` when unknown — a row names the path
+   *  to its match only when it holds exactly one (an exact list), and says how many when several (`9+` from a
+   *  capped list). */
+  rowMatches?: (row: string) => RowMatches | null
   /** Brushing with the treemap: the child (by name) lit as hovered, and the
    *  row under the pointer, `null` on leave. */
   brush?: string | null
@@ -180,17 +184,17 @@ export function ChildrenTable({ node, segs, scheme, ownerIdx, userIdx, onPickUse
     const kidSegs = [...segs, k.n]
     const uri = scheme + kidSegs.join('/')
     const cl = ownerIdx && !synthetic ? ownerIdx.assignmentOf(uri, k.k === 'file' ? 'object' : 'prefix') : null
-    // Under a filter a row holding one chain of single children shows (and opens) the path down it, as its
-    // treemap tile does (`marin-eu-west4/tomat`).
-    const chain = filter && !synthetic ? chainOf(k) : null
+    // Under a filter a row holding exactly one match shows (and opens) the path down to it, as its treemap
+    // tile does (`marin-eu-west4/tomat`); one holding several says how many (`marin-us-east5 · 9 matches`).
+    const lab = filter && !synthetic ? rowLabel(k, kidSegs.join('/'), rowMatches?.(kidSegs.join('/')) ?? null) : null
     let end: TreeNode = k
-    for (const _ of chain?.segs.slice(1) ?? []) end = end.c![0]
-    const to = chain && chain.segs.length > 1 ? rowTarget([...segs, ...chain.segs.slice(0, -1)], end.n, end.k, false) : rowTarget(segs, k.n, k.k, synthetic)
-    const label = chain && chain.segs.length > 1 ? chain.label : k.n
-    const fullSegs = chain ? [...segs, ...chain.segs] : kidSegs
-    return { k, synthetic, kidSegs, fullSegs, label, uri, to, shares: ownerShares(k), cl, si: selectable.indexOf(k) }
+    for (const _ of lab?.segs.slice(1) ?? []) end = end.c![0]
+    const to = lab && lab.segs.length > 1 ? rowTarget([...segs, ...lab.segs.slice(0, -1)], end.n, end.k, false) : rowTarget(segs, k.n, k.k, synthetic)
+    const label = lab?.label ?? k.n
+    const fullSegs = lab ? [...segs, ...lab.segs] : kidSegs
+    return { k, synthetic, kidSegs, fullSegs, label, count: lab?.count, atLeast: !!lab?.atLeast, uri, to, shares: ownerShares(k), cl, si: selectable.indexOf(k) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [shown, path, scheme, ownerIdx, selectable, filter])
+  }), [shown, path, scheme, ownerIdx, selectable, filter, rowMatches])
   // Every hook above runs on every render: an empty page (a drill can leave
   // no children) must not shorten the hook list, or React throws "Rendered
   // fewer hooks than expected" on the way in.
@@ -296,7 +300,7 @@ export function ChildrenTable({ node, segs, scheme, ownerIdx, userIdx, onPickUse
           </tr>
         </thead>
         <tbody>
-          {rowData.map(({ k, synthetic, kidSegs, fullSegs, label, uri, to, shares, cl, si }) => {
+          {rowData.map(({ k, synthetic, kidSegs, fullSegs, label, count, atLeast, uri, to, shares, cl, si }) => {
             const rowItem = actionItem(uri, k.k)
             // A row's hover is intent to act on it (under a filter: its matches are fetched after a short dwell).
             const enter = () => { onBrush?.(k.n); if (filter) setHovered(k.n) }
@@ -318,9 +322,10 @@ export function ChildrenTable({ node, segs, scheme, ownerIdx, userIdx, onPickUse
                     // The full path, only when it says more than the cell: the
                     // name is elided, or the view is drilled (at the root a row
                     // is just its bucket). To the right, clear of the row above.
-                    return label.length > NAME_MAX || segs.length > 0
+                    const cell = label.length > NAME_MAX || segs.length > 0
                       ? <Tooltip content={<code className="elide-full">{pathText(scheme, fullSegs)}</code>} placement="right">{name}</Tooltip>
                       : name
+                    return count ? <>{cell}<span className="row-n"> · {count.toLocaleString('en-US')}{atLeast ? '+' : ''} {count === 1 && !atLeast ? 'match' : 'matches'}</span></> : cell
                   })()}
                 </td>
                 <td className="num">{fmtBytes(k.b)}</td>

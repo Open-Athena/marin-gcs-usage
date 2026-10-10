@@ -36,8 +36,12 @@
   `(path, usr)` as gcs writes them) whose multi-owner dirs have slices under a
   view's threshold while their totals clear it (`m/big` drawn short of a slice,
   `m/split` and `m/deep{,/x}` not drawn at all, `m/twin` an object and a dir),
-  single-owner `s/`, 2500 unowned objects directly under `m/` — `path` +
-  `bysize` in 2048-row groups, so `m`'s children band spans two (`pathStore.test.ts`, specs/interval-store.md §7).
+  single-owner `s/`, 2500 unowned objects directly under `m/`, and `w/`'s
+  1100 two-owner dirs (300 KiB slices, 600 KiB totals) filling whole `bysize`
+  groups — `path` + `bysize` in 2048-row groups, `bysize` keyed on each path's
+  total (`tot`, specs/bysize-path-total.md), so a group's `b_max` must be
+  `MAX(tot)` for a 512 KiB read to keep it (`sliceComplete.test.ts`); its
+  `plans.json` is `disk-tree tiers plan -j` (with `matched`) over `SLICE_PLANS`.
 - `v2/plans.json`: `disk-tree tiers plan -j -C` over each v2 sidecar for a
   set of reads — the engine planner's group selection, which the reader's
   span queries must reproduce exactly (`pathStore.test.ts`).
@@ -143,10 +147,16 @@ def write_v2(here: str) -> None:
         write_text(join(out_dir, f'{stem}.groups.json'), groups_blob(d1[variant]['schema'], d1[variant]['rows']))
         write_groups_parquet(files[variant], d1[variant]['schema'], d1[variant]['rows'], row_group_rows=FOOTER_ROWS)
     write_text(join(out_dir, 'd1.json'), json.dumps(d1, separators=(',', ':')))
+    write_plans(out_dir, PLANS)
+
+
+def write_plans(out_dir: str, reads: list[tuple[str, int, float, int | None]], count: bool = False) -> None:
+    """`plans.json`: `disk-tree tiers plan -j` over each sort's sidecar for each
+    read (`count`: with the parquet's `matched` rows, else `-C`)."""
     plans = []
-    for path, thr, atten, max_depth in PLANS:
+    for path, thr, atten, max_depth in reads:
         for variant, stem in SORTS.items():
-            cmd = ['disk-tree', 'tiers', 'plan', '-j', '-C', '-t', variant, '-a', str(atten)]
+            cmd = ['disk-tree', 'tiers', 'plan', '-j', *(() if count else ('-C',)), '-t', variant, '-a', str(atten)]
             if max_depth is not None:
                 cmd += ['-d', str(max_depth)]
             cmd += [join(out_dir, f'{stem}.groups.json'), path, str(thr)]
@@ -201,6 +211,10 @@ def write_v2_lens(here: str) -> None:
 
 
 KiB = 1 << 10
+#: `v2-slices`' `w/d*` dirs: two 300 KiB owner slices each (600 KiB total), enough
+#: of them that some 2048-row `bysize` groups hold only such slices — a group whose
+#: biggest slice is under a 512 KiB threshold while its paths' totals clear it.
+N_WIDE = 1100
 #: `v2-slices`' objects (key, size) and owner prefixes (deepest wins; the rest unowned).
 SLICE_ROWS = [
     ('m/big/a/f0', 2 * MiB), ('m/big/b/f0', 100 * KiB),
@@ -209,9 +223,20 @@ SLICE_ROWS = [
     ('m/twin', 50 * KiB), ('m/twin/f0', 600 * KiB),
     *[(f's/f{i}', 200 * KiB) for i in range(4)],
     *[(f'm/f{i:04d}', KiB) for i in range(2500)],
+    *[(f'w/d{i:04d}/{u}/f0', 300 * KiB) for i in range(N_WIDE) for u in 'ab'],
 ]
 SLICE_OWNERS = {'m/big/a': 'alice', 'm/big/b': 'bob', 'm/split/a': 'alice', 'm/split/b': 'bob',
-                'm/deep/x/a': 'alice', 'm/deep/x/b': 'bob', 'm/twin': 'alice', 's': 'carol'}
+                'm/deep/x/a': 'alice', 'm/deep/x/b': 'bob', 'm/twin': 'alice', 's': 'carol',
+                **{f'w/d{i:04d}/{u}': o for i in range(N_WIDE) for u, o in (('a', 'alice'), ('b', 'bob'))}}
+
+
+#: `v2-slices`' reads cross-checked against the reader (path, thr, atten, max_depth).
+SLICE_PLANS = [
+    ('', 512 * KiB, 1, None),
+    ('bk/w', 512 * KiB, 1, None),
+    ('bk/m', 512 * KiB, 1, None),
+    ('bk/m', 301 * KiB, 2, 1),
+]
 
 
 def write_v2_slices(here: str) -> None:
@@ -242,6 +267,7 @@ def write_v2_slices(here: str) -> None:
     for variant, stem in SORTS.items():
         write_text(join(out_dir, f'{stem}.groups.json'), groups_blob(d1[variant]['schema'], d1[variant]['rows']))
     write_text(join(out_dir, 'd1.json'), json.dumps(d1, separators=(',', ':')))
+    write_plans(out_dir, SLICE_PLANS, count=True)
 
 
 def search_rows() -> dict[str, list[tuple[str, int]]]:

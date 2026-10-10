@@ -1574,13 +1574,28 @@ export async function planSizeRects(
   return [...byRg.values()].sort((a, b) => a.rg - b.rg)
 }
 
+/** Whether a size sort is keyed on each path's total (`tot`, spec
+ * `bysize-path-total.md`): a labeled store's `bysize`, one row per owner slice,
+ * sorted and grouped by `⌊log2 tot⌋` with `b_max = MAX(tot)`. */
+export const keyedOnTotal = (h: IndexHandle): boolean => h.schema.some(l => l.name === 'tot')
+
 /** A thresholded subtree read from the `bysize` sort (§2.1): the same
  * rows `readRects` returns from `path` at the same rects and `thrAt`, but
  * decoded from the groups above the threshold instead of the groups under
  * the path — `(rows under P with size ≥ thr) / group + #buckets` groups, so a
  * flat directory's children or a fleet root's view cost what they draw. The
  * per-row test is exact: depth in a rect, path in its range, `size ≥
- * thrAt(depth)` (a store whose rows are owner slices thresholds per slice). */
+ * thrAt(depth)`.
+ *
+ * Over owner slices the threshold is the path's, not a slice's: a sort keyed
+ * on the path's total (`keyedOnTotal`) keeps every slice of each path whose
+ * total clears `thrAt(depth)`. Every group holding a slice of such a path has
+ * `b_max ≥ tot ≥` the read's floor and a path range meeting the rect, so all
+ * of the path's slices are decoded and their sum is its `tot`; a path under
+ * the threshold sums (in whole or in part) below it. A sort cut per slice
+ * (before the re-cut) thresholds per slice: drawn dirs short of their small
+ * slices, all-small-slice dirs missing. A lens reads one owner's bytes, so
+ * its test stays per slice (sound on either cut: `MAX(tot) ≥ MAX(size)`). */
 export async function readSizeRects(
   h: IndexHandle,
   rects: Rect[],
@@ -1593,7 +1608,12 @@ export async function readSizeRects(
   const kept = plan ?? await planSizeRects(h, rects, thrAt, lens)
   const lensOk = (r: Row) => !lens || r.usr === lens.key
   const inRect = (r: Row) => rects.some(q => r.depth >= q.dLo && r.depth <= q.dHi && r.path >= q.pLo && r.path < q.pHi)
-  return decodeSpans(h, kept, r => r.size >= thrAt(r.depth) && inRect(r) && lensOk(r), stop)
+  if (lens || !keyedOnTotal(h)) return decodeSpans(h, kept, r => r.size >= thrAt(r.depth) && inRect(r) && lensOk(r), stop)
+  const rows = await decodeSpans(h, kept, inRect, stop)
+  const tot = new Map<string, number>()
+  const key = (r: Row) => `${r.depth}\0${r.path}`
+  for (const r of rows) tot.set(key(r), (tot.get(key(r)) ?? 0) + r.size)
+  return rows.filter(r => tot.get(key(r))! >= thrAt(r.depth))
 }
 
 /** Lookups this isolate found too wide (`readAsks`' `rememberWide`), oldest dropped past `TOO_WIDE_HELD`. */

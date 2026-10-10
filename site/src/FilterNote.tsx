@@ -7,18 +7,20 @@ export interface Coverage {
   partialReason?: string
   approximateReason?: string
   /** A heavy literal's fleet root from the static catalog alone (`rollup.bucketsOnly`): exact per-bucket
-   *  totals, but no view inside a bucket without the full index. */
-  bucketsOnly?: boolean
+   *  totals, but no view inside a bucket without the full index — or, `'scoped'` (`^q`'s starts-with catalog,
+   *  `rollup.scopedBelow`), a view inside one where the term's matches there are few enough. */
+  bucketsOnly?: boolean | 'scoped'
 }
 
 /** The `bucketsOnly` flag's words. */
 export const BUCKETS_ONLY = 'per-bucket totals only: searching inside a bucket for this term needs the full search index'
+export const BUCKETS_ONLY_SCOPED = 'per-bucket totals only at the top: inside a bucket, this term is searched where its matches are few enough'
 
 /** The coverage flags, spelled out — never a silent "fewer matches". */
 export function FilterFlags({ partialReason, approximateReason, bucketsOnly }: Coverage) {
   return (
     <>
-      {bucketsOnly && <span className="fflag">{BUCKETS_ONLY}</span>}
+      {bucketsOnly && <span className="fflag">{bucketsOnly === 'scoped' ? BUCKETS_ONLY_SCOPED : BUCKETS_ONLY}</span>}
       {partialReason && <span className="fflag">partial results: {partialReason}</span>}
       {approximateReason && <span className="fflag">approximate: {approximateReason}</span>}
     </>

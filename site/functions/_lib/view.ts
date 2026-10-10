@@ -173,8 +173,9 @@ export interface View {
    * bound on this scan's; at the fleet root a long literal's alias entry, a 1–2 character one's counted from
    * the roots index). `bucketsOnly`: the fleet root from the catalog with no drilldown (`FILTER_STATIC_HEAVY`
    * off) — bucket tiles, exact bytes and objects, `rows` null (so `matchCount.n` counts only the matched
-   * buckets); a bucket's view is refused (`term-too-common`). */
-  rollup?: { children: number; kept: number; rows: number | null; bucketsOnly?: true }
+   * buckets); a bucket's view is refused (`term-too-common`) — unless `scopedBelow` (`^q`'s starts-with catalog), where
+   * a view below answers when the term's rows there are few enough. */
+  rollup?: { children: number; kept: number; rows: number | null; bucketsOnly?: true; scopedBelow?: true }
   /** With `query`: read from the coarsest tier for the first paint. */
   firstPaint?: boolean
   /** With `query`: phase 2 left `skipped` of the roots big enough to subdivide undivided — drawn as one
@@ -593,7 +594,7 @@ interface Read {
   matched?: { path: string; b: number; o: number }[]
   /** A rollup read: the match count (a bound) and the rollup's shape (`View.rollup`). */
   matchCount?: { n: number; b: number; o: number }
-  rollup?: { children: number; kept: number; rows: number | null; bucketsOnly?: true }
+  rollup?: { children: number; kept: number; rows: number | null; bucketsOnly?: true; scopedBelow?: true }
   /** A rollup read: every child's exact matched total on this scan (absent = zero), drawn or not — a diff
    * takes a name one side didn't draw from here instead of a point lookup. */
   exact?: Map<string, Agg>
@@ -818,7 +819,7 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       // generation, exact, from one cached suffix-range read — no search sidecars, no thresholded walk.
       const sfs = !lens && !classes ? staticFilterStore(env) : null
       const skey = sfs ? await staticKey(sfs, pq, [date]) : null
-      const raw = skey ? await sfs!.source.hits(skey, path) : null
+      const raw = skey ? await sfs!.source.hits(skey, path, { firstPaint: o.firstPaint }) : null
       let shits = raw
       // A heavy literal's drilldown answers its base generation's scans only, and its rollups know no
       // owners: past either, the view reads as before.
@@ -828,7 +829,7 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       // literal with no drilldown (`FILTER_STATIC_HEAVY` off), whose thresholded walk would read as "no
       // matches": below the fleet root it is `term-too-common`, and the root's catalog buckets know no owners.
       const noDrill = !!sfs && !!skey && sfs.source.heavy === false
-      const why = shits ? null : noDrill && raw?.rollup?.bucketsOnly && owner && covers(raw, [date]) ? reject('unsupported-scope') : declined(sfs, skey, raw)
+      const why = shits ? null : (noDrill || raw?.rollup?.scopedBelow) && raw?.rollup?.bucketsOnly && owner && covers(raw, [date]) ? reject('unsupported-scope') : declined(sfs, skey, raw)
       if (why && (indexedOnly(env) || (noDrill && why.code !== 'scan-not-indexed'))) throw new FilterRejected(why)
       tr?.('static', performance.now() - t0, shits ? `${skey} ${shits.rollup ? `rollup ${shits.rollup.cells.length}` : shits.hits.length}` : skey ? `declined${off ? ` (${off})` : ''}` : undefined)
       if (shits?.rollup) {
@@ -1473,7 +1474,7 @@ async function rollupRead(env: Env, o: ViewOpts, rollup: Rollup, x: { dP: number
     threshold: T, thrAt, tier: 'rollup', idx: x.idx, truncated: false,
     matches: matched.map(m => m.path).sort(), matched: matched.map(m => ({ path: m.path, b: Math.round(m.b), o: Math.round(m.o) })),
     matchCount: { n: rollup.rows ?? matched.length, b: Math.round(total.b), o: Math.round(total.o) },
-    rollup: { children: rollup.children, kept: rollup.kept, rows: rollup.rows, ...(rollup.bucketsOnly ? { bucketsOnly: true as const } : {}) },
+    rollup: { children: rollup.children, kept: rollup.kept, rows: rollup.rows, ...(rollup.bucketsOnly ? { bucketsOnly: true as const } : {}), ...(rollup.scopedBelow ? { scopedBelow: true as const } : {}) },
     exact, ...(o.firstPaint ? { firstPaint: true } : {}), ownerLens: null, scoped: (_p, _all, mine) => mine!,
   }
 }

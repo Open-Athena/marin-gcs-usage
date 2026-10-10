@@ -63,7 +63,7 @@ class Fake:
         d = words[words.index("-d") + 1] if "-d" in words else None
         out = {"append": [f"{ROOT}/deltas/{d}/dhist/r{i:04d}.parquet" for i in range(8)], "shards": [f"{ROOT}/deltas/{d}/sidecar.parquet"],
                "catalog": [f"{ROOT}/deltas/{d}/catalog/meta.json"], "drill": [f"{ROOT}/deltas/{d}/drill/meta.json"],
-               "anchors": [f"{ROOT}/deltas/{d}/anchors/meta.json"]}.get(stage, [])
+               "anchors": [f"{ROOT}/deltas/{d}/anchors/meta.json", *([f"{ROOT}/deltas/{d}/anchors/start/meta.json"] if f"{ROOT}/anchors/start/meta.json" in self.keys else [])]}.get(stage, [])
         for key in out:
             self.keys[key] = None
         if stage == "publish":
@@ -88,8 +88,10 @@ def _r2(d: str, runs: list[str]) -> tuple:
     the manifests last."""
     cmds = []
     for r in runs:
-        cmds.append(_py("static_names", "r2-copy", "-g", f"{GEN}/deltas/{r}", "-x", "drill/meta.json", "-x", "anchors/meta.json", mount=False))
+        cmds.append(_py("static_names", "r2-copy", "-g", f"{GEN}/deltas/{r}", "-x", "drill/meta.json", "-x", "anchors/meta.json",
+                        "-x", "anchors/start/meta.json", mount=False))
         cmds.append(_py("static_names", "r2-copy", "-g", f"{GEN}/deltas/{r}", "-o", "drill/meta.json", mount=False))
+        cmds.append(_py("static_names", "r2-copy", "-g", f"{GEN}/deltas/{r}", "-o", "anchors/start/meta.json", mount=False))
         cmds.append(_py("static_names", "r2-copy", "-g", f"{GEN}/deltas/{r}", "-o", "anchors/meta.json", mount=False))
     cmds.append(_py("static_names", "r2-verify", "-g", GEN, "-m", d, mount=False))
     cmds.append(_py("static_names", "r2-copy", "-g", GEN, "-o", "manifests/", mount=False))
@@ -262,6 +264,22 @@ def test_the_anchors_stage_follows_the_drill_and_its_meta_is_copied_last():
     f = Fake({}, [d])
     f.daily(ANCHORS).run(d)
     assert f.calls == _chain(d, [d], drill=True, anchors=True)
+
+
+def test_a_run_without_the_starts_with_catalog_gets_its_anchors_stage_again():
+    """With the base's `anchors/start/` there, a run whose `anchors/meta.json` is there but not its `anchors/start/meta.json`
+    reruns the stage (`anchors run` builds what's missing); once both are there it's done."""
+    d = "2026-10-09T1236"
+    runs = [{"key": "deltas/2026-10-09", "scans": ["2026-10-09"]}, {"key": f"deltas/{d}", "scans": [d]}]
+    keys = {f"{ROOT}/manifests/{d}.json": {"runs": runs}, f"{ROOT}/deltas/{d}/drill/meta.json": None, f"{ROOT}/deltas/{d}/anchors/meta.json": None,
+            f"{ROOT}/anchors/start/meta.json": None}
+    f = Fake(keys, [d])
+    assert f.daily(ANCHORS).run(d) == []
+    assert f.calls == [_chain(d, [], drill=True, anchors=True)[5], _r2(d, ["2026-10-09", d]), ("prune", d)]
+    assert f"{ROOT}/deltas/{d}/anchors/start/meta.json" in f.keys
+    f.calls = []
+    f.daily(ANCHORS).run(d)
+    assert f.calls == [_r2(d, ["2026-10-09", d]), ("prune", d)]
 
 
 def test_an_appended_scan_without_its_anchors_gets_them_then_the_r2_copy():

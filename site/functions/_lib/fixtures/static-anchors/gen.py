@@ -4,7 +4,8 @@ groups, 5-row suffix groups), laid out as on R2 — `scans.json`, `shards.json`,
 `names/`, `anchors/`, `deltas/<scan>/{sx,names,anchors,catalog}/…`, `manifests/<last scan>.json` (both runs) — plus
 `expected.json`: `dates`, `paths` (`''`, every directory and path, `nope`), `keys` (`termKey`s), and `views[key][P][d]`, brute
 force from the versions: per child of `P` holding a live match root under it `[bytes, objects]` (non-empty only; a
-view `P` itself matches is the plain one and left out).
+view `P` itself matches is the plain one and left out); `start_keys` (every `^q` prefix of every name) and
+`start_root[key][d]`, their fleet roots (the starts-with catalog's).
 
 Regenerate from the repo root: `PYTHONPATH=cloud/tests .venv/bin/python site/functions/_lib/fixtures/static-anchors/gen.py`
 """
@@ -17,7 +18,7 @@ import pyarrow.parquet as pq
 
 from dt_cloud import static_anchors as an
 from dt_cloud import static_names as sn
-from test_static_anchors import BASE, IDS, KEYS, V, _dirs, build_world
+from test_static_anchors import BASE, IDS, KEYS, V, _dirs, _prefixes, build_world
 
 HERE = Path(__file__).parent
 
@@ -79,8 +80,16 @@ def main() -> None:
                 v = {d: x for d in IDS for x in [an.brute_view(w["versions"], key, P, sn.scan_epoch(d) * 1000)] if x}
                 if v:
                     views[key][P] = v
+        # The starts-with catalog's fleet root: every `^q` prefix of every name (`start_keys`), per scan.
+        start_keys = _prefixes(w["paths"])
+        start_root = {}
+        for key in start_keys:
+            v = {d: x for d in IDS for x in [an.brute_view(w["versions"], key, "", sn.scan_epoch(d) * 1000)] if x}
+            if v:
+                start_root[key] = v
         (out / "expected.json").write_text(json.dumps({"dates": IDS, "base": IDS[:BASE], "paths": paths, "keys": KEYS, "R": 3, "K": 2,
-                                                       "views": views}, separators=(",", ":")) + "\n")
+                                                       "views": views, "start_keys": start_keys, "start_root": start_root},
+                                                      separators=(",", ":")) + "\n")
 
 
 if __name__ == "__main__":

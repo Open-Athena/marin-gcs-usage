@@ -61,8 +61,9 @@ def _site_dir() -> Path:
 INDEX_VERSION_LEGACY = 1
 INDEX_VERSION_STORE = 2
 #: Size column candidates, first present wins (the engine's `groups.SIZE_COLS`):
-#: a store sort's `size`, a legacy index's `b`.
-SIZE_COLS = ("size", "b")
+#: a labeled `bysize`'s path total `tot` (its sort key), a store sort's `size`,
+#: a legacy index's `b`.
+SIZE_COLS = ("tot", "size", "b")
 
 
 def _schema_json(md: "pq.FileMetaData") -> dict:
@@ -156,6 +157,11 @@ def exists(parquet_path: str) -> bool:
 def extract(parquet_path: str) -> tuple[dict, list[dict]]:
     """Return (schema_meta, group_rows) from a local or fsspec-readable parquet."""
     import gcsfs
+
+    # `blobfs` opts the process out of gcsfs's adaptive prefetcher, whose handle hangs the
+    # interpreter at exit once pyarrow has read through it (an `index-sync` from a laptop
+    # synced, then never exited).
+    from disk_tree import blobfs  # noqa: F401
 
     opener = gcsfs.GCSFileSystem().open if _remote(parquet_path) else open
     with opener(parquet_path, "rb") as f:

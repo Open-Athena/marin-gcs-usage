@@ -35,6 +35,7 @@ from typing import Callable
 
 from click import argument, command, option
 
+from .cost_labels import label_batch_spec
 from .scan_id import SCAN_ID
 from .static_names import PREFIX, err
 from .static_profile import Profile, profile
@@ -113,7 +114,7 @@ def job_spec(cfg: Profile, name: str, tasks: int, commands: list[str], *, stage:
             env["R2_ENDPOINT"] = cfg.r2_endpoint
         secrets = cfg.r2_env_secrets()
         environment["secretVariables"] = {k: f"projects/{cfg.project}/secrets/{v}/versions/latest" for k, v in sorted(secrets.items())}
-    return {
+    return label_batch_spec({
         "taskGroups": [{
             "taskCount": tasks,
             "parallelism": tasks,
@@ -146,7 +147,11 @@ def job_spec(cfg: Profile, name: str, tasks: int, commands: list[str], *, stage:
         },
         "labels": {"purpose": "static-names", "stage": stage, "gen": _label(cfg.gen)},
         "logsPolicy": {"destination": "CLOUD_LOGGING"},
-    }
+    }, STAGE_COMPONENTS.get(stage, "static-names"))
+
+
+#: A stage's cost-attribution `component` (`cost_labels`); the rest of the chain is `static-names`.
+STAGE_COMPONENTS = {"drill": "drill", "anchors": "anchors"}
 
 
 def _label(v: str) -> str:
@@ -331,9 +336,11 @@ class Runner:
         self.stage(f"{d} drill (long ∥ short)", build)
 
     def anchors(self, d: str) -> None:
-        """The run's `names/` and `anchors/` (`static_anchors run`): one task; done once `anchors/meta.json` is there."""
+        """The run's `names/` and `anchors/` (`static_anchors run`): one task; done once `anchors/meta.json` is there, and
+        `anchors/start/meta.json` (the starts-with catalog) when the base carries one."""
         run = f"{self.root}/deltas/{d}"
-        if self.exists(f"{run}/anchors/meta.json"):
+        start = self.exists(f"{self.root}/anchors/start/meta.json")
+        if self.exists(f"{run}/anchors/meta.json") and (not start or self.exists(f"{run}/anchors/start/meta.json")):
             self.log(f"{d} anchors: done")
             return
         vcpus = int(self.cfg.machine.rsplit("-", 1)[-1])
@@ -342,12 +349,14 @@ class Runner:
 
         def build():
             self.run_job(name, spec)
-            if not self.exists(f"{run}/anchors/meta.json"):
-                raise RuntimeError(f"{run}/anchors/meta.json: not written (the task succeeded)")
+            for m in ("anchors/meta.json", *(("anchors/start/meta.json",) if start else ())):
+                if not self.exists(f"{run}/{m}"):
+                    raise RuntimeError(f"{run}/{m}: not written (the task succeeded)")
         self.stage(f"{d} anchors", build)
 
     def r2(self, d: str) -> None:
-        """One job: `r2-copy` of each run the manifest lists (its `drill/meta.json`, which makes its drill live, last), then
+        """One job: `r2-copy` of each run the manifest lists (its liveness markers last: `drill/meta.json`, then the starts-with
+        catalog's `anchors/start/meta.json` before `anchors/meta.json`, so a run's anchors go live with their catalog), then
         `r2-verify` (every served file of those runs on R2), then `r2-copy` of `manifests/` (each copy skips what R2 holds)."""
         key = f"{self.root}/manifests/{d}.json"
         runs = [r["key"] for r in self.read_json(key)["runs"]] if self.exists(key) else [f"deltas/{d} (and the merges publish makes)"]
@@ -356,9 +365,10 @@ class Runner:
             return
         cmds = []
         for r in runs:
-            cmds.append(task_command(self.cfg, "static_names", ["r2-copy", "-g", f"{self.cfg.gen}/{r}", "-x", "drill/meta.json", "-x", "anchors/meta.json"], mount=False))
-            cmds.append(task_command(self.cfg, "static_names", ["r2-copy", "-g", f"{self.cfg.gen}/{r}", "-o", "drill/meta.json"], mount=False))
-            cmds.append(task_command(self.cfg, "static_names", ["r2-copy", "-g", f"{self.cfg.gen}/{r}", "-o", "anchors/meta.json"], mount=False))
+            cmds.append(task_command(self.cfg, "static_names", ["r2-copy", "-g", f"{self.cfg.gen}/{r}", "-x", "drill/meta.json", "-x", "anchors/meta.json",
+                                                                "-x", "anchors/start/meta.json"], mount=False))
+            for m in ("drill/meta.json", "anchors/start/meta.json", "anchors/meta.json"):
+                cmds.append(task_command(self.cfg, "static_names", ["r2-copy", "-g", f"{self.cfg.gen}/{r}", "-o", m], mount=False))
         cmds.append(task_command(self.cfg, "static_names", ["r2-verify", "-g", self.cfg.gen, "-m", d], mount=False))
         cmds.append(task_command(self.cfg, "static_names", ["r2-copy", "-g", self.cfg.gen, "-o", "manifests/"], mount=False))
         name = job_id("r2", d, self.now())

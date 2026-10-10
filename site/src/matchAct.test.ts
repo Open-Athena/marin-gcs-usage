@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { HttpError } from './batches'
 import { CoverError, type Resolved } from './filterCover'
-import { actController, type ActDeps, type ActState, afterResolve, CONFIRM_OVER } from './matchAct'
+import { actController, type ActDeps, type ActState, afterResolve, CONFIRM_OVER, ROW_CONFIRM_OVER } from './matchAct'
 
 // The action's state machine with its sends stubbed: each test records every state it passes through, and
 // every request it would send.
@@ -88,6 +88,30 @@ describe('a row\'s action: offered at once, resolved on the click', () => {
       afterResolve({ items: Array.from({ length: CONFIRM_OVER }, (_, i) => dir(`b/d${i}`)), complete: true }, { kind: 'stage' }, d).s,
       afterResolve({ items: Array.from({ length: CONFIRM_OVER + 1 }, (_, i) => dir(`b/d${i}`)), complete: true }, { kind: 'stage' }, d).s,
     ]).toEqual(['confirm', 'go', 'go', 'confirm'])
+  })
+})
+
+describe('a table row\'s action asks before sending more than one item', () => {
+  // gcs prod, `?f=tomat`: the row labelled `marin-us-east5/tomat` resolved to 9 items; "me" sent all 9 at once.
+  const tomat = dir('marin-us-east5/tomat')
+  const flan = Array.from({ length: 8 }, (_, i) => file(`marin-us-east5/data/hrm_text_split/flan_direct/flan_${i}_rotten_tomatoes_part_00000.parquet`))
+  const row = { scheme: 'gs://', confirmOver: ROW_CONFIRM_OVER }
+  const go = (items: ReturnType<typeof dir | typeof file>[], d: { scheme: string; confirmOver?: number } = row) => afterResolve({ items, complete: true }, { kind: 'assign' }, d).s
+  it('the 9-item row asks first, and sends nothing until confirmed', async () => {
+    const h = harness({ got: { items: [tomat, ...flan], complete: true }, confirmOver: ROW_CONFIRM_OVER })
+    await h.ctl.start({ kind: 'assign', owner: '@me', who: 'you' })
+    expect([h.shape(), h.sent]).toEqual([['resolving', 'confirm'], []])
+    await h.ctl.confirm()
+    expect([h.shape().at(-1), h.sent]).toEqual(['done: assigned 1 folder, 8 files → you', [['assign', 9, { pattern: 'gs://marin-us-east5/tomat/', owner: '@me' }]]])
+  })
+  it('one item goes straight through; two or more ask; the default threshold is unchanged elsewhere', () => {
+    expect([
+      go([tomat]),
+      go([flan[0]]),
+      go([tomat, flan[0]]),
+      go([tomat, ...flan]),
+      go([tomat, ...flan], { scheme: 'gs://' }),
+    ]).toEqual(['go', 'go', 'confirm', 'confirm', 'go'])
   })
 })
 
