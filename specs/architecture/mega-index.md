@@ -1,5 +1,7 @@
 # One consolidated store and name index ("mega-index")
 
+Status: **retired 2026-10-10** with the ClickHouse store ([clickhouse.md] status); the code is at tag `ch-store-final`.
+
 Evidence checkpoint: 2026-10-08, ch-store VM resized to n2-highmem-32 (32 vCPU, 251 GB, 2 TB pd-ssd). The goal: every scan, base tree and text search, in one interval-coded store, so a day costs O(changes) and any historical scan stays queryable without its own index.
 
 ## What exists

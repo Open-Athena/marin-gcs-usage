@@ -1,13 +1,12 @@
 import { Treemap } from '@rdub/treemap'
 import { useEffect, useMemo, useState } from 'react'
-import { exactInteger, type HotRequest, type HotResult } from './hotModel'
-import { hotBucketHref } from './hotDrillModel'
+import { exactInteger, type HotResult } from './hotModel'
 import { hotMap, type HotMapNode, type HotMapSnapshot } from './hotTreemap'
 import { useUnits } from './units'
 import { fmtBytesPrecise } from './types'
 import '@rdub/treemap/styles.css'
 
-export function HotSnapshotMap({ snapshot, noun = 'bucket', detailHref }: { snapshot: HotMapSnapshot; noun?: string; detailHref?: (path: string) => string }) {
+export function HotSnapshotMap({ snapshot, noun = 'bucket' }: { snapshot: HotMapSnapshot; noun?: string }) {
   const { units, suffixB } = useUnits()
   const fmtBytes = (bytes: number) => fmtBytesPrecise(bytes, units, suffixB)
   const [hover, setHover] = useState<HotMapNode | null>(null)
@@ -48,21 +47,19 @@ export function HotSnapshotMap({ snapshot, noun = 'bucket', detailHref }: { snap
       <div className="hot-map-detail" aria-live="polite">
         {selected ? <><strong>{selected.path}</strong><span>{exactInteger(selected.b)} bytes; {exactInteger(selected.o)} objects</span>
           {pinned && <button type="button" aria-label={`Clear selected ${noun}`} onClick={() => setPinned(null)}>Clear</button>}
-          {pinned && detailHref && <a href={detailHref(pinned.path)}>View bucket detail</a>}
-        </> : <span>Hover a {noun} or press Enter on it for exact totals. {detailHref ? 'Select a bucket to open prepared detail, or use the table links.' : 'No deeper drill-down.'}</span>}
+        </> : <span>Hover a {noun} or press Enter on it for exact totals. No deeper drill-down.</span>}
       </div>
     </>}
   </figure>
 }
 
-export function HotMaps({ result, request }: { result: HotResult; request?: HotRequest }) {
+export function HotMaps({ result }: { result: HotResult }) {
   const snapshots = useMemo(() => (result.before ? [result.before, result.after] : [result.after]).map(hotMap), [result])
   return <section className="hot-maps" aria-label="Matching bytes by bucket">
     <h2>Matching bytes by bucket</h2>
     <p>“{result.after.pattern}”{result.before ? ` from ${result.before.date} to ${result.after.date}` : ` on ${result.after.date}`}</p>
     <div className={'hot-map-pair' + (result.before ? ' comparison' : '')}>
-      {snapshots.map(snapshot => <HotSnapshotMap key={`${snapshot.date}:${snapshot.pattern}`} snapshot={snapshot}
-        detailHref={request ? path => hotBucketHref(request, path) : undefined} />)}
+      {snapshots.map(snapshot => <HotSnapshotMap key={`${snapshot.date}:${snapshot.pattern}`} snapshot={snapshot} />)}
     </div>
     <p className="hot-note">Each map fills its own snapshot's byte total; areas show bucket shares, not change or object counts. Colors stay the same across scans. Zero-byte objects have no area; the exact table below retains all counts.</p>
   </section>

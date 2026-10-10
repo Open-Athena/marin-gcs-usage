@@ -241,7 +241,8 @@ class JobKind:
 
 @dataclass(frozen=True)
 class OutputSpec:
-    """A structure a run writes: `uri` a prefix (ends `/`) or an object, templated by `{scan}` and `{gen}`.
+    """A structure a run writes: `uri` a prefix (ends `/`) or an object, templated by `{scan}`, `{gen}` (the run's index
+    generation) and `{static_gen:<profile>}` (that static-names profile's live generation).
 
     - `after`: the phase whose end measures it (`record -P`; unset = the run's successful end); `kinds`: the run kinds that write it (empty = all).
     - `exclude`: sub-prefixes (relative) left out of the total.
@@ -414,10 +415,22 @@ class AnyStore:
         return self._for(uri).last_row_end(uri)
 
 
+STATIC_GEN = re.compile(r"\{static_gen:([\w.-]+)\}")
+
+
+def static_gen(name: str, env: Mapping[str, str] | None = None) -> str:
+    """The static name index generation of profile `name` (`static_profile.load_profile`: the named example or JSON
+    file, `STATIC_NAMES_GEN` over it), so an output template follows the live generation instead of pinning one."""
+    from .static_profile import load_profile
+    env = dict(os.environ if env is None else env)
+    return load_profile({**env, "STATIC_NAMES_PROFILE": name}).gen
+
+
 def fill(template: str, scan: str, gen: str | None) -> str | None:
-    """`template` with `{scan}` / `{gen}`; None when it needs a gen the run has none of."""
+    """`template` with `{scan}` / `{gen}` / `{static_gen:<profile>}`; None when it needs a gen the run has none of."""
     if "{gen}" in template and not gen:
         return None
+    template = STATIC_GEN.sub(lambda m: static_gen(m.group(1)), template)
     return template.replace("{scan}", scan).replace("{gen}", gen or "")
 
 
@@ -578,7 +591,9 @@ def record(
         if exit_code:
             run = replace(run, failed_phase=failed_phase, error=error or f"exit {exit_code}")
     if job:
-        run = replace(run, **job_fields(profile, job, now))
+        # only what the job knows: one read just after start has no RUNNING event yet, and its None must not clear
+        # the start `-S` stamped
+        run = replace(run, **{k: v for k, v in job_fields(profile, job, now).items() if v is not None})
     new_phases: list[Phase] = []
     if phase:
         prev_end = max((p["finished_ts"] for p in phases if p.get("finished_ts") and p["phase"] not in profile.overlapped), default=None)

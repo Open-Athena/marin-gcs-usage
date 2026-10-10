@@ -7,9 +7,9 @@ import { INDEXED_HELP } from '../functions/_lib/indexedOnly'
 import { simple } from '../functions/_lib/querySyntax'
 import { useStore, useStoreFetch } from './store'
 
-/** `rootLabel`: the store root's label (`ROOT_LABEL`), the unfiltered view's root crumb — absent when the
- *  deployment sets none, or before it loads. */
-export interface FilterCaps { indexedOnly: boolean; rootLabel?: string }
+/** `rootLabel`: the store root's label (`ROOT_LABEL`), the unfiltered view's root crumb; `rootTitle`: that
+ *  crumb's tooltip (`ROOT_TITLE`) — each absent when the deployment sets none, or before it loads. */
+export interface FilterCaps { indexedOnly: boolean; rootLabel?: string; rootTitle?: string }
 
 /** The deployment's filter capabilities for this subtree's store (unloaded or unreachable: none, i.e. every
  *  form, and no root label). */

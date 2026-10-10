@@ -125,7 +125,7 @@ function capabilities(value: unknown) {
 /** A per-scan source's plans: its registered catalog, or bounded discovery over its own name index or the consolidated store's. */
 const CONSOLIDATED_SOURCE = 'bounded name postings over the consolidated store; directory rollups are atomic'
 const CONSOLIDATED_CATALOG_SOURCE = "the consolidated catalog: every scan's registered literals precomputed in the store"
-/** `static-names-v1`: the static name index on R2, read by the Worker with no query box (`functions/_lib/nameSummaryStatic.ts`,
+/** `static-names-v1`: the static name index on R2, read by the Worker (`functions/_lib/nameSummaryStatic.ts`,
  *  `NAME_SUMMARY_STATIC=1`). A literal with more than V suffix rows, or of one or two characters, answers from the catalog
  *  (`plan: 'catalog'`); every other literal from the suffix postings, at most V rows (`bounded-name-postings`). */
 export const STATIC_SOURCE = 'static suffix postings on R2, one ranged read by the Worker; directory rollups are atomic'
@@ -137,8 +137,8 @@ function staticIdentity(value: unknown) {
   if (!keys(body, ['kind', 'generation', 'max_rows']) || body.kind !== 'static-names-v1' || typeof body.generation !== 'string' || !STATIC_GENERATION.test(body.generation) || integer(body.max_rows) < 1) fail()
   return { kind: 'static-names-v1' as const, generation: body.generation as string, max_rows: integer(body.max_rows) }
 }
-/** A per-scan (scalar-source) answer's source strings, by plan. The wire `kind` stays `'daily-scalar-source-v1'` (the ch-store's,
- *  which named it for its job's cadence): any scan id may carry it. */
+/** A per-scan (scalar-source) answer's source strings, by plan. The wire `kind` is `'daily-scalar-source-v1'` (named for a
+ *  daily cadence): any scan id may carry it. */
 const SCALAR_SOURCES: Record<NamePlan, string[]> = {
   catalog: ['published dated precomputed batch artifact'],
   'bounded-name-postings': ["bounded dated name postings over the scan's own name index; directory rollups are atomic", CONSOLIDATED_SOURCE],
@@ -252,10 +252,6 @@ export function parseName(value: unknown, request: HotRequest): NameResult {
   const after = execution(request.from ? body.after : body), before = request.from ? execution(body.before) : undefined
   if (before && (before.source_identity.generation !== after.source_identity.generation || before.source_identity.history_manifest_sha256 !== after.source_identity.history_manifest_sha256)) throw new Error('Name summary comparison has inconsistent frozen source identities.')
   return { ...result, execution: { after, ...(before ? { before } : {}) } }
-}
-export function nameHasDetail(result: NameResult): boolean {
-  if (result.capabilities) return false
-  return result.execution.after.plan === 'catalog' && (!result.before || result.execution.before?.plan === 'catalog')
 }
 /** A static scan's dir-only flag (`NameExecution.dirs_only`), in words. */
 export const NAME_DIRS_ONLY = 'This scan lists folders only — files aren’t searchable on it: these totals are its folder-name matches, not every match.'

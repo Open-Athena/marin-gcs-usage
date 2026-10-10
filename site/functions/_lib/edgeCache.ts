@@ -44,7 +44,7 @@ export const CACHE_V = '4'
 /** The deployment environment a response-cache key belongs to: `''` is prod's (keys exactly as before the
  * tag existed — no one-time flush), anything else a separate keyspace. A Pages preview (the dev stack)
  * binds the same `CACHE_KV` namespace as its prod and shares its zone's colo cache, so without the tag an
- * answer computed by dev's reader (new code, dev-only flags, a dev-only query box) was served on prod for up
+ * answer computed by dev's reader (new code, dev-only flags) was served on prod for up
  * to 30 days. `CACHE_NS`, when set, is the tag (`""` = prod's keys); else the request host, except
  * `PROD_HOST` itself — prod declares `PROD_HOST`, its preview env doesn't inherit `[vars]`, and a request to
  * the dev host (or a `*.pages.dev` alias) is never at the prod host. */

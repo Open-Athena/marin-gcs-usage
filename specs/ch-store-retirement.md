@@ -1,6 +1,6 @@
 # Retiring the ch-store VM
 
-Status: **prepared, nothing stopped or deleted** (2026-10-09). Ryan agreed to retire the VM once the static name search has run on gcs prod for a few days. This spec is the inventory, the preconditions, and the ordered runbook. Every destructive step is marked **needs Ryan's go**.
+Status: **mostly executed** (2026-10-10): the VM and its disk are deleted, gcs's job scripts and dev vars are gone, and the code left `cloud` (step 9, tag `ch-store-final`; the specs `ch-store.md` and `filter-query-service*.md` moved to `done/`). Whether steps 6–8 and 10 (tunnel + DNS, the account-wide R2 token, GCS staging, local worktrees) ran is not recorded here; move this spec to `done/` once they have. Prepared 2026-10-09: Ryan agreed to retire the VM once the static name search has run on gcs prod for a few days. This spec is the inventory, the preconditions, and the ordered runbook. Every destructive step is marked **needs Ryan's go**.
 
 The VM was the experiment platform for an append-only historical query service ([`ch-store.md`], [`filter-query-service.md`], [`serving-options.md`]). It ended up serving one production-adjacent thing, the name search, which now comes from the static name index on R2 (`specs/static-append.md` on `gcs`, `specs/architecture/static-name-search.md`). Nothing in gcs prod reads from the VM any more; its last jobs are the hourly `ch-daily` catch-up and, until the code change below, the R2 copy in `job/static-daily.sh`.
 
@@ -138,6 +138,6 @@ List prices from the Cloud Billing catalog (2026-10-09; this project has no BigQ
 
 Not saved: the GCS → R2 copies. The VM sent 617.7 GB in the 24 h to 12:00 UTC on 2026-10-09 (the 2026-10-08c base and drilldown, ≈ $74 of egress); the same bytes leave us-east1 from the Batch copy now. Steady state that is ~1.1 GB/day (`static-append.md`). The replacement pipeline (`static-daily`) costs ≈ $0.53/day (≈ $16/month), so the net saving is **≈ $710/month at list (≈ $635 with sustained use)**.
 
-[`ch-store.md`]: ch-store.md
-[`filter-query-service.md`]: filter-query-service.md
+[`ch-store.md`]: done/ch-store.md
+[`filter-query-service.md`]: done/filter-query-service.md
 [`serving-options.md`]: serving-options.md

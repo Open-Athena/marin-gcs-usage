@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { HOT_SCOPE, exactInteger, hotRequest, parseHot } from './hotModel'
+import { HOT_SCOPE, exactInteger, hotRequest, parseRootSummary, type HotRequest } from './hotModel'
+
+const SCHEMAS = [{ view: 'fixture-v1', diff: 'fixture-diff-v1' }, { view: 'fixture-batch-v1', diff: 'fixture-batch-diff-v1' }]
+const parseHot = (value: unknown, request: HotRequest) => parseRootSummary(value, request, SCHEMAS)
 
 const request = { date: '2026-10-05', name: '.json' }
 function fixture(date = request.date, batch = true) {
-  return { schema: batch ? 'hot-l1-batch-catalog-v1' : 'hot-l1-catalog-v1', target: 'fixture_union', date, pattern: '.json', path: '',
+  return { schema: batch ? 'fixture-batch-v1' : 'fixture-v1', target: 'fixture_union', date, pattern: '.json', path: '',
     exact: true, incremental: false, levels: 1, scope: HOT_SCOPE,
     root: { b: 12, o: 9 }, buckets: [
       { path: 'bucket-a', pre: 1, post: 4, b: 7, o: 2 },
@@ -21,7 +24,7 @@ function diff(batch = true) {
   after.buckets[1].b = 9
   after.buckets[2].o = 6
   after.root.o = 12
-  return { schema: batch ? 'hot-l1-batch-catalog-diff-v1' : 'hot-l1-catalog-diff-v1', target: 'fixture_union', pattern: '.json', path: '',
+  return { schema: batch ? 'fixture-batch-diff-v1' : 'fixture-diff-v1', target: 'fixture_union', pattern: '.json', path: '',
     exact: true, incremental: false, levels: 1, scope: HOT_SCOPE, before, after, delta: { b: 0, o: 3 },
     buckets: before.buckets.map((row, i) => ({ path: row.path, pre: row.pre, post: row.post,
       before: { b: row.b, o: row.o }, after: { b: after.buckets[i].b, o: after.buckets[i].o },
@@ -56,7 +59,7 @@ describe('frozen root summary model', () => {
       .toEqual([{ b: 0, o: 0 }, [[0, 0], [0, 0], [0, 0], [0, 0], [0, 0], [0, 0]]])
   })
   it.each([
-    ['schema', 'hot-l1-v1'], ['exact', false], ['incremental', true], ['levels', 2], ['path', 'bucket-a'],
+    ['schema', 'unknown-v1'], ['exact', false], ['incremental', true], ['levels', 2], ['path', 'bucket-a'],
     ['scope', 'full path'], ['target', 'invalid-target'],
   ])('refuses an unsupported %s', (key, value) => {
     expect(() => parseHot({ ...fixture(), [key]: value }, request)).toThrowError(new Error(
@@ -104,7 +107,7 @@ describe('frozen root summary model', () => {
   })
   it('does not accept mixed catalog schema families', () => {
     const body = diff()
-    body.before.schema = 'hot-l1-catalog-v1'
+    body.before.schema = 'fixture-v1'
     expect(() => parseHot(body, { ...request, from: '2026-10-04' })).toThrowError(new Error('Preview comparison does not match the requested scope.'))
   })
   it('checks the signed root change', () => {

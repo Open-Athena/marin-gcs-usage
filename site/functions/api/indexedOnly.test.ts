@@ -333,6 +333,11 @@ describe('/api/filter-caps', () => {
     const got = await Promise.all(['', '?store=meta'].map(async qs => (await caps({ request: new Request(`http://localhost/api/filter-caps${qs}`), env } as never)).json()))
     expect(got).toEqual([{ indexedOnly: true, rootLabel: 'marin CoreWeave (dev)' }, { indexedOnly: true, rootLabel: 'our storage' }])
   })
+  it('and the root crumb\'s tooltip (`ROOT_TITLE`), only where set', async () => {
+    const env = { ...envOf(true), ROOT_LABEL: 'Marin CoreWeave', STORES_JSON: JSON.stringify({ meta: { vars: { ROOT_LABEL: 'Marin usage — meta', ROOT_TITLE: 'this site\'s own data' } } }) } as Env
+    const got = await Promise.all(['', '?store=meta'].map(async qs => (await caps({ request: new Request(`http://localhost/api/filter-caps${qs}`), env } as never)).json()))
+    expect(got).toEqual([{ indexedOnly: true, rootLabel: 'Marin CoreWeave' }, { indexedOnly: true, rootLabel: 'Marin usage — meta', rootTitle: 'this site\'s own data' }])
+  })
 })
 
 describe('/api/filter-scans', () => {

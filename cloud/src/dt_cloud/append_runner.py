@@ -13,9 +13,10 @@ listed by immutable manifests:
 - **Publish** adds only the scan's own level-0 run: `manifests/<id>.json`, written once, last, after every file of every
   run it lists exists.
 - **Deferred carries** (`Runner.carries`, after the scans, non-fatal): the binary counter replayed over the newest
-  manifest's runs (`plan_carries`), carries that chain folded into one N-way merge, none reaching `COMPACT_LEVEL` (a
-  compaction's job). A Batch job (`merge_pending`) builds each merged run into its own dir and publishes a **revision**
-  `manifests/<id>.m<NNN>.json` of the newest manifest (`publish_revision`), rebased onto a scan's manifest that lands
+  manifest's runs (`plan_carries`), carries that chain folded into one N-way merge, none reaching the profile's
+  `compact_level` (a compaction's job; none when it is unbounded). A Batch job (`merge_pending`) builds each merged
+  run into its own dir and publishes a **revision** `manifests/<id>.m<NNN>.json` of the newest manifest
+  (`publish_revision`), rebased onto a scan's manifest that lands
   meanwhile; one merger per generation (a lease in the scratch bucket); an interrupted merge leaves the newest manifest
   as it was and resumes (a whole merged dir is reused). Nothing is deleted.
 - **R2**: each manifest's runs (their liveness markers last), checked there, then the manifest, last (`r2_publish`).
@@ -42,9 +43,27 @@ from pathlib import Path
 from time import monotonic
 from typing import Any, ClassVar, Protocol
 
+from click import ParamType
+
 from .cost_labels import label_batch_spec
 from .scan_id import SCAN_ID
-from .static_profile import Profile
+from .static_profile import COMPACT_LEVEL, Profile, parse_compact_level
+
+
+class Level(ParamType):
+    """`-L`: a compaction level, an integer ≥ 1 or `none` (unbounded; `static_profile.parse_compact_level`)."""
+    name = "level"
+
+    def convert(self, value, param, ctx):
+        if value is None or isinstance(value, int):
+            return value
+        try:
+            return parse_compact_level("-L", value)
+        except SystemExit as e:
+            self.fail(str(e), param, ctx)
+
+
+LEVEL_HELP = f"Compaction level: no carry reaches it; `none`: unbounded (default {COMPACT_LEVEL})"
 
 
 def err(*a, **kw) -> None:
@@ -53,8 +72,6 @@ def err(*a, **kw) -> None:
 
 #: Exit status: the scan is not published yet, or is not the next one to append.
 NOT_NEXT = 3
-#: The binary counter folds runs into a new base generation (a compaction) at this level (2^5 = 32 scans).
-COMPACT_LEVEL = 5
 #: Revision suffix width: `<id>.m001.json` … `<id>.m999.json` sort in revision order.
 REV_DIGITS = 3
 MANIFEST = re.compile(rf"(?P<scan>[^/]+?)(?:\.m(?P<rev>\d{{{REV_DIGITS}}}))?\.json")
@@ -151,20 +168,19 @@ def listed(runs: list[dict]) -> list[dict]:
 # ── The plan ───────────────────────────────────────────────────────────────
 
 
-def plan_carries(runs: list[dict], drilled: Collection[str] = frozenset(), max_level: int | None = None) -> tuple[list[dict], list[tuple[list[dict], dict]]]:
+def plan_carries(runs: list[dict], drilled: Collection[str] = frozenset(), max_level: int | None = COMPACT_LEVEL) -> tuple[list[dict], list[tuple[list[dict], dict]]]:
     """The binary counter replayed over `runs` (oldest first): each pushed in turn, and while the two newest share a level
     (and both carry a drill or neither: a merge of one with and one without would drop the one's drill, the reader
     stopping at the first run without one) they carry into one a level up. Carries that chain fold into one merge of every
-    run they consumed. A carry never reaches `max_level` (default `COMPACT_LEVEL`: a compaction's job). Returns the runs
+    run they consumed. A carry never reaches `max_level` (a compaction's job; None: unbounded, carries at every level). Returns the runs
     after and the merges (`(inputs, output)`, oldest first; their inputs are disjoint)."""
-    top = COMPACT_LEVEL if max_level is None else max_level
     drilled = set(drilled)
     stack: list[tuple[dict, list[dict]]] = []
     for r in runs:
         stack.append((r, [r]))
         while len(stack) >= 2:
             (a, ia), (b, ib) = stack[-2], stack[-1]
-            if a["level"] != b["level"] or a["level"] + 1 >= top or (a["key"] in drilled) != (b["key"] in drilled):
+            if a["level"] != b["level"] or (max_level is not None and a["level"] + 1 >= max_level) or (a["key"] in drilled) != (b["key"] in drilled):
                 break
             m = {"key": run_key(a["first"], b["last"]), "first": a["first"], "last": b["last"], "level": a["level"] + 1,
                  "scans": [*a["scans"], *b["scans"]]}
@@ -431,19 +447,20 @@ def publish_revision(store: RunStore, carry: Carry, inputs: list[str], out: dict
 
 
 def merge_pending(store: RunStore, carry: Carry, mount: Path, *, tmp: Path, owner: str | None = None, dry_run: bool = False,
-                  max_merges: int | None = None, now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+                  max_merges: int | None = None, max_level: int | None = COMPACT_LEVEL, now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
                   log: Callable[[str], None] = err) -> dict:
     """Run the newest manifest's due carries (`plan_carries`), one merged run at a time (`carry.build`), each published as
     a revision (`publish_revision`) before the next is planned, until none is due (or `max_merges`). `mount`: the
     generation's dir on a mount of the data bucket (the inputs are read from it). Holds the merge lease throughout
     (returns `{"held": …}` without merging when another holder has it). A failure leaves the newest manifest as it was
-    (every run it lists whole), and a rerun resumes: a merged dir already whole is reused."""
+    (every run it lists whole), and a rerun resumes: a merged dir already whole is reused. `max_level`: the compaction
+    level, which no carry reaches (`plan_carries`; None: unbounded)."""
     owner = owner or f"{os.environ.get('BATCH_JOB_UID') or socket.gethostname()}:{os.getpid()}"
     cur = newest(store)
     if cur is None:
         return {"merged": [], "manifest": None}
     if dry_run:
-        _, merges = plan_carries(cur[1]["runs"], carry.drilled(store, cur[1]["runs"]))
+        _, merges = plan_carries(cur[1]["runs"], carry.drilled(store, cur[1]["runs"]), max_level)
         return {"manifest": cur[0], "plan": [{"inputs": [r["key"] for r in ins], "output": out["key"], "level": out["level"]} for ins, out in merges]}
     if held := store.lease(owner, now(), LEASE_S):
         log(f"merge: the lease is held ({held}); not merging")
@@ -453,7 +470,7 @@ def merge_pending(store: RunStore, carry: Carry, mount: Path, *, tmp: Path, owne
         while max_merges is None or len(done) < max_merges:
             _, m = newest(store)
             drilled = carry.drilled(store, m["runs"])
-            _, merges = plan_carries(m["runs"], drilled)
+            _, merges = plan_carries(m["runs"], drilled, max_level)
             if not merges:
                 break
             ins, out = merges[0]
@@ -890,9 +907,10 @@ class Runner:
             if not keys:
                 return
             m = self.read_json(keys[-1])
-            after, merges = plan_carries(m["runs"], self.drilled(m["runs"]))
-            if any(a["level"] == b["level"] == COMPACT_LEVEL - 1 for a, b in zip(after, after[1:])):
-                self.log(f"merge: level {COMPACT_LEVEL} is due: compact into a new base generation (carries stop below it)")
+            top = self.p.compact_level
+            after, merges = plan_carries(m["runs"], self.drilled(m["runs"]), top)
+            if top is not None and any(a["level"] == b["level"] == top - 1 for a, b in zip(after, after[1:])):
+                self.log(f"merge: level {top} is due: compact into a new base generation (carries stop below it)")
             if merges:
                 desc = "; ".join(f"{len(ins)} runs → {out['key']} (level {out['level']})" for ins, out in merges)
                 name, spec = self.merge_job(m["date"])

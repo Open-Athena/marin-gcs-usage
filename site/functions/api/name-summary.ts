@@ -1,7 +1,7 @@
 import { type Ctx, json, requireViewer } from '../_lib/auth.js'
-import { HotQueryError, privateHeaders } from '../_lib/hotL1.js'
 import { indexedOnly, reject } from '../_lib/indexedOnly.js'
-import { askNameSummary, datedNames, nameSummaryParams, namesEnabled, type NameSummaryEnv } from '../_lib/nameSummary.js'
+import { NameQueryError, nameSummaryParams, namesEnabled, type NameSummaryEnv } from '../_lib/nameSummary.js'
+import { privateHeaders, staticSummary } from '../_lib/nameSummaryStatic.js'
 import { nameLiteral } from '../../src/nameModel.js'
 
 export async function onRequest(ctx: Ctx & { env: NameSummaryEnv }): Promise<Response> {
@@ -17,24 +17,24 @@ export async function onRequest(ctx: Ctx & { env: NameSummaryEnv }): Promise<Res
     return json({ error: r.message, code: r.code }, 400, privateHeaders)
   }
   // The name as written reads as the map's term does (`nameLiteral`): `\^q`, `q\$` and `"^q"` are literals, sent to
-  // the backends as such; a bare `^q` / `q$` is an anchor, and /names reads literals only (no anchored reader on any
+  // the index as such; a bare `^q` / `q$` is an anchor, and /names reads literals only (no anchored reader on any
   // deployment), so it is refused as such — never answered as a literal `^`/`$` substring, which would read as zero matches.
-  const url = new URL(ctx.request.url), dated = datedNames(ctx.env)
+  const url = new URL(ctx.request.url)
   let params: URLSearchParams
   try {
-    params = nameSummaryParams(url, dated)
+    params = nameSummaryParams(url)
     const name = params.get('name')
     const literal = name == null ? null : nameLiteral(name)
     if (literal?.anchored) {
       const r = reject('anchor-not-indexed')
       return json({ error: r.message, code: r.code }, 400, privateHeaders)
     }
-    // The literal, validated as the backends will read it (the params are clean once validated, so re-serializing is safe).
-    if (literal && literal.text !== name) { params.set('name', literal.text); params = nameSummaryParams(new URL(`?${params}`, url), dated) }
+    // The literal, validated as the index will read it (the params are clean once validated, so re-serializing is safe).
+    if (literal && literal.text !== name) { params.set('name', literal.text); params = nameSummaryParams(new URL(`?${params}`, url)) }
   } catch (error) {
-    if (error instanceof HotQueryError) return json({ error: error.message }, 400, privateHeaders)
+    if (error instanceof NameQueryError) return json({ error: error.message }, 400, privateHeaders)
     throw error
   }
-  return askNameSummary(ctx.env, params)
+  return staticSummary(ctx.env, params)
 }
 export const onRequestGet = onRequest

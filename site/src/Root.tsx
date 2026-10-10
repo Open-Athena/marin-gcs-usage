@@ -5,7 +5,6 @@ import { HelpCard, HelpProvider } from './Help'
 import { AdminDbPage } from './AdminDbPage'
 import { AdminPage } from './AdminPage'
 import App from './App'
-import { CoarsePage } from './CoarsePage'
 import { AuthGate, SignInPage } from './AuthGate'
 import { PrivacyPage } from './PrivacyPage'
 import { FilesRedirect } from './FilesRedirect'
@@ -13,7 +12,6 @@ import { AssignmentsPage } from './AssignmentsPage'
 import { StagedPage } from './StagedPage'
 import { RunPage } from './RunPage'
 import { ScanRunPage, ScansPage } from './ScansPage'
-import { HotPage } from './HotPage'
 import { NamePage } from './NamePage'
 import { OgPage } from './OgPage'
 import { UserOgPage, UserPage, UsersOgPage, UsersPage } from './UserPage'
@@ -61,7 +59,6 @@ export default function Root() {
       {/* The wall as a page (ungated): where the inline "sign in" links go. */}
       <Route path="/signin" element={<SignInPage />} />
       <Route path="/privacy" element={<PrivacyPage />} />
-      <Route path="/coarse" element={<AuthGate><CoarsePage /></AuthGate>} />
       <Route path="/admin" element={<AuthGate><AdminPage /></AuthGate>} />
       <Route path="/admin/db" element={<AuthGate><AdminDbPage /></AuthGate>} />
       <Route path="/admin/db/:table" element={<AuthGate><AdminDbPage /></AuthGate>} />
@@ -90,11 +87,12 @@ export default function Root() {
       {/* What each scan job did (specs/scan-runs-ui.md). */}
       <Route path="/scans" element={<AuthGate><ScansPage /></AuthGate>} />
       <Route path="/scans/*" element={<AuthGate><ScanRunPage /></AuthGate>} />
-      <Route path="/hot" element={<AuthGate><HotPage /></AuthGate>} />
       <Route path="/names" element={<AuthGate><NamePage /></AuthGate>} />
       {/* Retired pages: the mark & sweep console became /staged; the review
-          lenses became the home page's owner axis. Old links land somewhere sane. */}
+          lenses became the home page's owner axis; the name-search preview
+          became /names. Old links land somewhere sane. */}
       <Route path="/sweep" element={<Navigate to="/staged" replace />} />
+      <Route path="/hot" element={<Navigate to="/names" replace />} />
       <Route path="/marks" element={<Navigate to="/" replace />} />
       <Route path="/mark" element={<Navigate to="/" replace />} />
       {/* Secondary stores: the map (drill paths below it, objects opened in

@@ -1,14 +1,15 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link, useLocation, useSearchParams } from 'react-router-dom'
 import { HotMaps } from './HotMaps'
-import { HotSearchForm, HotTotals } from './HotPage'
+import { HotSearchForm, HotTotals } from './HotSearch'
 import { SiteKbd } from './SiteKbd'
 import type { HotRequest } from './hotModel'
 import { HexRunsInfo, hexRunsNote } from './FilterNote'
-import { loadName, loadNameRegistry, NAME_DIRS_ONLY, nameHasDetail, namePageParams, nameRequest, nameResultForRegistry, type NameQualification, type NameResult } from './nameModel'
+import { loadName, loadNameRegistry, NAME_DIRS_ONLY, namePageParams, nameRequest, nameResultForRegistry, type NameQualification, type NameResult } from './nameModel'
 import { useDocTitle } from './title'
 import { fmtScan, fromMiss, scanMiss, useScans, useScanSel, type ScanMiss } from './scan'
 import { DEFAULT_STORE } from './stores'
+import { useFilterCaps } from './filterCaps'
 import { hrefWithScan, NoScanMatch } from './NoScanMatch'
 import { encodeSel, exactPrefix, isScanId, minPrefix, resolveAfter, resolveBefore, selOf, type ScanSel } from './scanSlug'
 import './hot.scss'
@@ -84,6 +85,7 @@ export function nameUrlParams(form: URLSearchParams, dates: readonly string[] | 
 
 export function NamePage() {
   useDocTitle('Name summaries preview')
+  const { rootLabel } = useFilterCaps()
   const [rawParams, setParams] = useSearchParams()
   const location = useLocation()
   // The scan selection is the map's `?d=` (one key and codec on every page):
@@ -112,12 +114,11 @@ export function NamePage() {
   }, enabled: !!request, staleTime: Infinity, retry: false })
   let result: NameResult | undefined
   if (request && query.data) try { result = nameResultForRegistry(query.data, registry.data!) } catch (error) { issue = (error as Error).message }
-  const detail = result && nameHasDetail(result) ? request : undefined
   const consolidated = registry.data?.dates.filter(row => [request?.date, request?.from].includes(row.date) && row.kind === 'consolidated-store-v1') ?? []
   const uncataloged = consolidated.filter(row => !row.plans.includes('catalog')), cataloged = consolidated.filter(row => row.plans.includes('catalog'))
   const catalogOnly = registry.data?.dates.filter(row => [request?.date, request?.from].includes(row.date) && row.kind === 'daily-scalar-source-v1' && !row.plans.includes('bounded-name-postings')) ?? []
   return <main className="hot-page">
-    <header><Link to="/">marin GCS</Link><h1>Name search — exact root summaries</h1>{dates && !registry.error && <p>Available scans: {scanList(dates)}.</p>}</header>
+    <header><Link to="/">{rootLabel ?? 'Map'}</Link><h1>Name search — exact root summaries</h1>{dates && !registry.error && <p>Available scans: {scanList(dates)}.</p>}</header>
     <p className="hot-scope">Case-insensitive literal substring within any path component name; no slash-crossing. Matching directories cover their descendants, counted once. Exact bytes and object counts, including zero-byte objects. A leading ^ or trailing $ is an anchor, which this page doesn’t search; write \^ or \$ (or quote it) to search them literally.</p>
     {dates && !registry.error && <HotSearchForm key={rawParams.toString()} params={params} dates={registry.data?.dated ? dates : undefined} onSearch={next => setParams(nameUrlParams(next, storeScans))} />}
     {registry.data && !registry.error && <p id="hot-availability" className="hot-note">{registry.data.static ? staticDomain(registry.data.static)
@@ -139,9 +140,9 @@ export function NamePage() {
     {request && !issue && query.isPending && <p role="status">Loading exact name summary…</p>}
     {request && !issue && query.error && <p role="alert">{query.error.message}</p>}
     {request && !issue && result?.hexRuns && <p className="hot-note hex-runs" aria-label="Hex-run note"><HexRunsInfo min={result.hexRuns.min} /> {hexRunsNote(result.hexRuns.min)}</p>}
-    {request && !issue && result && <><NamePlanStatus result={result} /><HotMaps result={result} request={detail} /><HotTotals result={result} request={detail} />
-      <p className="hot-note">{detail ? 'Prepared bucket detail is available through the map actions and table links.' : result.capabilities ? 'These dated root summaries have exact bucket totals only; no prepared bucket detail or deeper drill-down.' : 'This on-demand result has root and bucket totals only; no prepared bucket detail or deeper drill-down.'}</p></>}
-    <footer>No owner or Boolean filters in this preview. The <Link to="/hot">catalog-only preview</Link> and main <Link to="/">storage map</Link> are unchanged.</footer>
+    {request && !issue && result && <><NamePlanStatus result={result} /><HotMaps result={result} /><HotTotals result={result} />
+      <p className="hot-note">{result.capabilities ? 'These dated root summaries have exact bucket totals only; no prepared bucket detail or deeper drill-down.' : 'This on-demand result has root and bucket totals only; no prepared bucket detail or deeper drill-down.'}</p></>}
+    <footer>No owner or Boolean filters in this preview. The main <Link to="/">storage map</Link> is unchanged.</footer>
     <SiteKbd />
   </main>
 }

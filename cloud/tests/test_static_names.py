@@ -1,6 +1,5 @@
-"""`dt_cloud.static_names`: intervals vs a sequential ingest oracle (the ClickHouse store's
-semantics), append vs rebuild, suffix shards vs brute force, and the reader's per-bucket
-first-hit answers vs brute force over every date."""
+"""`dt_cloud.static_names`: intervals vs a sequential ingest oracle, append vs rebuild, suffix
+shards vs brute force, and the reader's per-bucket first-hit answers vs brute force over every date."""
 from __future__ import annotations
 
 import json
@@ -89,7 +88,7 @@ def _write(rows: list[dict], path: Path, v: int, owners: bool = True) -> None:
 
 
 def _merged(rows: list[dict], v: int) -> dict:
-    """The ingest's per-key merge (`chstore.ingest.MERGED`), values compared with the stamp rounded."""
+    """The per-key merge (`static_names.MERGED`), values compared with the stamp rounded."""
     groups: dict[tuple, list[dict]] = {}
     for r in rows:
         groups.setdefault((r["depth"], r["path"], r["usr"] or ""), []).append(r)
@@ -166,19 +165,6 @@ def test_intervals_equal_sequential_ingest(fixture, tmp_path, k):
     assert len({(r[0], r[1], r[2], r[3]) for r in rows}) == len(rows)
 
 
-def test_ranges_partition_keyspace():
-    lo_hi = [((0, ""), (2, "b1/d")), ((2, "b1/d"), (2, "b2")), ((2, "b2"), (4, "")), ((4, ""), None)]
-    keys = [(d, p) for d in range(0, 6) for p in ["", "a", "b1/d", "b1/z", "b2", "zz"]]
-    for key in keys:
-        hits = 0
-        for lo, hi in lo_hi:
-            for piece in sn.pieces(lo, hi):
-                d, p = key
-                if piece.dlo <= d <= piece.dhi and (piece.plo is None or p >= piece.plo) and (piece.phi is None or p < piece.phi):
-                    hits += 1
-        assert (key, hits) == (key, 1)
-
-
 def test_append_equals_rebuild(fixture, tmp_path):
     root, scans, merged = fixture
     ranges = sn.plan_ranges(scans, 3, str(root))
@@ -224,7 +210,7 @@ def test_digests_match_oracle(fixture, tmp_path):
             if "closed" in kinds:
                 got_close[int(ts)] = got_close.get(int(ts), 0) + kinds["closed"][0]
     assert (got_open, got_close) == (opened, closed)
-    # the digest string hashes as ClickHouse's reinterpretAsUInt64(MD5(...)) does: the md5's first 8 bytes, little-endian
+    # the digest string hashes as the md5's first 8 bytes, little-endian
     import hashlib
 
     s = "2|b1/gof|alice|1785369600|10|1"

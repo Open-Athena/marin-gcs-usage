@@ -68,13 +68,10 @@ STORE_BUCKET = "my-index-bucket"            # required: the bucket holding the i
 # STORE_PREFIXES = "listing/,snapshots/"      # comma-separated key prefixes the proxies may read; unset = the default set
 # SNAPSHOTS_SUBDIR = "my"                     # this store's snapshots dir: `snapshots/<sub>/`; unset = `snapshots/`
 ROOT_LABEL = "my buckets"                   # the store root's crumb label
+# ROOT_TITLE = "the buckets this deployment scans"   # optional: the root crumb's tooltip (default: the store's scope word)
 # QUERY_SYNTAX = "simple"                     # the path filter's default syntax (`simple` | `regex`); unset = `simple`
 # OBJECT_BUCKETS = "my-bucket"                # comma-separated scanned buckets `/v1/objects` serves to members
 # STORES_JSON = '{"meta": {"scope": "meta"}}'  # secondary stores: `{"<key>": {"scope": …, "vars": {…}, "secrets": {…}}}`
-# QUERY_BOX_URL = "https://box.example"      # the serving box (`dt-cloud serve-query`): subtree / diff / series ask it first; unset = Worker-only
-# QUERY_BOX_TIMEOUT_MS = "20000"             # per box request; past it the Worker answers
-# QUERY_BOX_COARSE = "1"                    # dev-only `/api/coarse` (the `/coarse` viewer); unset = 404
-# QUERY_BOX_COARSE_URL = "https://box.example"  # where `/api/coarse` asks; unset = QUERY_BOX_URL
 
 # --- Session log (specs/session-log.md; tables: migrations/<lineage>/…_session_log.sql; on/off: the switch at /admin) ---
 # SESSION_LOG_RETAIN_DAYS = "30"             # days a session's log is kept (default 30)
@@ -101,13 +98,8 @@ ROOT_LABEL = "my buckets"                   # the store root's crumb label
 # SLACK_ADMIN_CHANNEL = "C0123456789"          # channel id staged-plan threads post to (with SLACK_BOT_TOKEN); unset = no Slack
 
 # --- Link previews (specs/done/dogi.md) ---
-# --- Frozen root name-search preview; private viewer gate, no scan fallback ---
-# QUERY_BOX_HOT_L1 = "1"                    # enable only on an approved private preview
-# QUERY_BOX_HOT_L2 = "1"                    # optional accepted bucket detail; separately approved, same URL/token
-# QUERY_BOX_NAME_SUMMARY = "1"              # optional bounded name summaries; private approved preview only, same URL/token
-# QUERY_BOX_DATED_NAMES = "1"               # opt in only after dated catalogs/proofs are accepted; new scans may be catalog-only
-# QUERY_BOX_HOT_L1_URL = "https://catalog.example"  # existing operator-managed VM/tunnel
-# NAME_SUMMARY_STATIC = "1"                 # dated name summaries: below-catalog literals on consolidated scans from the static suffix shards in INDEX_R2 (`_lib/staticNames.ts`)
+# --- Name search: the static name index on INDEX_R2; private viewer gate ---
+# NAME_SUMMARY_STATIC = "1"                 # `/names` (`/api/name-summary`, `/api/name-summary-registry`) from the static name index in INDEX_R2 (`_lib/nameSummaryStatic.ts`); unset = 404
 # STATIC_GEN = "<gen>"                      # required with FILTER_STATIC / NAME_SUMMARY_STATIC: the static name index generation in INDEX_R2 (`static-names/<gen>/`)
 # STATIC_MAX_ROWS = "400000"                # the static reader's ceiling on suffix rows per query (default 400K; the catalog threshold bounds it lower)
 # FILTER_STATIC = "1"                       # the map's filter (`q=`): a single literal's match roots on any scan of the static name index's generation, from INDEX_R2 (`_lib/staticFilter.ts`)
@@ -136,7 +128,6 @@ ROOT_LABEL = "my buckets"                   # the store root's crumb label
 # secret GCP_SA_KEY                         a service-account key that submits Batch jobs and acts as JOB_SA
 # secret SLACK_BOT_TOKEN                    staged-plan threads (with SLACK_ADMIN_CHANNEL)
 # secret SLACK_SIGNING_SECRET               Slack's interactive buttons (`/slack/actions`)
-# secret QUERY_BOX_TOKEN                    the bearer secret the serving box checks (with QUERY_BOX_URL)
 #
 # Not set here:
 # builtin ASSETS                            Pages' static assets binding
