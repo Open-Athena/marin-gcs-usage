@@ -2,6 +2,7 @@
 // (specs/done/dogi.md): crawlers never run the React router, so the edge says what
 // each URL shows. Everything else passes through untouched, except an
 // `/assets/` miss (`assetMiss`).
+import { coloPutsSettled } from './_lib/index.js'
 import { stampPage, type OgEnv } from './_lib/og/serve.js'
 
 const isHtml = (res: Response): boolean => (res.headers.get('content-type') ?? '').startsWith('text/html')
@@ -21,8 +22,11 @@ export const assetMiss = (): Response => new Response('asset not found\n', {
   headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' },
 })
 
-export const onRequest = async (ctx: { request: Request; env: OgEnv; next: () => Promise<Response> }): Promise<Response> => {
+export const onRequest = async (ctx: { request: Request; env: OgEnv; next: () => Promise<Response>; waitUntil?: (p: Promise<unknown>) => void }): Promise<Response> => {
   const res = await ctx.next()
+  // The reader puts decoded row groups in the colo without waiting (`putColoGroup`); a Worker drops work still in
+  // flight once the response is sent, so keep the isolate alive until those puts land.
+  ctx.waitUntil?.(coloPutsSettled())
   const url = new URL(ctx.request.url)
   if (url.pathname.startsWith('/assets/')) return isHtml(res) ? assetMiss() : res
   if (ctx.request.method !== 'GET' || !isHtml(res)) return res

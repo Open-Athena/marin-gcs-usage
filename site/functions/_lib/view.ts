@@ -29,7 +29,7 @@
  * `f = n_children(P) − kept` — objects and dirs alike.
  */
 import type { Env } from './auth.js'
-import { folded, type IndexHandle, isStore, ivLastRead, type Lens, openIndex, pathStoreKey, perScan, planRects, slices, planSizeRects, readAsks, readRects, readRows, readSizeRects, type Rect, type Row, sizeVariant, type Span, TooWide, type Trace, withTrace } from './index.js'
+import { asOfScans, folded, type IndexHandle, isStore, ivLastRead, type Lens, openIndex, pathStoreKey, perScan, planRects, slices, planSizeRects, readAsks, readRects, readRows, readSizeRects, type Rect, type Row, sizeVariant, type Span, TooWide, type Trace, withTrace } from './index.js'
 import { type FoldedLens, ownerLens, poolLens } from './owners.js'
 import { type ClassScope, classRow, nameFilter, type NamePred, ownerKey, ownerOk, type OwnerScope } from './scope.js'
 import { filterThreshold, looseThreshold, matchRoots, pickTier, rebasedThreshold, rootRects } from './filter.js'
@@ -41,7 +41,7 @@ import { shared } from './shared.js'
 import { storeKey } from './stores.js'
 import { extrasFor } from './extras.js'
 import { loadRegistry } from './identity.js'
-import { covers, declined, dirsOnlyOf, dirsOnlySplit, type Hit, type Rollup, rollupAt, staticFilterStore, staticKey } from './staticFilter.js'
+import { covers, declined, dirsOnlyOf, dirsOnlySplit, fromDrill, heavyUncovered, type Hit, type Rollup, rollupAt, staticFilterStore, staticKey } from './staticFilter.js'
 import { scanAt } from './staticNames.js'
 import { FilterRejected, indexedOnly, reject } from './indexedOnly.js'
 
@@ -63,6 +63,9 @@ export const SMALL_SUBTREE_ROWS = 0
 /** On the interval store, a subtree with more rows than this (or an unknown count) reads `bysize`
  * without planning `path` (`planSubtree`). */
 export const IV_PATH_PLAN_ROWS = 1 << 18
+/** On the interval store, a depth-band read (every rect depth-bounded) takes `path` when its plan holds
+ *  at most this many rows (`planSubtree`). */
+export const IV_BAND_ROWS = 1 << 16
 /** A v1 floor-free tier is sorted `(depth, path)`, so a size threshold can't
  * prune it: the filter's no-match fallback reads every row under the path.
  * For a whole bucket that read exceeds the Worker's limits (a bucket-level
@@ -422,11 +425,19 @@ async function planSubtree(
   // `path` plan touches most of them, and `bysize` is the cheaper read there anyway, so it isn't planned.
   // A lens reads the user-first size sort, as below: the path-first one (`slices-bytotal`) mixes users
   // in every group, and a big user's root there selected most groups over the threshold.
+  // A depth band (`depth=N`, a capped diff's views) is the exception: `path` holds a depth's rows under P
+  // together, so its plan touches the few footer groups of those depths and reads a group or two per depth
+  // (per tier), where `bysize` reads a group per size bucket of every segment (gcs `marin-us-central2`
+  // at depth 1: 3 groups against 24). Taken when it holds at most `IV_BAND_ROWS`; past that (a flat
+  // directory's children) the size sort is planned too and the one holding fewer rows read.
   if (!pathOnly && pathIdx.asOf != null && (nDesc == null || nDesc > ivPlanRows)) {
+    const pp = !lens && rects.every(q => q.dHi < 1e9) ? await planRects(pathIdx, rects, thrAt) : null
+    if (pp && held(pp) <= IV_BAND_ROWS) return of(pathIdx.variant, pp, stop => readRects(pathIdx, rects, thrAt, lens, pp, stop))
     const sized = (lens ? await tryOpen(env, date, 'bysize-user') : null) ?? await tryOpen(env, date, 'bysize')
     if (sized) {
       const sh = withTrace(sized, tr)
       const sp = await planSizeRects(sh, rects, thrAt, lens)
+      if (pp && held(pp) < held(sp)) return of(pathIdx.variant, pp, stop => readRects(pathIdx, rects, thrAt, lens, pp, stop))
       return of(sized.variant, sp, stop => readSizeRects(sh, rects, thrAt, lens, sp, stop))
     }
   }
@@ -845,8 +856,16 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       if (skey && (await dirsOnlyOf(sfs, [date])).length) noteCoverage(cov, 'dirsOnly', DIRS_ONLY)
       const raw = skey ? await sfs!.source.hits(skey, path, { firstPaint: o.firstPaint }) : null
       let shits = raw
-      // A heavy literal's drilldown answers its base generation's scans only, and its rollups know no
-      // owners: past either, the view reads as before.
+      // A heavy literal on a scan its drilldown doesn't cover (a run with no live `drill/` cuts the drill's
+      // stack: that run's scans and every later one's), or that its heavy source declined: at the fleet root
+      // the catalog's buckets when they cover the scan (no owners); else only an exact search below answers —
+      // never the thresholded walk, which can't see a heavy literal's matches and reads as "no matches".
+      let heavyCut = !!skey && !raw && !!sfs!.source.heavyDeclined?.(skey)
+      if (shits && fromDrill(shits) && !covers(shits, [date])) {
+        shits = owner ? null : await heavyUncovered(sfs!, skey!, path, [date])
+        heavyCut = !shits
+      }
+      // A heavy literal's rollups know no owners: under one, the view reads as before.
       const off = shits && !covers(shits, [date]) ? 'after the drill base' : shits?.rollup && owner ? 'rollup: no owners' : null
       if (off) shits = null
       // An indexed-only deployment never walks the path store for a filter (`indexedOnly.ts`); nor does a heavy
@@ -886,6 +905,7 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       // A search cut before it found anything (its heaviest name alone is
       // over budget) says nothing: the thresholded read below answers instead.
       const found = searched && (searched.roots.length || !searched.truncated) ? searched : null
+      if (heavyCut && !(found && !found.truncated)) throw new FilterRejected(reject('scan-not-indexed'))
       if (found) {
         p1 = aggregate(found.rows)
         roots = found.roots
@@ -1670,7 +1690,7 @@ const rootName = (path: string, env?: Env) => (path === '' ? env?.ROOT_LABEL ?? 
 const sliced = (env: Env, o: { lens?: Lens; owner?: OwnerScope; classes?: ClassScope; by?: string }): Env => (o.lens || o.owner || o.classes || o.by ? slices(env) : env)
 
 export async function buildView(env0: Env, o: ViewOpts): Promise<View> {
-  const env = sliced(env0, o)
+  const env = sliced(asOfScans(env0, [o.date]), o)
   const { path, query } = o
   const dP = path === '' ? 0 : path.split('/').length
   const cov: Coverage = {}
@@ -1822,7 +1842,7 @@ function sumInteriors(a?: View['interiors'], b?: View['interiors']): NonNullable
  * it was added / removed. `(other)` is parent − Σ named on each side, so its
  * Δ is the sub-floor churn, truthfully. */
 export async function buildDiff(env0: Env, o: DiffOpts): Promise<Diff> {
-  const env = sliced(env0, o)
+  const env = sliced(asOfScans(env0, [o.from, o.to]), o)
   const { from, to, path, lens, owner, query } = o
   const dP = path === '' ? 0 : path.split('/').length
   const tr = o.trace

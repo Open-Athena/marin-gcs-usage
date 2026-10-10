@@ -916,14 +916,16 @@ def _download(bucket, key: str) -> pa.BufferReader:
 # ── GCS IO ─────────────────────────────────────────────────────────────────
 
 
-def upload_tree(local: Path, bucket: str, prefix: str, *, workers: int = 8) -> list[dict]:
-    """Upload every file under `local` to `gs://bucket/prefix/<rel>`; returns `{key, size, md5}` per file."""
+def upload_tree(local: Path, bucket: str, prefix: str, *, workers: int = 8, last: tuple[str, ...] = ()) -> list[dict]:
+    """Upload every file under `local` to `gs://bucket/prefix/<rel>`; returns `{key, size, md5}` per file. `last`: relative
+    paths uploaded only after every other file is (a completeness marker)."""
     from concurrent.futures import ThreadPoolExecutor
 
     from google.cloud import storage
 
     b = storage.Client().bucket(bucket)
-    files = sorted(p for p in local.rglob("*") if p.is_file())
+    files = sorted(p for p in local.rglob("*") if p.is_file() and p.relative_to(local).as_posix() not in last)
+    tail = [local / r for r in last if (local / r).is_file()]
 
     def one(p: Path) -> dict:
         key = f"{prefix}/{p.relative_to(local).as_posix()}"
@@ -934,7 +936,8 @@ def upload_tree(local: Path, bucket: str, prefix: str, *, workers: int = 8) -> l
         return {"key": key, "size": int(blob.size), "md5": base64.b64decode(blob.md5_hash).hex() if blob.md5_hash else None}
 
     with ThreadPoolExecutor(workers) as ex:
-        return list(ex.map(one, files))
+        out = list(ex.map(one, files))
+    return out + [one(p) for p in tail]
 
 
 def read_json(uri: str) -> dict:
@@ -1534,7 +1537,7 @@ R2_SERVED = ("sx/", "sidecar/", "sidecar.parquet", "shards.json", "scans.json", 
 @cli.command("r2-verify")
 @option("-b", "--bucket", default=data_bucket, help="Source GCS bucket")
 @option("-g", "--gen", required=True, help="Generation")
-@option("-m", "--manifest", "scan", required=True, help="The manifest's scan id (`manifests/<id>.json`)")
+@option("-m", "--manifest", "scan", required=True, help="The manifest: `manifests/<this>.json` (a scan id, or a merge's revision `<id>.mNNN`)")
 @option("-w", "--workers", default=16, type=int, help="Parallel checks")
 def r2_verify_cmd(bucket, gen, scan, workers) -> None:
     """Check that every served file (`R2_SERVED`) of every run a manifest lists is on R2 as on GCS (size, and md5 where both

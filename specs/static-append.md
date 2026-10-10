@@ -1,6 +1,6 @@
 # Static name search: per-scan append
 
-Status: 2026-10-09 appended, verified (175/175 against brute force), on R2 and served by the dev site. Code on `cloud` (2026-10-09: the pipeline, the reader behind `FILTER_STATIC` / `NAME_SUMMARY_STATIC`, default off); the entry point `dt-cloud static-names runs add` (`static_runner.py`; it replaces `job/static-daily.sh` on `gcs-static`). Not yet scheduled; not on prod. The drilldown's run for 2026-10-09 (`deltas/2026-10-09/drill/`, "Drilldown runs" below) is verified (653/653 against brute force) and on R2; the site does not read runs' drills yet.
+Status: 2026-10-09 appended, verified (175/175 against brute force), on R2 and served by the dev site. Code on `cloud` (2026-10-09: the pipeline, the reader behind `FILTER_STATIC` / `NAME_SUMMARY_STATIC`, default off); the entry point `dt-cloud static-names runs add` (`static_runner.py`; it replaces `job/static-daily.sh` on `gcs-static`). Not yet scheduled; not on prod. **2026-10-10: carries deferred** ("Deferred carries" below, on `cloud`): a scan's publish adds only its level-0 run; the counter's merges run as their own job, each published as a revision `manifests/<id>.m<NNN>.json`. The drilldown's run for 2026-10-09 (`deltas/2026-10-09/drill/`, "Drilldown runs" below) is verified (653/653 against brute force) and on R2; the site does not read runs' drills yet.
 
 
 ## State (2026-10-09 15:00 UTC)
@@ -21,6 +21,53 @@ Status: 2026-10-09 appended, verified (175/175 against brute force), on R2 and s
 - **T1236's drill** (built after the fact, 2026-10-09 15:40–16:18 UTC; the runner's drill job with `-t` to a scratch trial, staged tree `54acae4b…`): one Batch job, 2 spot n2-highmem-16 tasks, **37 min wall** (long 21 min, short 34 min: 120K probes 12 min, 509 dirs settled 9 min); 3.65 GB on GCS, 3.25 GB served. Verified against brute force from each scan file: **683/683 views on T1236 and 683/683 on 10-09** (389 roots, 294 rollups; `deltas/2026-10-09T1236/drill-verify/`). Copied md5-identical to `deltas/2026-10-09T1236/drill/` (`meta.json` last), then to R2 by the runner's R2 job (16 new keys, `drill/meta.json` last; `r2-verify`: 50/50 served files of both listed runs). No manifest touched: the readers probe `<run>/drill/meta.json`. The site's TS readers over R2 (current `cloud`) see drill tiers `[base, deltas/2026-10-09, deltas/2026-10-09T1236]` and answer `son` / `ab` on all three scans. Cost ≈ $1 (drill ≈ $0.5, brute ×2, R2).
 - **Per-scan time:** with T1236's other stages (≈ 28 min), the chain is ≈ 65 min, past the ~30 min target; the drill's short kind is the tail (probes and settling). T1236 was a 12 h delta of 85.7M suffix rows (10-09's daily: 44M).
 - Next gcs scan: `2026-10-10` (cron 07:00 UTC) → `runs add -c 2026-10-10`. With T1236's drill built, the stage builds 10-10's and the counter merges T1236 + 10-10 into level 1, drill included.
+
+## Deferred carries (2026-10-10)
+
+**Problem.** `publish` ran the binary counter's carries inside the scan's chain. gcs's 2026-10-10 publish did one level-1 merge (2 scans, 114M suffix rows, 3.2 GB) in 806 s: 13 of the run's ~76 min. A carry to level j merges about 2^j scans, and the old counter merged a chain of carries one level at a time (an L4 carry wrote an L1, L2, L3 and L4 in turn: 30 scan-units ≈ 15 × 806 s ≈ 3.4 h). That is past the scan job's 120 min cap, near Batch's 4 h `maxRunDuration`, and fails the whole scan's search-index step. gcs's live stack after 10-10 is `[L0 10-09, L1 T1236‥10-10]`, so the next L2 carry is the second scan after 10-10 (likely 2026-10-12).
+
+**Design.**
+
+- **A scan's publish adds only its own run.** `publish_run`: the newest earlier manifest's runs (a scan's or a revision, below) plus the scan's run at level 0, then `manifests/<id>.json`, written once and last (rules 1–3 as before). It merges nothing, so it takes seconds; the runner calls it in-process (`Runner.publish`), not as a Batch job, which also saves a job's provisioning (~2–3 min) per scan.
+- **Carries run apart** (`static_merge.py`), as a `merge` Batch job (`python -m dt_cloud.static_merge carry -g GEN -m /gcs/BUCKET`, 1 task on the profile's machine, Batch's own 4 h cap):
+  1. **Plan** (`plan_carries`): the binary counter replayed over the newest manifest's runs (oldest first; `push_run`'s drill-parity rule). Carries that chain at one step fold into **one N-way merge** of every run they consume: `[L1, L0, L0]` is one L2 written from three inputs, not an L1 and then an L2. The stack after is exactly `push_run`'s (`test_plan_carries_ends_where_push_run_does`). No carry reaches `COMPACT_LEVEL` (an L5 is a compaction's job); a backlog of deferred runs plans as the counter would have.
+  2. **Merge** one planned run at a time into its own dir (`build_merged_run`): shards, catalog, drill and names + anchors (each when its inputs carry it, as before), **each tier in its own spawned process** (`-j`, default 4), the DuckDB tiers' memory limits summing to 75% of the machine less 4 GiB per streaming tier (`tier_resources`: n2-highmem-16 → drill 44 GB ∥ anchors 44 GB, 8 threads each), then `meta.json` (the run + the shards' doc). Uploaded with its top `meta.json` last. A dir holding keys this merge doesn't write is refused; a dir whose `meta.json` already names the planned scans and that has every reader file (`complete`) is reused, not rebuilt.
+  3. **Publish a revision** (`publish_revision`): `manifests/<id>.m<NNN>.json` (`NNN` = 001…999, fixed width), a new key beside the newest manifest `<id>.json`, with the same `scans` and `date`, the inputs replaced by the merged run, and `rev` / `revises` fields. Written with `if_generation_match=0` only after every file of every run it lists exists and its drill covers no fewer scans (rules 1 and 3). If a scan's publish lands meanwhile, the merge is **rebased** onto the newer manifest (`rebase`: the inputs must still be consecutive runs there, else `Superseded`) and the revision is of that one; the loop re-checks that its revision is the newest after writing it.
+  4. Then the next carry is planned from the new newest manifest, until none is due.
+- **One merger per generation:** a lease, `gs://<scratch>/static-names/<gen>/merge.lease.json` (`if_generation_match=0`), held for the job's life and released at its end, failure included; a lease older than `LEASE_S` (4 h, the task's `maxRunDuration`) is stale and taken over. A merge that finds it held exits 0 without writing.
+- **Readers resolve the newest manifest as before.** Every reader takes the greatest key under `manifests/` matching `<name>.json` in code-point order (TS `latestManifest`: `^manifests\/[^/]+\.json$`, R2 `list` paginated, held per isolate for 5 min; Python `_latest_manifest`, `static_anchors._manifest_runs`, the runner's `manifests()`). `<id>.m001.json` sorts after `<id>.json` (`.m` > `.j`) and before every later scan's manifest (a later id is greater at a character before `.`, or extends `<id>` with `T…`, and `T` > `.`), so **no reader change is needed**: the deployed reader serves revisions as is. Python now filters names explicitly (`static_merge.manifest_keys`: `<scan id>[.mNNN].json`). Cost per request is unchanged: one `list` + one `get` per isolate per 5 min; revisions add about one key per carry (≈ 1 per 2 scans) to a listing of ≤ ~64 keys per generation.
+- **Answers and caches.** A revision lists the same scans with an equal stack (a merge's rows are the combine of its inputs'), so every answer, and every cache keyed by the manifest's `date` (`SuffixHits` `<key>@<date>`, the tiers' `version`), stays valid across it. A reader holding the pre-merge state for up to 5 min still reads only runs that exist: nothing is deleted.
+- **The store is servable at every instant.** Before the revision, the newest manifest is the one before (every run it lists whole); the merged dir is unlisted, so a partial upload is invisible; the revision is one atomic object create. `test_an_interrupted_merge_leaves_the_store_servable_and_resumes` kills a merge while building, after 5 uploaded files, and before its revision: the manifests are unchanged, the newest one's runs whole and its answers exact, the lease released; the rerun completes it (reusing a wholly uploaded dir), byte for byte as an uninterrupted merge.
+- **Prune** deletes only the scratch bucket's earlier open-version states (`state/<prev>/`), as before; it never touches runs or manifests (`prune_plan` refuses any object outside `state/`). A merge deletes nothing either: its inputs stay listed by the older manifests (and the level-0 runs' `cdelta` is what `rebuild-state` and the catalog append read). Garbage-collecting superseded merged runs (on GCS and R2) is not built; it would delete only runs no manifest newer than a grace window (≫ the readers' 5 min TTL) lists.
+
+**The runner** (`runs add`): after the scans' chains (once, not per scan of a catch-up), the **merge stage** (`Runner.carries`): if the newest manifest has a carry due, submit the merge job and watch it for `-w/--merge-wait` seconds (default **0**: submit and go); if it ended, and the newest manifest is now a revision, the R2 job for it (the runs it lists, `drill/meta.json` and `anchors/meta.json` last, `r2-verify -m <id>.mNNN`, then that manifest alone). **Non-fatal**: a failure or an unfinished wait is logged and `runs add` still exits 0; the store is as it was, and the next run plans again (a merge resumes). `-M/--no-merge` skips the stage. A merge the runner didn't wait for publishes its revision on GCS when it ends; the next scan's publish builds on it, so that scan's R2 job copies the merged run with its own (a revision that lands after that publish is rebased onto it, and copied by the next run's merge stage or the scan after). `dt-cloud static-names runs merge [-w SECS] [-n]` is the stage alone (default: watch to the end), for a schedule of its own or to catch up; it exits 1 on a failure.
+
+**R2: each job copies one manifest.** The per-scan R2 job now copies `manifests/<id>.json` alone (it copied all of `manifests/`), so a revision never reaches R2 before its runs are checked there.
+
+**Cost per scan.**
+
+| | before | deferred |
+|---|---|---|
+| publish | a Batch job; plus the carry's merges in it: L1 806 s (gcs 10-10), est. L2 ≈ 2 × 806 ≈ 27 min after L1 (40 min sequential), L4 ≈ 8 × 806 ≈ 1.8 h after L1–L3 (3.4 h sequential) | in-process, seconds, no merge |
+| merges | inside the scan's chain, against its 120 min cap | a separate job, its own 4 h cap; the scan's chain waits `-w` s at most (0 by default) |
+| merge writes over 31 scans (scan-units rewritten) | 98 (each chained carry rewrites the levels below) | 64 (one N-way merge per carry): ≈ 35% fewer bytes merged and uploaded to R2 (egress) |
+| merge wall time | tiers in sequence (`publish`'s laps) | tiers at once: ≈ the slowest tier's |
+
+At gcs's ≈ 76 min chain, removing the carries leaves ≈ 63 min per scan, carry or not. The biggest merge before a compaction is an L4 (16 scans), which the estimates above put at ≈ 1.8 h sequentially by tier, within the job's 4 h; per-tier parallelism lowers it further (to be measured from the first runs' per-tier laps).
+
+**Readers' fan-out.** With merges keeping up, the stack is the binary counter's (≤ ⌊log₂ n⌋ + 1 runs). While a merge lags, the stack grows by one level-0 run per scan, and the drill's summed slack (`R + 2 · Σ rg`) by 2 · 2,048 per run; a lagging merge is caught up as one N-way merge by the next plan.
+
+**Rollout.**
+
+1. Land on `cloud` (this change). No site deploy is needed first: the deployed readers already resolve revisions (`staticRuns.test.ts` "takes a merge's revision…" runs the unchanged reader on a revision fixture).
+2. Each deployment branch merges `cloud`; its scan job image picks up the new `runs add` at its next build. From then: publish adds level-0 runs, the merge stage submits carries. gcs on 2026-10-11 has none due (`[L0, L1, L0]`); the 2026-10-12 scan makes one N-way L2 due (`[L1, L0, L0]` → L2, `test_gcs_live_stack_carries_to_level_2_on_the_second_scan`).
+3. Optionally, a deployment's job passes `-w SECS` (its cap less its chain's time) to see the R2 copy of a merge the same day, or schedules `runs merge` apart.
+
+**Rollback.** Revert the `cloud` change and redeploy the job image. The old code reads the new store correctly: its `_latest_manifest` (sorted keys, `stem < before`) and runner (`manifests()[-1]`) take revisions as the newest; its `publish` carries on whatever stack it finds (a deferred backlog included, merged pairwise, as before). One caveat: the old R2 job copies all of `manifests/`, so before rolling back make sure the newest GCS manifest's runs are on R2 (`runs merge` once, or `runs add <newest id>`), else its R2 copy could list a merged run R2 lacks (a broken tier: the readers cut the stack there until it's copied — degraded, not wrong).
+
+**Verification** (exact equality throughout). `cloud/tests/test_static_merge.py` over real runs (a one-scan base, four runs, all three fixture flavors): the stack after each publish and merge (`[L0]…[L0,L0,L0]` → revision `[L1, L0]` → publish `[L1, L0, L0]` → revision `[L2]`, one 3-input merge), every manifest (scans' and revisions') read by the tiered suffix reader and catalog against brute force and the rebuild; a merge killed while building, mid-upload and before its revision; a foreign key in the merged dir; a revision refused while a listed run lacks a file; a publish landing mid-merge and right after a revision (stale: rebased; built on the revision: nothing to write); the lease (held, stale); tier merges in processes byte-identical to one process; `plan_carries` vs `push_run` over 1–19 scans. `test_static_runner.py`: publish in-process, the merge stage waited / detached / failing (non-fatal) / skipped (`-M`), `runs merge` exiting 1, the R2 job of a revision, `BatchRunner`'s wait. `test_static_append.py`: prune with revisions and merged runs present. `staticRuns.test.ts`: the unchanged reader on a revision fixture (`deltas/2026-10-01_2026-10-02`, `manifests/2026-10-02.m001.json`). Mutations, each killed: pairwise-only folding, carrying into `COMPACT_LEVEL`, no missing-files check on a revision, no re-check that the revision is newest, the lease ignored or not released on failure, no reuse of a whole merged dir, `publish` carrying inline, a fatal merge stage, the R2 job copying all of `manifests/`, and (TS) a reader ignoring `.mNNN` names.
+
+**The interval store** (`interval_append.py`) shares `push_run` and `COMPACT_LEVEL` and still carries inside its `publish` (unchanged: its level-1 publish took 182 s). The same deferral applies there as is: `plan_carries`, the revision naming and `merge_pending`'s loop are generic over run dicts, and its reader (`index.ts` `ivManifest`: greatest `<name>.json` by `sort()`) already resolves revisions. Only its merge step (`cut`) would need wrapping as a `build`. Not done here; worth it once its carries approach a few minutes.
 
 ## Why
 
@@ -69,7 +116,7 @@ The base generation's coalesced versions (`cintervals/r####.parquet`, `CINTERVAL
   - the header row of every literal whose header changed or is new.
 - Nothing else changes, because a cell is a running total at its `vf` and appending D only adds events at D.
 
-### 4. Tier merge (when the counter carries) and manifest
+### 4. Tier merge (when the counter carries, apart: "Deferred carries") and manifest
 
 - **Binary counter.** Runs carry a level; a day's run is level 0. After adding it, while the two newest runs have the same level `k`, they merge into one run of level `k + 1` spanning both. So after n days the live runs are the binary digits of n: at most ⌊log₂ n⌋ + 1 runs, and each day's rows are rewritten O(log n) times in all.
 - **Merge.** `pyrmts.runs.merge_sorted` (pyrmts Phase 2, a streaming k-way merge) runs over the runs' `sx` (each run's shard files in prefix order), with `reduce={'vt': 'min'}` on `(s, path, usr, vf)`. The merged stream is re-cut into shards at three-character-prefix boundaries (`write_run_shards`).
@@ -79,7 +126,7 @@ The base generation's coalesced versions (`cintervals/r####.parquet`, `CINTERVAL
   - The same merge (base first) is cut to the new generation's shard plan (`merge_shards(..., plan=…)`: shard `i` holds prefixes `[lo, hi)`, empty ones written as the build writes them). It is then the full build byte for byte (`test_compaction_equals_full_build`).
   - The catalog merge of base ⊕ runs is likewise the rebuilt catalog byte for byte.
   - At fleet scale this runs per base shard (a shard's prefix range of every run), in parallel on Batch.
-- **Publish.** Every new file goes to R2 (`r2-copy`) before `manifests/<D>.json`; the manifest is uploaded last, so a reader never sees a run that is not all there.
+- **Publish.** Every new file goes to R2 (`r2-copy`) before `manifests/<D>.json`; the manifest is uploaded last, so a reader never sees a run that is not all there. A merge publishes the same way, through a revision `manifests/<D>.m<NNN>.json` ("Deferred carries").
 
 ## Formats
 
@@ -149,7 +196,7 @@ There is no tombstone and no `op` column at this level: a close record is the ve
 
 ### Manifest
 
-`static-names/<gen>/manifests/<id>.json`, one per scan (by scan id), never rewritten:
+`static-names/<gen>/manifests/<id>.json`, one per scan (by scan id), never rewritten; plus `manifests/<id>.m<NNN>.json`, a merge's revision of the newest one (same `scans`, `date`; `rev`, `revises`), never rewritten either:
 
 ```json
 {"gen": "2026-10-08c", "date": "2026-10-09", "scans": ["2026-07-30", "…", "2026-10-09"],
@@ -157,7 +204,7 @@ There is no tombstone and no `op` column at this level: a close record is the ve
 ```
 
 - `runs` is oldest first.
-- The reader lists `manifests/` (R2 `list`, held per isolate for 5 minutes) and takes the greatest key. The manifest's `date` versions its caches.
+- The reader lists `manifests/` (R2 `list`, held per isolate for 5 minutes) and takes the greatest key (a revision sorts after its scan's manifest, before the next scan's). The manifest's `date` versions its caches.
 - With no manifest, the reader is today's base-only reader.
 
 ## Readers
@@ -180,7 +227,7 @@ There is no tombstone and no `op` column at this level: a close record is the ve
 - An indexed date's answers never change when a run lands: a later close sets a `vt` after that date. So response cache keys (`staticTag`) stay per generation.
 - A literal's hit list spans every date, so it is held and cached per manifest date (`SuffixHits`: `<key>@<date>`; the base alone keeps the bare key).
 - `MAX_ROWS` (the filter's bound) applies to the summed extent. A literal near V whose runs add close records can then go over it and fall back, which is correct but slower. Compaction resets this.
-- Heavy literals (`HitSource` `heavy`, the drilldown of `specs/architecture/static-name-search.md`) read the drill tiers below. Until a run has its `drill/`, a heavy literal declines on a date past the base, as it does today.
+- Heavy literals (`HitSource` `heavy`, the drilldown of `specs/architecture/static-name-search.md`) read the drill tiers below. The drill's stack stops at the first run without a live `drill/`; on a scan past it a heavy literal's fleet root is the catalog's per-bucket cells, and below the root only an exact sidecar search answers, else the view is refused (`scan-not-indexed`) — never the thresholded walk, which can't see a heavy literal's matches and read as "no matches · approximate" (cw dev, 2026-10-10, scans past the drill-less merged run `deltas/2026-10-09T1801_2026-10-10T0001`).
 
 ## Drilldown runs (heavy terms)
 
@@ -280,7 +327,8 @@ The other choice, dropping an alias forward (writing the diverged member's own r
 ## Implementation
 
 - `cloud/src/dt_cloud/static_append.py`: the stages, `dt-cloud static-names runs {prepare,append,shards,catalog,publish,prune,rebuild-state,verify}` (Batch tasks run `python -m dt_cloud.static_append <stage> …`).
-- `cloud/src/dt_cloud/static_runner.py`: the chain, `dt-cloud static-names runs add SCAN_ID [-c] [-n] [-t TERMS]` (below).
+- `cloud/src/dt_cloud/static_runner.py`: the chain, `dt-cloud static-names runs add SCAN_ID [-c] [-M] [-n] [-t TERMS] [-w SECS]` and `runs merge` (below).
+- `cloud/src/dt_cloud/static_merge.py`: deferred carries (`plan_carries`, `merge_pending`, `publish_revision`, the `RunStore` seam over GCS or local dirs), the merge job's `carry` (`runs carry`); tests `cloud/tests/test_static_merge.py` (real runs) and the runner's.
 - `cloud/src/dt_cloud/static_profile.py`: the deployment profile (`Profile`); `static_profile_examples.py`: `gcs` and `cw`, worked examples. `cloud/src/dt_cloud/scan_ids.py`: scan ids (`SCAN_ID`, `scan_epoch`, `check_order`).
 - `cloud/src/dt_cloud/static_drill.py`: `dt-cloud static-names runs drill {build,query,cases}` (Batch: `python -m dt_cloud.static_drill build …`), tests `cloud/tests/test_static_drill.py`; `merge_tiers` for the binary counter's merges (not yet called from `publish`, nor from `runs add`).
 - Tier merges use `pyrmts.runs` (pinned 541bc8e).
@@ -297,12 +345,13 @@ A deployment may scan once a day, every 6 h, or once more on demand; nothing her
 ### Entry point: `dt-cloud static-names runs add SCAN_ID`
 
 ```
-prepare → append (key ranges, `append_tasks` tasks) → shards ∥ catalog → [drill: long ∥ short] ∥ [anchors] → publish (Batch: tier merges + manifests/<id>.json) → R2 (each run in the manifest, its drill/meta.json last; r2-verify; then manifests/) [→ verify, -t] → prune
+prepare → append (key ranges, `append_tasks` tasks) → shards ∥ catalog → [drill: long ∥ short] ∥ [anchors] → publish (local: manifests/<id>.json) → R2 (each run in the manifest, its drill/meta.json last; r2-verify; then manifests/<id>.json) [→ verify, -t] → prune
+then, once: merge (Batch: the due carries + manifests/<id>.m<NNN>.json; watched -w s, default 0) → R2 of the revision — non-fatal
 ```
 
 - **Strictly in scan-id order.** The published scans (under the base's layouts) after the generation's newest (base + the newest manifest's runs), through SCAN_ID, are pending. SCAN_ID must be the oldest of them, else exit 3 naming the others; `-c` appends every pending scan in order. A scan already appended reruns only the R2 copy and prune (and, with `drill`, builds its drill first when the newest manifest lists its own level-0 run without one: T1236's case).
-- **Idempotent, resumable.** Each stage is skipped when its output is in the data bucket: `deltas/<id>/scans.json` (prepare), all `ranges.json` `k` of `deltas/<id>/dhist/` (append; `append` also skips done ranges within a job), `deltas/<id>/sidecar.parquet` (shards), `deltas/<id>/catalog/meta.json` (catalog), `deltas/<id>/drill/meta.json` (drill), `manifests/<id>.json` (publish), `deltas/<id>/verify.json` (verify). `r2-copy` skips objects already on R2 (size + md5), so the R2 step always runs.
-- **Writes only new keys:** the scan's run dir, merged run dirs (`deltas/<first>_<last>/`), `manifests/<id>.json` (`if_generation_match=0`), and the scratch bucket's `state/<id>/`. The one delete is `prune`'s: earlier scans' `state/<prev>/` in the scratch bucket, once `state/<id>/` is complete.
+- **Idempotent, resumable.** Each stage is skipped when its output is in the data bucket: `deltas/<id>/scans.json` (prepare), all `ranges.json` `k` of `deltas/<id>/dhist/` (append; `append` also skips done ranges within a job), `deltas/<id>/sidecar.parquet` (shards), `deltas/<id>/catalog/meta.json` (catalog), `deltas/<id>/drill/meta.json` (drill), `manifests/<id>.json` (publish), `deltas/<id>/verify.json` (verify). `r2-copy` skips objects already on R2 (size + md5), so the R2 step always runs. The merge stage plans from the newest manifest each time (nothing due: no job).
+- **Writes only new keys:** the scan's run dir, merged run dirs (`deltas/<first>_<last>/`, by the merge job), `manifests/<id>.json` and `manifests/<id>.m<NNN>.json` (`if_generation_match=0`), and the scratch bucket's `state/<id>/` and merge lease. The deletes are `prune`'s (earlier scans' `state/<prev>/` in the scratch bucket, once `state/<id>/` is complete) and the lease's release.
 - **Exit status:** 0 done; 3 the scan is not published yet, or an earlier published scan is pending (without `-c`), or `prepare` refuses; 1 a stage failed.
 - **GCS and Batch over their APIs** (ADC; no `gcloud`), so it runs inside a scan job's image. Batch jobs are named `sn-<stage>-<id>-<hhmmss>` and labelled `purpose=static-names`, `stage`, `gen`.
 - **R2:** one Batch job per scan (every run the manifest lists, each with its `drill/meta.json` last; `r2-verify`; then `manifests/`), as the profile's R2 account, with the R2 key from Secret Manager (`secretVariables`) and the endpoint from its secret or `R2_ENDPOINT`.
@@ -316,8 +365,10 @@ dt-cloud static-names runs prepare -g GEN -d ID
 python -m dt_cloud.static_append append -g GEN -d ID -n N -m /gcs/BUCKET      # Batch, ⌈k/N⌉ tasks
 python -m dt_cloud.static_append shards -g GEN -d ID -m /gcs/BUCKET           # Batch ∥ catalog
 python -m dt_cloud.static_append catalog -g GEN -d ID -m /gcs/BUCKET
-python -m dt_cloud.static_append publish -g GEN -d ID -m /gcs/BUCKET          # merges (if the counter carries), then manifests/ID.json
-python -m dt_cloud.static_names r2-copy -g GEN/deltas/ID && python -m dt_cloud.static_names r2-copy -g GEN -o manifests/
+dt-cloud static-names runs publish -g GEN -d ID                               # manifests/ID.json (no merges)
+python -m dt_cloud.static_names r2-copy -g GEN/deltas/ID && python -m dt_cloud.static_names r2-copy -g GEN -o manifests/ID.json
+python -m dt_cloud.static_merge carry -g GEN -m /gcs/BUCKET                    # Batch: the due carries, each a revision manifests/<id>.mNNN.json
+dt-cloud static-names runs merge [-w SECS] [-n]                                # the merge job, then the R2 job for its revision
 dt-cloud static-names runs prune -g GEN -d ID [-n]
 MODULE=static_drill SPOT=1 job/static-names.sh run build 1 -g 2026-10-08c -d D [-t gs://<scratch>/…/drill]          # the run's drill/ (meta.json last)
 dt-cloud static-names runs drill cases -g 2026-10-08c -r deltas/D -t job/static-names/drill-terms.txt > cases.jsonl     # + drill-cases.jsonl

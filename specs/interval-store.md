@@ -1,12 +1,13 @@
 # Interval store: change intervals in place of per-scan path stores
 
-**Status:** draft v5, 2026-10-09. Base work: on `cloud` (opt-in, `PATH_STORE=opt-in` + `ps=iv`).
+**Status:** draft v7, 2026-10-10. Base work: on `cloud` (opt-in, `PATH_STORE=opt-in` + `ps=iv`).
 - v1 (2026-10-07, unreviewed) recommended object-only intervals plus keyframes.
 - v2 decided for objects and directories as one interval table, with no keyframes.
 - v3 reports the prototype: every gcs scan built, verified and served from R2 on dev (§6). It also folds `last_read` into the version key, on that evidence (§2.2).
 - v4: closed versions in dyadic time segments (§2.4), the owner-slice table and its reader (§2.1, §2.6), shared footer and group decodes in the reader (§2.6), generation `2026-10-09b` (§6).
 - v5: the diff gap, in the reader alone (§2.5, §2.6, §6.2): one-request footers, footer groups read whole, one cached row group for every scan, lookups bounded by the other scan's version. A lens reads the user-first slice sort. Fixed: the lens's unread-region double count, and the opt-in isolate's shared miss memo. The gcs-scale parity sample over the slice sorts (§6.2).
 - v6: the per-scan append, built (§2.7, `dt-cloud interval-store append`), the reader's base + runs (§2.7), and the first real runs (§6.3).
+- v7: plain views at per-scan speed, in the reader alone (§2.5, §2.6, §6.4): state, footers, footer groups and decoded row groups held in the colo cache across isolates; a depth band reads `path`; a view or diff reads only the runs begun by its scans.
 
 Nothing here deletes anything. §4 is a proposal for Ryan.
 
@@ -119,11 +120,20 @@ This is the site's cold-footer format with four time columns added, read in `pq`
 - Decoded footer groups have an LRU of their own (12 MB). In the row groups' LRU they evicted the groups a warm read wanted.
 - **The footer** (gcs `2026-10-09b`: 527 KB, 276 footer groups of 512 tier groups) is opened once per isolate for every scan (`ivFooter`), in one suffix read (`ByteStore.tail`: the last 1 MB and the object's size), started beside `scans.json`. Opening a sort also opens its sibling's (`path` ↔ `bysize`, `slices` ↔ `slices-bytotal`). A size probe, a tail and a head read in series, per side of a diff, were 3–6 sequential requests.
 - **A footer group is read whole** (bounds and `rg_json`, ~95 KB), once: planning a read and fetching its groups' metadata is one round trip, not two.
+- **Across isolates, through the colo cache** (v7; all immutable per generation and revision, so keyed by the object key, `?rev=` included). A Worker decodes parquet several times slower than a laptop, and a new isolate used to open everything again:
+  - the state (`scans.json` and the newest manifest, `ivStateDoc`) for `IV_STATE_TTL` (a minute): a new isolate skips three R2 operations in series (`get`, `list`, `get`);
+  - each footer, compact (`openIvFooter`: its footer groups' byte ranges and bounds, ~40 KB of JSON against 527 KB of thrift); the thrift is parsed only to decode a footer group the colo doesn't hold;
+  - each footer group, decoded (`ivFooterDoc`: its columns as JSON);
+  - each **row group**, decoded (`coloGroup`): columnar JSON, gzipped (~2 MB, ~0.3 MB stored), put by the first isolate to decode it, without the read waiting. Measured on a laptop, an 8K-row group of `bysize` decodes in 25 ms, 20 of them zstd (`fzstd`, pure JS: a Worker compiles no wasm at runtime); its JSON parses in 2.3 ms. A group's ints are exact as JSON numbers (a value past 2^53, a non-finite float or a byte array leaves the group uncached, `groupDoc`).
+  - The isolate holds a group as those columns (`IvGroup`, v8), not as shaped rows: a thresholded read shapes only the rows its cheap test on `depth`, `path` and `size` passes (`Pre`, `IvGroup.pick`). Shaping all 8K rows (`groupRows` + `toRow`) cost more than the parse, for the few rows a drilled view keeps.
 
 ### 2.6 Reads
 
 Every read is today's `index.ts` plan, with one more conjunct on each group (`vf_min ≤ D < vt_max`) and on each row (`vf ≤ D < vt`):
 - **Subtree / treemap at (P, D):** P's row, then `bysize` (`readSizeRects`). Planning `path` too is skipped for subtrees over `IV_PATH_PLAN_ROWS` (256K rows): on R2 footers, planning `path` decodes most footer groups for a read it never picks.
+  - **A group straddling size buckets** has the whole keyspace as its path range (its top bucket's rows end it, its bottom bucket's begin it), so a drilled prefix selected it whatever it held. Its neighbours bound it (`sizeNeighbours`, v8, from the footer's `b_min` and `seg`): its top bucket's rows follow the previous group's, at or past that group's `p_max` when it is all of that bucket; its bottom bucket's rows precede the next group's, at most its `p_min` when it is all of that bucket; a bucket whose largest size is under the read's floor holds nothing it keeps. Unscoped `bysize` and `slices-bytotal` reads only (the user-first sorts lead with `usr`).
+  - **A depth band** (`depth=N`, a capped diff's views) plans `path` first and reads it when it holds at most `IV_BAND_ROWS` (64K rows); past that (a flat directory's children) it plans `bysize` too and reads the one holding fewer rows. `path` holds a depth's rows under P together; `bysize` reads a group per size bucket of every segment (`marin-us-central2` at depth 1, 10-04: 8 groups against 19).
+- **Runs a request reads** (`asOfScans`, v7): a view names its scan, a diff its two, and their handles leave out the runs begun after the newest of them. Those runs' rows are versions opened later (live at none of the named scans) and close records of versions still live at every named scan they were live at, so no kept row changes; only `vt` would (a version a later run closes reads as open), and a diff's bounded lookups compare only the scans it named. Reads that don't name their scans (series, filters, `openIndex` alone) read every run, as before.
 - **Diff (D1, D2):** both sides are as-of reads at one threshold; the walk's lookups are `path` point reads, one plan per side per level (`readAsks`).
   - Both sides read the same files. A row group is cached once, with every version, keyed without the scan (`ivGroupKey`); a read keeps its scan's live versions (`cachedGroup`). One being fetched for one side is waited for by the other (`groupsInFlight`). The same holds for a view and its walk. Cached per scan, a root diff's ~20 groups were ~40 entries, past the row-group LRU.
   - **Lookups are bounded by version.** A name one side lacks is looked up on that side, and the other side's row says which version can answer: a path's versions never overlap. If the other scan's version is live at this scan, it is the answer, with no read. Otherwise the version wanted closed by the time the other opened (`Ask.vtLe`), or opened once it closed (`vfGe`). Groups whose `vt_min` / `vf_max` rule that out are never read, so the open segment is skipped for a name added since. This holds only for unscoped, unfiltered diffs, whose rows are one version per path.
@@ -160,7 +170,7 @@ For each scan D, each stage skipped when its output exists (a rerun resumes):
 - `wts` is carried as the build carries it: a version opened by a read-day change alone keeps its path version's `wts` (`fold` takes it from the path version), and a slice piece opened by its path's change alone keeps its slice version's (`fold -S`).
 - The open states carry each path's version start (`pvf`): a slice piece splits where its path's version changes, as `fold -S` intersects slices with path versions.
 
-**The reader** (`index.ts`): `openInterval` reads the newest manifest (R2 `list`, held a minute) and opens each listed run's sort beside the base (`IndexHandle.runs`). Every read plans each tier — a run's group can matter at D once a version in it opened by then (`vf_min ≤ D`), live or not, since its close records end versions an older tier still holds open — and combines a version's rows across tiers (the smallest `vt`) before testing liveness (`combineLive`; `interval_read.Store` likewise). Every run is read at every scan, also before its first: liveness there doesn't need it, but a row's `vt` does, and a diff's bounded lookups trust it (§2.6). A broken run (its footer or data missing at open, or a read that fails) is cut out for 30 s: its scans and every later run's read per-scan, the others as before, and the request is retried around it (`ivRetry` in `/api/subtree`, `/api/diff`, `/api/series`), never a failed request.
+**The reader** (`index.ts`): `openInterval` reads the newest manifest (R2 `list`, held a minute) and opens each listed run's sort beside the base (`IndexHandle.runs`). Every read plans each tier — a run's group can matter at D once a version in it opened by then (`vf_min ≤ D`), live or not, since its close records end versions an older tier still holds open — and combines a version's rows across tiers (the smallest `vt`) before testing liveness (`combineLive`; `interval_read.Store` likewise). Every run is read at every scan, also before its first: liveness there doesn't need it, but a row's `vt` does, and a diff's bounded lookups trust it (§2.6). A view or diff names its scans and leaves out the runs begun after them (`asOfScans`, §2.6). A broken run (its footer or data missing at open, or a read that fails) is cut out for 30 s: its scans and every later run's read per-scan, the others as before, and the request is retried around it (`ivRetry` in `/api/subtree`, `/api/diff`, `/api/series`), never a failed request.
 
 **Compaction** into a new generation at level 5 (reported by publish), or on demand — not built.
 
@@ -374,6 +384,68 @@ Every diff has the same rows as before. The lens views' trees equal per-scan's (
 - **25 of 27 equal exactly**: all 14 plain views, all 4 lens views, both 10-09 pool views, all 5 diffs.
 - The two pool views at 10-09T1236 differ only in float rounding of fractional class / owner bytes in three `(other)` folds (`cb` 7017443922487.375 vs .367; summation order), as §6.1 found for the base.
 - Reader timings (laptop, ms, cold / warm): root 709 / 36, buckets 274–831 / 580–1,783, lens views 2,071–3,965; per-scan 148–1,217 and lenses 2,097–6,271. Diffs: plain 771 (per-scan 1,851), lens `michael-ryan` 1,853 (10,559).
+
+### 6.4 v7: plain views at per-scan speed (2026-10-10, generation unchanged)
+
+**Where a plain view's time went** (dev, 10-04: the iv root cold had `footer` 1,121 ms and `groups` 552 ms). Profiled locally (`wt/iv-plain/tmp/bench/`):
+- **A new isolate started from nothing.** Its first read listed the manifests and read the newest and `scans.json` (three R2 operations in series), parsed each footer's thrift (527 KB per sort, and each run's), decoded tens of footer groups, and decoded every row group again.
+- **Decoding is mostly zstd.** An 8K-row `bysize` group decodes in 25 ms on the laptop, 20 ms of it in `fzstd` (pure JS); a Worker is several times slower. The same group as columnar JSON parses in 2.3 ms.
+- **A depth band read `bysize`.** `marin-us-central2` at depth 1 read 24 groups where per-scan reads 2 from `path`.
+- **A historical view read every run.** At 10-04 the run `2026-10-09T1236_2026-10-10` cost its footers and a group per sort, and changed nothing the view kept.
+- The rest is the store's shape. A historical view also reads a group per small dyadic block (L0–L3) and L7; at the newest scan, each run adds groups: `marin-us-central2` at 10-10 reads 27 against per-scan's 14.
+
+**What changed** (the reader alone, §2.5–§2.6): state, compact footers, footer groups and decoded row groups held in the colo cache across isolates; a depth band reads `path`; a view or diff reads only the runs begun by its scans.
+
+**Timings** (the local harness: Node on the laptop, R2 for the store, GCS + a local D1 copy for per-scan, so per-scan's planning is free here, unlike on a Worker). Best of 2, ms: cold / warm isolate / *new isolate over a warm colo*, the usual case on a Worker. "Before" is `cloud` at `191678cb`, run back to back with "after".
+
+| View | iv before | iv after | per-scan |
+|---|---:|---:|---:|
+| root 10-04 | 1,930 / 32 / *1,236* | 1,595 / 30 / *534* | 707 / 108 / *754* |
+| root 10-04, depth 1 | 4,166 / 24 / *2,535* | 275 / 3 / *118* | 246 / 40 / *166* |
+| `marin-us-central2` 10-04 | 3,042 / 874 / *2,044* | 2,332 / 519 / *540* | 2,243 / 957 / *1,734* |
+| `marin-us-central2` 10-04, depth 1 | 2,225 / 906 / *2,604* | 1,471 / 563 / *518* | 504 / 471 / *543* |
+| diff 10-03 → 10-04 | 2,163 / 592 / *1,991* | 2,934 / 53 / *358* | 1,281 / 208 / *1,439* |
+| root 10-10 | 1,467 / 45 / *1,492* | 1,121 / 26 / *219* | |
+| root 10-10, depth 1 | 1,399 / 7 / *1,043* | 704 / 2 / *94* | |
+| `marin-us-central2` 10-10 | 3,192 / 865 / *1,968* | 3,399 / 575 / *597* | |
+| `marin-us-central2` 10-10, depth 1 | 2,348 / 1,922 / *5,575* | 689 / 385 / *415* | |
+| diff 10-09 → 10-10 | 2,625 / 52 / *2,253* | 2,106 / 54 / *329* | |
+
+- **Over a warm colo, the store is now at or below per-scan everywhere measured,** 1.1–4× faster. The bucket views' remaining ~400 ms is the scan's per-scan sidecars (`extrasFor`, 3.15 MB from GCS), the same in both stores.
+- **Cold (the colo's first read of a generation's objects) is still slower than this harness's per-scan,** whose D1 is a local file. The "after" cold runs shared the laptop with the cloud test suite; the cold column is noisy.
+- **Answers are unchanged.** A/B over R2 (`ab.test.ts`): `cloud`'s reader and this one, plus this one in a fresh isolate over the colo it filled. 7 scans (v1 09-15; 10-01, 10-03, 10-04, 10-09, 10-09T1236 in a run, 10-10), the root and 6 buckets, full and depth 1; 12 diffs (consecutive scans, root and `marin-us-central2`, full and depth 1, plus 10-04 → 10-10); lens and pool views at 10-04 and 10-10; a lens diff. Every tree and diff is identical JSON, except:
+  - the depth-1 views' `tier`, now `path`;
+  - on the v1 scan, the depth-1 bucket views' `(other)` `f`. A v1 scan never knew its directories' children, so `f` is what the read saw: 603 children read from `path` against 0 from `bysize` (per-scan's coarse tier sees 7). Bytes and objects are equal.
+- **Not done:**
+  - **An L4 floor on the dyadic levels** (§3) would cut a historical read's L0–L3 groups (4 of 10–17) to ~1. It needs a re-cut into a new generation (~$5 of GCS → R2 egress for the folded sorts; the slice sorts copied within R2), and the append re-pointed at it. Deferred to the compaction, as before: over a warm colo, those groups now cost a JSON parse each.
+  - **A D1 group index** (per-scan's design) would replace the colo's footer and footer-group docs, at ~218 MB of D1 rows per sort pair (like a per-scan scan's) plus ~1.6K rows per run. It would help only the cold colo, and needs a prod D1 write: not proposed until a Worker shows the cold colo matters.
+  - **A wasm zstd** (vendored, imported as a module) would cut every cold decode, per-scan's too.
+
+### 6.5 v8: a drilled bucket's full view (2026-10-10, generation unchanged)
+
+On Workers (dev, `b15df9fe`, colo warm) `marin-us-central2` 10-04 full took 1,768–1,985 ms on the store against per-scan's 1,595–1,797, all of it `groups` + `rows` (~365 ms warm). Profiled locally (`tmp/iv-drill-bench/`):
+- **19 groups against per-scan's 12** (2 of them P's own row, from `path`). The 17 of `bysize`: 11 in the open segment, the same groups per-scan reads, and 6 closed ones, each the top group of a dyadic block (L0–L3, two of L7) holding the 10-04 versions of directories that changed since (`checkpoints`, `datakit`, …). Their yield: 170, 10, 8, 2, 596 and 8 rows of 8,192.
+- **4 of the 11 open groups kept no row,** 3 of them straddling a size bucket boundary (35→34, 34→33, 33→32): a straddler's path range is the whole keyspace.
+- **The group's CPU** over a warm colo, per 8K-row group, laptop, sequential: inflate 3.1 ms (`DecompressionStream`; Node's zlib 1.6), `JSON.parse` 2.4, `groupRows` 2.5, `toRow` ~2. A drilled view keeps a few percent of the rows it shapes.
+
+**What changed** (the reader alone): neighbour-bounded size groups (§2.6), and groups held as columns, shaping only the rows a read's cheap test passes (§2.5). The closed blocks' top groups are the layout's: a version live at 10-04 and closed since sits in its block's top group with every other size, and only a re-cut changes that (the L4 floor of §3, at the compaction, doesn't remove them either: it merges L0–L3 blocks, one top group instead of four).
+
+**Timings** (the local harness, best of 2, ms; the subtree read `rows` over a warm colo, new isolate; groups including P's row):
+
+| View | `rows` before | `rows` after | groups before → after | per-scan groups |
+|---|---:|---:|---:|---:|
+| `marin-us-central2` 10-04 | 131 | 73 | 19 → 16 | 12 |
+| `marin-us-central2` 10-10 | 173 | 87 | 27 → 22 | 14 |
+| `marin-us-east1` 10-04 | 218 | 94 | 31 → 22 | 18 |
+| `marin-us-central1/checkpoints` 10-04 | 252 | 124 | 38 → 33 | 25 |
+| root 10-04 | 86 | 43 | 12 → 12 | 6 |
+| diff 10-03 → 10-04 `marin-us-central2` | 308 | 152 | 44 → 38 | 27 |
+
+Every other view measured is the same or faster (28 cases: the root and six buckets at 10-04 and 10-10, full and depth 1, historical 10-01 and v1 09-15, five diffs).
+
+**Answers are unchanged.** A/B over R2, `cloud`'s reader against this one, cold, warm and in a fresh isolate over the colo the first filled: 115 cases (7 scans × the root, six buckets and `marin-us-central1/checkpoints`, full and depth 1 for the root and `marin-us-central2`; 8 scan pairs × root, two bucket and a depth-1 diff; owned and unowned pools and a `michael-ryan` lens at the root and `marin-us-central2`, 10-04 and 10-10; a pool diff), identical JSON. `intervalStore.test.ts`: over 450 size reads of g1, g4 and g5 (every scan, six prefixes, five floors), the pruned plan reads exactly the rows of every min/max candidate, and no pruned group holds a row the read keeps (58 of 1,839 candidates pruned); mutation-checked (the previous-group bound applied to every bucket; the floor skip dropped).
+
+**Not done:** the colo copy stays gzipped. Stored raw, a group would skip its inflate (~half of what's left of its CPU) at ~7× the colo bytes; worth measuring on a Worker if the re-time still shows the store behind.
 
 ## 7. The per-scan `bysize` undercount (a prod bug this found)
 
