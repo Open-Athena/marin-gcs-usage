@@ -3,9 +3,9 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { NamePage, catalogDomain, nameScanParams, nameUrlParams, scanList, staticDomain } from './NamePage'
+import { NamePage, NamePlanStatus, catalogDomain, nameScanParams, nameUrlParams, scanList, staticDomain } from './NamePage'
 import { nameDiff, nameFixture } from './nameTestFixtures'
-import { nameRequest, parseName, parseNameRegistry } from './nameModel'
+import { NAME_DIRS_ONLY, type NameResult, nameRequest, parseName, parseNameRegistry } from './nameModel'
 import { fmtScan } from './scan'
 import { DEFAULT_STORE } from './stores'
 import { scanMatches, selOf } from './scanSlug'
@@ -300,4 +300,17 @@ it('every registry scan, date-only or timed on the same day, round-trips through
     ['name=gof', { date: '2026-10-09T1236', name: 'gof' }],
     ['d=-2610090000&name=gof', { date: '2026-10-09T1236', name: 'gof', from: '2026-10-09' }],
   ])
+})
+
+describe('NamePlanStatus: a dir-only (v1) scan', () => {
+  it('flags that side\'s totals as folder-name matches only, in words; an unflagged side says nothing more', () => {
+    const view = (date: string) => ({ target: 'static_names', date, pattern: 'bkt', root: { b: 1, o: 1 }, buckets: [] })
+    const execution = (dirs: boolean) => ({ plan: 'bounded-name-postings' as const, source: 'S', validation: { description: 'D' }, source_identity: { kind: 'static-names-v1' as const }, ...(dirs ? { dirs_only: true as const } : {}) })
+    const result = { before: view('2026-08-01'), after: view('2026-10-01'), delta: { b: 0, o: 0 }, execution: { before: execution(true), after: execution(false) } } as NameResult
+    const html = renderToStaticMarkup(createElement(NamePlanStatus, { result }))
+    expect([...html.matchAll(/<p class="hot-note">(.*?)<\/p>/g)].map(([, p]) => p.replace(/<[^>]+>/g, ''))).toEqual([
+      `2026-08-01: Bounded name postings (on demand). S — D ${NAME_DIRS_ONLY}`,
+      '2026-10-01: Bounded name postings (on demand). S — D',
+    ])
+  })
 })

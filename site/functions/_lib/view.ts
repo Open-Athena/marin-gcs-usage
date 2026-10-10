@@ -41,7 +41,7 @@ import { shared } from './shared.js'
 import { storeKey } from './stores.js'
 import { extrasFor } from './extras.js'
 import { loadRegistry } from './identity.js'
-import { covers, declined, type Hit, type Rollup, rollupAt, staticFilterStore, staticKey } from './staticFilter.js'
+import { covers, declined, dirsOnlyOf, dirsOnlySplit, type Hit, type Rollup, rollupAt, staticFilterStore, staticKey } from './staticFilter.js'
 import { scanAt } from './staticNames.js'
 import { FilterRejected, indexedOnly, reject } from './indexedOnly.js'
 
@@ -192,6 +192,9 @@ export interface View {
    * index — small ones may be missing (`approximateReason` says why). */
   approximate?: true
   approximateReason?: string
+  /** With `query`: the scan lists folders only (a v1 index, `DIRS_ONLY`): the matches are its folder-name
+   *  matches, exact as such; a file name is never matched there. */
+  dirsOnly?: true
 }
 
 /** Whether a filtered read may be missing matches, and why (the response's
@@ -200,12 +203,16 @@ export interface View {
 export interface Coverage {
   partial?: string[]
   approximate?: string[]
+  /** The scan is a dir-only (v1) one (`staticRuns.ts` `dirOnlyScans`): its matches are its folders' names
+   *  only — exact as such, but never the literal's whole answer. */
+  dirsOnly?: string[]
 }
 export const APPROX_NO_INDEX = 'this scan has no search index; small matches may be missing'
 export const APPROX_V1_TOO_BIG = 'this scan has no search index and this view is too big to scan; small matches may be missing'
 export const APPROX_UNINDEXED = 'this query can’t use the search index; small matches may be missing'
 export const APPROX_LENS = 'a user lens filters only the rows it read; small matches may be missing'
 export const APPROX_EXCL_NO_INDEX = 'this scan has no search index; small exclusions may be missed'
+export const DIRS_ONLY = 'this scan lists folders only — files aren’t searchable on it'
 export const APPROX_EXCL_UNINDEXED = 'this query’s exclusions can’t use the search index; small ones may be missed'
 /** Add a reason (once) to a coverage flag. */
 export function noteCoverage(cov: Coverage, flag: keyof Coverage, why: string | undefined): void {
@@ -214,9 +221,10 @@ export function noteCoverage(cov: Coverage, flag: keyof Coverage, why: string | 
   if (!have.includes(why)) have.push(why)
 }
 /** A coverage as response fields. */
-export const coverageFields = (c: Coverage): Pick<View, 'partial' | 'partialReason' | 'approximate' | 'approximateReason'> => ({
+export const coverageFields = (c: Coverage): Pick<View, 'partial' | 'partialReason' | 'approximate' | 'approximateReason' | 'dirsOnly'> => ({
   ...(c.partial ? { partial: true as const, partialReason: c.partial.join(' · ') } : {}),
   ...(c.approximate ? { approximate: true as const, approximateReason: c.approximate.join(' · ') } : {}),
+  ...(c.dirsOnly ? { dirsOnly: true as const } : {}),
 })
 
 export class NotFound extends Error {}
@@ -819,6 +827,8 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       // generation, exact, from one cached suffix-range read — no search sidecars, no thresholded walk.
       const sfs = !lens && !classes ? staticFilterStore(env) : null
       const skey = sfs ? await staticKey(sfs, pq, [date]) : null
+      // A dir-only (v1) scan's index never saw a file: whatever answers, its matches are its folders'.
+      if (skey && (await dirsOnlyOf(sfs, [date])).length) noteCoverage(cov, 'dirsOnly', DIRS_ONLY)
       const raw = skey ? await sfs!.source.hits(skey, path, { firstPaint: o.firstPaint }) : null
       let shits = raw
       // A heavy literal's drilldown answers its base generation's scans only, and its rollups know no
@@ -1759,6 +1769,8 @@ export interface Diff {
   partialReason?: string
   approximate?: true
   approximateReason?: string
+  /** With `q=`: either side is a dir-only scan (`View.dirsOnly`; both are, or the diff is refused). */
+  dirsOnly?: true
 }
 
 const LOOKUP_CAP = 240
@@ -1789,6 +1801,9 @@ export async function buildDiff(env0: Env, o: DiffOpts): Promise<Diff> {
   const { from, to, path, lens, owner, query } = o
   const dP = path === '' ? 0 : path.split('/').length
   const tr = o.trace
+  // A literal's matches on a dir-only scan are its folders', on a full one its files' too: not comparable.
+  const split = query && !lens && !o.classes ? await dirsOnlySplit(staticFilterStore(env), query.ast, path, [from, to]) : null
+  if (split) throw new FilterRejected(split)
   let t0 = performance.now()
   const [ra, rb] = await Promise.all([
     readRootAgg(env, { date: from, path, lens }),
@@ -2120,7 +2135,7 @@ async function openFine(env: Env, date: string, sort: string, lens?: Lens): Prom
 export async function allMatchRoots(env: Env, o: { date: string; path: string; query: NamePred }): Promise<{ roots: { path: string; b: number; o: number }[]; coverage: Coverage; rollup: boolean } | null> {
   const cov: Coverage = {}
   const v = await readView(env, { date: o.date, path: o.path, query: o.query, w: 1280, h: 800, minArea: MIN_AREA_DEFAULT, atten: ATTEN_DEFAULT, maxDepth: 0, firstPaint: true }, cov)
-  if (!v) return v === null && (cov.partial || cov.approximate) ? { roots: [], coverage: cov, rollup: false } : null
+  if (!v) return v === null && (cov.partial || cov.approximate || cov.dirsOnly) ? { roots: [], coverage: cov, rollup: false } : null
   return { roots: (v.matched ?? []).slice().sort((x, y) => (x.path < y.path ? -1 : x.path > y.path ? 1 : 0)), coverage: cov, rollup: !!v.rollup }
 }
 

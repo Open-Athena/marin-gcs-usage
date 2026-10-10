@@ -602,7 +602,7 @@ function AppContent() {
     if (!fq) return null
     const d = subtreeQs[subtreeQs.length - 1]?.data ?? coarseQs[coarseQs.length - 1]?.data ?? subtreeQs[0]?.data
     const r = (d as { rollup?: { bucketsOnly?: true } } | undefined)?.rollup
-    return actBlock({ refused: !!refusalOf(viewErr), rollup: !!r, bucketsOnly: !!r?.bucketsOnly, approximate: !!d?.approximateReason })
+    return actBlock({ refused: !!refusalOf(viewErr), rollup: !!r, bucketsOnly: !!r?.bucketsOnly, approximate: !!d?.approximateReason, dirsOnly: !!(d as { dirsOnly?: true } | undefined)?.dirsOnly })
   }, [fq, subStamp, viewErr]) // eslint-disable-line react-hooks/exhaustive-deps
   const tblFilter = useMemo((): RowSource | undefined => {
     if (!fq) return undefined
@@ -640,7 +640,7 @@ function AppContent() {
     if (!fq) return undefined
     const d = subtreeQs[subtreeQs.length - 1]?.data ?? coarseQs[coarseQs.length - 1]?.data ?? subtreeQs[0]?.data
     const r = (d as { rollup?: { bucketsOnly?: true; scopedBelow?: true } } | undefined)?.rollup
-    return d && { partialReason: d.partialReason, approximateReason: d.approximateReason, bucketsOnly: r?.bucketsOnly ? (r.scopedBelow ? 'scoped' as const : true) : false }
+    return d && { partialReason: d.partialReason, approximateReason: d.approximateReason, bucketsOnly: r?.bucketsOnly ? (r.scopedBelow ? 'scoped' as const : true) : false, dirsOnly: !!(d as { dirsOnly?: true }).dirsOnly }
   }, [fq, subStamp]) // eslint-disable-line react-hooks/exhaustive-deps
   const meta: Meta | null = metaQ.data ?? null
   // Section `#hash` both ways (deep link in, scroll-spy out) and the scroll
@@ -1418,8 +1418,8 @@ function AppContent() {
               {diff.lookups_capped && <> Some small one-sided names went unread (lookup budget); they may sit in “(other)”.</>}
               {diff.truncated && <> Largest changes shown — the diff walk was budget-capped, so the smallest movements aren’t enumerated (the totals are exact).</>}
             </>}><span className="info" tabIndex={0} aria-label="how this diff is read"> ⓘ</span></Tooltip>
-          )}{diff && fq && (diff.partialReason || diff.approximateReason) && (
-            <span className="fflags"><FilterFlags partialReason={diff.partialReason} approximateReason={diff.approximateReason} /></span>
+          )}{diff && fq && (diff.partialReason || diff.approximateReason || diff.dirsOnly) && (
+            <span className="fflags"><FilterFlags partialReason={diff.partialReason} approximateReason={diff.approximateReason} dirsOnly={diff.dirsOnly} /></span>
           )}</h2>
           {/* 2-row header band above the map: scan pickers + presets (with the
               status/error line) sit as `controls`, the colour legend beneath
