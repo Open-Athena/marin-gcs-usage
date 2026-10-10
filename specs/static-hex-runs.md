@@ -118,6 +118,8 @@ The 27.2% no-tail measurement came from three hash-heavy ranges, so it doesn't e
 - Drill (`verify/verify-drill.json`): 1,340 / 1,340 (case, scan) pairs equal `roots drill-brute`. There are 268 cases, 158 read from roots and 110 from rollups. They include the hex-throughout members `363`, `168` and `610`. The max read is 114,688 rows / 3.0 MB.
 - The old gen's heavy hex terms `5c8`, `bed`, `cafe`, `1234`, `2024` and `61e` are no longer catalog members: under the rule each range is ≤ V, so the light index answers them.
 
+**R2.** The files were copied as `cw-s3-job` with cw's existing R2 key (`r2-batch`), in this order: `sx/` (31 objects, 33.46 GB), `sidecar*` (32), `shards.json`, `catalog/` (4), `drill/` without `meta.json` (79 objects, 40.13 GB), `drill/meta.json`, then `scans.json` last. That is 73.61 GB in all, ~35 min. A final dry run found 149 served objects and 0 left to copy. The profile example `CW.gen` is now `2026-10-10cw`.
+
 **Cost.**
 - Batch: ≈ 25 task-hours ≈ $7, including both brute forces (see "Perf follow-up").
 - GCS → R2 egress: ≈ 73.6 GB ≈ $8.8.

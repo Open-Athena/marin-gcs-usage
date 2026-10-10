@@ -28,7 +28,7 @@ GCS = Profile(
 CW = Profile(
     name="cw",
     layouts=("cw-l2/{id}/index/{gen}/path-index.parquet",),
-    bucket="oa-gcs-usage-dvx", scratch="oa-gcs-usage-scratch", gen="2026-10-09cw",
+    bucket="oa-gcs-usage-dvx", scratch="oa-gcs-usage-scratch", gen="2026-10-10cw",
     r2_bucket="oa-cw-s3-usage-index",
     r2_secrets={"endpoint": "cw-s3-r2-endpoint", "key_id": "cw-s3-r2-access-key-id", "secret": "cw-s3-r2-secret-access-key"},
     project=PROJECT, region="us-east1", image=IMAGE, sa=f"gcs-usage-job@{PROJECT}.iam.gserviceaccount.com",
