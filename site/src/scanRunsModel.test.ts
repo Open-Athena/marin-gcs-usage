@@ -1,7 +1,7 @@
 // specs/scan-runs-ui.md: the derivations /scans shows from the D1 rows.
 import { describe, expect, it } from 'vitest'
 import {
-  batchHref, failedAt, logsHref, mapHref, metaHref, outputIndex, phaseOrder, phaseSpans, type ScanRun, type ScanRunOutput,
+  batchHref, failedAt, logsHref, mapHref, metaHref, outputIndex, phaseOrder, phaseSpans, runTime, type ScanRun, type ScanRunOutput,
   type ScanRunPhase, structureOf, summarize, withDeltas,
 } from './scanRunsModel'
 
@@ -60,6 +60,24 @@ describe('summarize: one row per orchestrating run, newest first', () => {
       ['b-fail', 100, 999, 899, 0, null, 'after listing', 1],
       ['a', 300, 105, null, 0, 1, null, 0],
     ])
+  })
+})
+
+describe('runs whose job left `started_ts` NULL (the in-job runs before 6842ed63)', () => {
+  // The real gcs order: 10-09T1236 recorded its start; 10-10 (succeeded) and 10-10T1514 (running) didn't, and sorted
+  // last, so /health's "last scan job" showed 10-09T1236.
+  const T = (iso: string) => Date.parse(iso) / 1000
+  const NULLS = [
+    run({ run_id: 'r1236', scan: '2026-10-09T1236', started_ts: T('2026-10-09T12:36:30Z'), finished_ts: T('2026-10-09T14:00:00Z'), updated_ts: T('2026-10-09T14:00:00Z') }),
+    run({ run_id: 'r1010', scan: '2026-10-10', started_ts: null, finished_ts: T('2026-10-10T02:00:00Z'), updated_ts: T('2026-10-10T02:00:00Z') }),
+    run({ run_id: 'r1514', scan: '2026-10-10T1514', status: 'running', started_ts: null, finished_ts: null, updated_ts: T('2026-10-10T15:40:00Z') }),
+    run({ run_id: 'odd', scan: 'not-a-scan', started_ts: null, finished_ts: null, updated_ts: T('2026-10-08T00:00:00Z') }),
+  ]
+  it('orders by `started_ts`, else the scan id\'s time (a date-only id is 00:00 UTC), else `updated_ts`', () => {
+    expect(NULLS.map(r => [r.run_id, runTime(r)])).toEqual([
+      ['r1236', T('2026-10-09T12:36:30Z')], ['r1010', T('2026-10-10T00:00:00Z')], ['r1514', T('2026-10-10T15:14:00Z')], ['odd', T('2026-10-08T00:00:00Z')],
+    ])
+    expect(summarize(NULLS, [], [], T('2026-10-10T16:00:00Z')).map(s => s.run.run_id)).toEqual(['r1514', 'r1010', 'r1236', 'odd'])
   })
 })
 

@@ -134,8 +134,9 @@ export type Column = typeof COLUMNS[number]
 export interface ScanCoverage { scan: string; cells: Record<Column, Cell>; gaps: Column[] }
 
 /** What a scan is covered by. `perScan`: the scans with a per-scan path store (D1 `index_schema` `path` rows);
- *  `running`: scans whose job is running (a store not holding them yet is `pending`); `stores`: the configured stores'
- *  health (an absent store is `na` in its columns).
+ *  `running`: scans whose job is running (a store not holding them yet is `pending`, once it's newer than the store's
+ *  newest); `anyRunning`: some job is running, so a scan newer than every store's newest is `pending` too even when no
+ *  running job names it; `stores`: the configured stores' health (an absent store is `na` in its columns).
  *
  *  - `path`: the scan's path sorts are served — per-scan, or from the interval store.
  *  - `interval`: the interval store serves it (expected for every scan from its base's first on).
@@ -143,7 +144,7 @@ export interface ScanCoverage { scan: string; cells: Record<Column, Cell>; gaps:
  *    on, `drill` / `anchors` when the base carries the tier).
  *  - `r2`: every store listing it has its files whole on R2 (a listed run missing files there is `missing`: the
  *    readers cut their stack at it). */
-export function coverage(scans: readonly string[], perScan: ReadonlySet<string>, running: ReadonlySet<string>, stores: readonly StoreHealth[]): ScanCoverage[] {
+export function coverage(scans: readonly string[], perScan: ReadonlySet<string>, running: ReadonlySet<string>, stores: readonly StoreHealth[], anyRunning = false): ScanCoverage[] {
   const iv = stores.find(s => s.kind === 'interval'), st = stores.find(s => s.kind === 'static')
   const sets = (s: StoreHealth | undefined) => s && {
     first: s.base[0] ?? s.runs[0]?.first ?? null,
@@ -153,15 +154,19 @@ export function coverage(scans: readonly string[], perScan: ReadonlySet<string>,
     anchors: s.served.anchors && new Set(s.served.anchors),
   }
   const I = sets(iv), S = sets(st)
+  const newests = stores.map(s => s.newest).filter((n): n is string => n !== null).sort()
+  const newestAll = newests.length ? newests[newests.length - 1] : null
+  /** The scan's job is (or may be) running: one names it, or one runs and the scan is past every store's newest. */
+  const inFlight = (scan: string): boolean => running.has(scan) || (anyRunning && newestAll !== null && scan > newestAll)
   type Sets = NonNullable<typeof I>
   const cell = (x: Sets | undefined, set: Set<string> | null | undefined, scan: string): Cell => {
     if (!x || !set || x.first === null || scan < x.first) return 'na'
     if (set.has(scan)) return 'present'
-    return x.newest !== null && scan > x.newest && running.has(scan) ? 'pending' : 'missing'
+    return x.newest !== null && scan > x.newest && inFlight(scan) ? 'pending' : 'missing'
   }
   return [...scans].sort().map(scan => {
     const interval = cell(I, I?.light, scan)
-    const path: Cell = perScan.has(scan) || interval === 'present' ? 'present' : running.has(scan) ? 'pending' : 'missing'
+    const path: Cell = perScan.has(scan) || interval === 'present' ? 'present' : inFlight(scan) ? 'pending' : 'missing'
     const light = cell(S, S?.light, scan)
     // R2: a store lists the scan (its base, or a run of the newest manifest) but the run's files aren't whole there.
     const holders = [iv, st].flatMap(x => (x ? [x] : [])).filter(x => x.base.includes(scan) || x.runs.some(r => r.scans.includes(scan)))
@@ -181,19 +186,21 @@ export interface Freshness {
   stores: { kind: StoreKind; newest: string | null; newest_age: number | null; manifest_ts: number | null; manifest_age: number | null }[]
 }
 
-const ageOf = (scan: string | null, now: number): number | null => {
-  if (scan === null) return null
-  const t = scanTime(scan)
-  return Number.isNaN(t) ? null : Math.max(0, now - Math.floor(t / 1000))
-}
-
-export function freshness(scans: readonly string[], stores: readonly StoreHealth[], now: number): Freshness {
+/** `freshness`' ages: a scan's age is from its job's start (`started`, epoch s) when one is known, else from its id's
+ *  own time (a date-only id is 00:00 UTC, which over-ages a scan whose job ran later that day). */
+export function freshness(scans: readonly string[], stores: readonly StoreHealth[], now: number, started: ReadonlyMap<string, number> = new Map()): Freshness {
+  const ageOf = (scan: string | null): number | null => {
+    if (scan === null) return null
+    const s = started.get(scan)
+    const t = s ?? scanTime(scan) / 1000
+    return Number.isNaN(t) ? null : Math.max(0, now - Math.floor(t))
+  }
   const newest = scans.length ? [...scans].sort()[scans.length - 1] : null
   return {
     newest_scan: newest,
-    newest_scan_age: ageOf(newest, now),
+    newest_scan_age: ageOf(newest),
     stores: stores.map(s => ({
-      kind: s.kind, newest: s.newest, newest_age: ageOf(s.newest, now),
+      kind: s.kind, newest: s.newest, newest_age: ageOf(s.newest),
       manifest_ts: s.manifest_ts, manifest_age: s.manifest_ts === null ? null : Math.max(0, now - s.manifest_ts),
     })),
   }
@@ -213,15 +220,21 @@ export interface HealthDoc {
   freshness: Freshness
 }
 
-/** The /health document from the sources: the stores' reads, the per-scan path store's scans, and the scan jobs' scans
- *  (those running). */
-export function healthDoc(reads: readonly StoreRead[], perScan: readonly string[], jobs: readonly { scan: string; status: string }[], now: number): HealthDoc {
+/** A scan job as /health reads it (D1 `scan_runs`: every run, downstream jobs and attempts included). */
+export interface HealthJob { scan: string; status: string; started_ts?: number | null }
+
+/** The /health document from the sources: the stores' reads, the per-scan path store's scans, and the scan jobs (which
+ *  are running, matched by scan id; when each scan's job started, for its age). */
+export function healthDoc(reads: readonly StoreRead[], perScan: readonly string[], jobs: readonly HealthJob[], now: number): HealthDoc {
   const stores = reads.map(storeHealth)
-  const running = new Set(jobs.filter(j => j.status === 'running').map(j => j.scan))
+  const live = jobs.filter(j => j.status === 'running')
+  const running = new Set(live.map(j => j.scan))
+  const started = new Map<string, number>()
+  for (const j of jobs) if (j.started_ts != null) started.set(j.scan, Math.min(started.get(j.scan) ?? Infinity, j.started_ts))
   const scans = [...new Set([...perScan, ...jobs.map(j => j.scan), ...stores.flatMap(s => [...s.base, ...s.runs.flatMap(r => r.scans)])])].filter(s => !Number.isNaN(scanTime(s))).sort()
-  const cov = coverage(scans, new Set(perScan), running, stores)
+  const cov = coverage(scans, new Set(perScan), running, stores, live.length > 0)
   const gaps = Object.fromEntries(COLUMNS.map(c => [c, cov.filter(x => x.cells[c] === 'missing').length])) as Record<Column, number>
-  return { now, scans, stores, coverage: cov, gaps, freshness: freshness(scans, stores, now) }
+  return { now, scans, stores, coverage: cov, gaps, freshness: freshness(scans, stores, now, started) }
 }
 
 // ── Shards on a timeline (`CoverTimeline`'s rows) ──────────────────────────

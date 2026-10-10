@@ -141,7 +141,7 @@ function LastRun() {
     <span className="hl-lastrun">
       <Link to={`/scans/${encodeURIComponent(last.run.run_id)}`}><code>{last.run.scan}</code></Link>
       <Status run={last.run} failedAt={last.failed_at} />
-      <span className="dim">{utc(last.run.started_ts)} UTC</span>
+      <span className="dim">{last.run.started_ts == null ? 'start not recorded' : `${utc(last.run.started_ts)} UTC`}</span>
       <span>{last.secs == null ? '—' : fmtDur(last.secs)}</span>
       <PhaseBar spans={last.spans} secs={last.secs} color={colorer(order)} width={140} />
     </span>

@@ -98,7 +98,7 @@ export async function health(env: Env & { DB?: D1Database }, now: number): Promi
     readInterval(env),
     readStatic(env),
     db ? pathScans(env, false).then(r => r.results.map(x => x.date), () => [] as string[]) : Promise.resolve([] as string[]),
-    db ? loadScanRuns(db, storeKey(env)).then(r => (r?.runs ?? []).filter(x => !x.parent), () => []) : Promise.resolve([]),
+    db ? loadScanRuns(db, storeKey(env)).then(r => r?.runs ?? [], () => []) : Promise.resolve([]),
   ])
   return healthDoc([iv, st].filter((x): x is StoreRead => x !== null), perScan, jobs, now)
 }

@@ -114,6 +114,63 @@ describe('freshness and the document', () => {
   })
 })
 
+describe('a running job whose rows have `started_ts` NULL (gcs, 2026-10-10)', () => {
+  // T1514's job has published its per-scan path index; its interval and static appends haven't landed. Neither 10-10
+  // run recorded a start (the job bug fixed in 6842ed63).
+  const T = (iso: string) => Date.parse(iso) / 1000
+  const X = (id: string) => `2026-10-${id}`
+  const iv: StoreRead = { ...IV, manifest_ts: T('2026-10-10T03:00:00Z'), base: ['09T1236'].map(X), runs: [{ key: 'deltas/2026-10-10', first: X('10'), last: X('10'), level: 0, scans: [X('10')], r2: true }] }
+  const st: StoreRead = { ...ST, manifest_ts: T('2026-10-10T03:10:00Z'), base: ['09T1236', '10'].map(X), runs: [] }
+  const per = ['09T1236', '10', '10T1514'].map(X)
+  const NOW10 = T('2026-10-10T16:00:00Z')
+  const jobs = (status1514: string) => [
+    { scan: X('09T1236'), status: 'succeeded', started_ts: T('2026-10-09T12:36:30Z') },
+    { scan: X('10'), status: 'succeeded', started_ts: null },
+    { scan: X('10T1514'), status: status1514, started_ts: null },
+  ]
+  const grid = (d: ReturnType<typeof healthDoc>) => d.coverage.map(x => [x.scan, x.cells.path, x.cells.interval, x.cells.light, x.cells.drill, x.cells.anchors, x.cells.r2])
+  it('the running scan is pending in the stores it hasn\'t reached, not a gap', () => {
+    const doc = healthDoc([iv, st], per, jobs('running'), NOW10)
+    expect([grid(doc), doc.gaps]).toEqual([
+      [
+        [X('09T1236'), 'present', 'present', 'present', 'present', 'present', 'present'],
+        [X('10'), 'present', 'present', 'present', 'present', 'present', 'present'],
+        [X('10T1514'), 'present', 'pending', 'pending', 'pending', 'pending', 'na'],
+      ],
+      { path: 0, interval: 0, light: 0, drill: 0, anchors: 0, r2: 0 },
+    ])
+  })
+  it('mutation: once its job has stopped, the same scan\'s absences are gaps', () => {
+    const doc = healthDoc([iv, st], per, jobs('failed'), NOW10)
+    expect([grid(doc).slice(2), doc.gaps]).toEqual([
+      [[X('10T1514'), 'present', 'missing', 'missing', 'missing', 'missing', 'na']],
+      { path: 0, interval: 1, light: 1, drill: 1, anchors: 1, r2: 0 },
+    ])
+  })
+  it('a running job that names no scan (its id unmatched) still makes a scan past every store\'s newest pending — only that one', () => {
+    const scans = ['09T1236', '10', '10T1514'].map(X)
+    const stores = [{ ...iv, base: [X('09T1236')], runs: [] }, st].map(storeHealth)
+    const c = coverage(scans, new Set(), new Set(), stores, true)
+    expect(c.map(x => [x.scan, x.cells.path, x.cells.interval, x.cells.light])).toEqual([
+      [X('09T1236'), 'present', 'present', 'present'],
+      [X('10'), 'missing', 'missing', 'present'],
+      [X('10T1514'), 'pending', 'pending', 'pending'],
+    ])
+    expect(coverage(scans, new Set(), new Set(), stores, false).map(x => x.cells.interval)).toEqual(['present', 'missing', 'missing'])
+  })
+  it('ages a scan from its job\'s start when known, else its id\'s time', () => {
+    const withStart = [...jobs('running').slice(0, 1), { scan: X('10'), status: 'succeeded', started_ts: T('2026-10-10T01:00:00Z') }, ...jobs('running').slice(2)]
+    expect(healthDoc([iv, st], per, withStart, NOW10).freshness).toEqual({
+      newest_scan: X('10T1514'), newest_scan_age: T('2026-10-10T16:00:00Z') - T('2026-10-10T15:14:00Z'),
+      stores: [
+        { kind: 'interval', newest: X('10'), newest_age: 15 * 3600, manifest_ts: T('2026-10-10T03:00:00Z'), manifest_age: 13 * 3600 },
+        { kind: 'static', newest: X('10'), newest_age: 15 * 3600, manifest_ts: T('2026-10-10T03:10:00Z'), manifest_age: 13 * 3600 - 600 },
+      ],
+    })
+    expect(healthDoc([iv, st], per, jobs('running'), NOW10).freshness.stores.map(f => f.newest_age)).toEqual([16 * 3600, 16 * 3600])
+  })
+})
+
 describe('stack → shards (CoverTimeline rows)', () => {
   const axis = ['01', '02', '03', '04', '05', '06', '07'].map(D)
   const t = (d: string) => `${D(d)}T00:00:00.000Z`
