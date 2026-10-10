@@ -187,6 +187,8 @@ export function gapStretches(gaps: readonly number[], xs: readonly number[]): [n
 }
 
 const PAD = { top: 12, right: 16, bottom: 24, left: 56 }
+/** Height of the window's grip: a strip along the band's top edge that slides the window (anywhere else brushes). */
+const GRIP = 12
 
 function niceTicks(min: number, max: number, count: number, log = false): number[] {
   if (log) {
@@ -323,10 +325,10 @@ export function TimeSeries<T>({
   const dragRef = useRef<{ x0: number; x1: number } | null>(null)
   const [drag, setDragState] = useState<{ x0: number; x1: number } | null>(null)
   const setDrag = (d: { x0: number; x1: number } | null) => { dragRef.current = d; setDragState(d) }
-  // A drag that starts inside the shown window SLIDES it (same width in points,
-  // clamped to the data) instead of brushing a new one; a drag that starts
-  // outside brushes as before. Held in point indices so the window keeps its
-  // point count while the x spacing varies. (Upstreamed from mgu `gcs`.)
+  // A drag that starts on the window's grip (the strip along its top edge)
+  // SLIDES it (same width in points, clamped to the data); a drag anywhere
+  // else, inside the window included, brushes a new one. Held in point indices
+  // so the window keeps its point count while the x spacing varies.
   const slideRef = useRef<{ i0: number; span: number; start: number } | null>(null)
   const xsSorted = useMemo(() => [...allXs].sort((a, b) => a - b), [allXs])
   const idxOf = (x: number): number => {
@@ -340,9 +342,18 @@ export function TimeSeries<T>({
     const el = svgRef.current
     return el ? snapX(clientX - el.getBoundingClientRect().left) : null
   }
+  /** Whether a pointer at (x, clientY) is on the window's grip. */
+  const onGrip = (x: number | null, clientY: number): boolean => {
+    const el = svgRef.current
+    if (!el || !inWindow(x)) return false
+    const y = clientY - el.getBoundingClientRect().top
+    return y >= PAD.top && y <= PAD.top + GRIP
+  }
+  const [hoverGrip, setHoverGrip] = useState(false)
   const onMove = (e: React.PointerEvent<SVGSVGElement>) => {
     const x = xAt(e.clientX)
     setHoverX(x)
+    setHoverGrip(onGrip(x, e.clientY))
     const d = dragRef.current
     if (!d || x == null) return
     const s = slideRef.current
@@ -370,9 +381,9 @@ export function TimeSeries<T>({
     if (x == null) return
     setHoverX(x)
     e.currentTarget.setPointerCapture?.(e.pointerId)
-    // A press inside the current window slides it (keeps its point span); a
-    // press outside brushes a fresh window.
-    if (inWindow(x) && xWindow && xsSorted.length > 1) {
+    // A press on the window's grip slides it (keeps its point span); any other
+    // press brushes a fresh window.
+    if (onGrip(x, e.clientY) && xWindow && xsSorted.length > 1) {
       const i0 = idxOf(xWindow[0])
       const span = Math.max(1, idxOf(xWindow[1]) - i0)
       slideRef.current = { i0, span, start: idxOf(x) }
@@ -414,6 +425,23 @@ export function TimeSeries<T>({
       }
     })
 
+  // The tooltip keeps clear of the trace it describes: on the far side of the
+  // crosshair from the plot's middle, and in the half of the plot the hovered
+  // points don't reach. Hidden while dragging (the band shows the range).
+  const tip = (() => {
+    if (hoverX == null || drag || !hoverPoints.some(p => p.y != null)) return null
+    const px = xToPx(hoverX)
+    const tops = series.flatMap(s => {
+      const pt = s.points.find(p => getX(p) === hoverX)
+      return pt && s.plot !== false ? [yToPx(getY(pt))] : []
+    })
+    const high = tops.length > 0 && Math.min(...tops) < PAD.top + plotH / 2
+    return {
+      ...(px > PAD.left + plotW / 2 ? { right: dims.w - px + 8 } : { left: px + 8 }),
+      ...(high ? { bottom: PAD.bottom + 4 } : { top: PAD.top + 4 }),
+    }
+  })()
+
   return (
     <div
       ref={wrapRef}
@@ -426,12 +454,12 @@ export function TimeSeries<T>({
           width={dims.w}
           height={dims.h}
           onPointerMove={onMove}
-          onPointerLeave={() => { if (!dragRef.current) setHoverX(null) }}
+          onPointerLeave={() => { if (!dragRef.current) { setHoverX(null); setHoverGrip(false) } }}
           onPointerDown={onDown}
           // With a brush, clicks resolve in mouseup (a zero-width drag) — a
           // separate click handler would fire the pick twice.
           onClick={onPickX && !onBrush ? () => { if (hoverX != null) onPickX(hoverX) } : undefined}
-          style={{ display: 'block', cursor: drag ? (slideRef.current ? 'grabbing' : 'col-resize') : onBrush ? (inWindow(hoverX) ? 'grab' : 'crosshair') : onPickX ? 'pointer' : undefined, userSelect: 'none', touchAction: onBrush ? 'pan-y' : undefined }}
+          style={{ display: 'block', cursor: drag ? (slideRef.current ? 'grabbing' : 'col-resize') : onBrush ? (hoverGrip ? 'grab' : 'crosshair') : onPickX ? 'pointer' : undefined, userSelect: 'none', touchAction: onBrush ? 'pan-y' : undefined }}
         >
           {/* Window band (the highlighted x-range, or the drag in progress) */}
           {band && band[1] > band[0] && (
@@ -454,6 +482,17 @@ export function TimeSeries<T>({
                   strokeDasharray={drag ? undefined : '2 3'}
                 />
               ))}
+              {/* The grip: drag it to slide the window (brushing starts anywhere else). */}
+              {onBrush && (!drag || slideRef.current) && (
+                <rect
+                  className="dt-ts-grip"
+                  x={xToPx(band[0])}
+                  y={PAD.top}
+                  width={Math.max(0, xToPx(band[1]) - xToPx(band[0]))}
+                  height={GRIP}
+                  fill={hoverGrip || drag ? 'var(--dt-ts-grip-hover, rgba(255,255,255,0.28))' : 'var(--dt-ts-grip, rgba(255,255,255,0.14))'}
+                />
+              )}
             </g>
           )}
           {/* Gaps: each stretch of x's without data, shaded. */}
@@ -631,12 +670,12 @@ export function TimeSeries<T>({
         </svg>
       )}
       {/* Tooltip */}
-      {hoverX != null && hoverPoints.some(p => p.y != null) && (
+      {tip && hoverX != null && (
         <div
+          className="dt-ts-tip"
           style={{
             position: 'absolute',
-            left: Math.min(xToPx(hoverX) + 8, dims.w - 180),
-            top: PAD.top + 4,
+            ...tip,
             background: 'var(--dt-ts-tip-bg, rgba(20,20,24,0.94))',
             color: 'var(--dt-ts-tip-ink, #e6e6ea)',
             border: '1px solid var(--dt-ts-tip-border, #333)',

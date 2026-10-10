@@ -48,6 +48,8 @@ AUTH_MODE = "app"                           # `app` (the app's own sign-in) | `p
 # STORES_EXTRA = "meta"                       # comma-separated secondary store keys, each under its own path (`/meta`)
 # PROD_HOST = "my.example.com"                # `g d` toggles between these two hosts (src/hosts.ts);
 # DEV_HOST = "dev.my.example.com"             #   either unset = no binding
+# CACHE_NS = ""                               # response-cache env tag (`_lib/edgeCache.ts`): unset = the request host,
+#                                             #   except PROD_HOST (prod's keys); set "" on a prod with no PROD_HOST
 # REPO_URL = "https://github.com/me/my-fork"  # the "Source on GitHub" link; unset = this repo
 
 # --- Who may see it (_lib/auth.ts) ---

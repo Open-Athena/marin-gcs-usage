@@ -26,6 +26,7 @@
  * value, so no secret sits in the (public) `wrangler.toml`.
  */
 import type { Env } from './auth.js'
+import { withReq } from './shared.js'
 
 /** `index_schema.store` of the primary store's rows (a fixed sentinel: one
  * migration lineage serves several deploys, each with its own `STORE`). */
@@ -136,13 +137,18 @@ export function requestedStore(request: Request): string | null {
 }
 
 /**
- * Resolve the request's store: the context itself for the primary (no
- * `store=`), else a copy whose `env` is that store's overlay; a 400/404/500
+ * Resolve the request's store: a copy of the context whose `env` carries the
+ * request (`withReq`) — the primary's env (no `store=`), else that store's
+ * overlay; a 400/404/500
  * `Response` for a malformed, unknown or misconfigured store.
  */
 export function withStore<C extends { request: Request; env: Env }>(ctx: C): C | Response {
+  // `waitUntil` (Pages' EventContext) stays bound to the real context.
+  const w = (ctx as { waitUntil?: unknown }).waitUntil
+  // The env carries the request (`withReq`: its shared reads are owned by it, and its cancel evicts them).
+  const as = (env: Env): C => ({ ...ctx, env: withReq(env, ctx.request.signal), ...(typeof w === 'function' ? { waitUntil: w.bind(ctx) } : {}) })
   const key = requestedStore(ctx.request)
-  if (key === null) return ctx
+  if (key === null) return as(ctx.env)
   if (!KEY_RE.test(key)) return jsonErr('bad store', 400)
   let stores: Record<string, StoreConfig>
   try {
@@ -152,9 +158,7 @@ export function withStore<C extends { request: Request; env: Env }>(ctx: C): C |
   }
   const cfg = stores[key]
   if (!cfg) return jsonErr(`unknown store '${key}'`, 404)
-  // `waitUntil` (Pages' EventContext) stays bound to the real context.
-  const w = (ctx as { waitUntil?: unknown }).waitUntil
-  return { ...ctx, env: storeEnv(ctx.env, key, cfg), ...(typeof w === 'function' ? { waitUntil: w.bind(ctx) } : {}) }
+  return as(storeEnv(ctx.env, key, cfg))
 }
 
 /** For the primary-only surfaces (the ownership ledger: owners, estate,

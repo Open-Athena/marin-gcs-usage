@@ -239,12 +239,10 @@ describe('the map routes, flag set: a scan the static index doesn\'t cover', () 
     ])).toEqual([refusal('scan-not-indexed'), refusal('scan-not-indexed'), [200, 'ok']])
   })
 
-  it('…at the fleet root, the catalog\'s buckets answer the uncovered scan (exact bytes and objects), subtree and diff alike', async () => {
-    const env = envOf(true, { ...store([A, B], [A]), catalog: new StaticCatalog(blobsOf(drillFiles)) })
-    const j = await (await subtree({ request: new Request(`http://localhost/api/x?date=${B}&path=&q=0`), env })).json() as Record<string, unknown>
-    const tree = j.tree as { b: number; o: number }
-    expect([tree.b, tree.o, j.rollup, await call(diff, `from=${A}&to=${B}&path=&q=0`, env), await call(subtree, `date=${B}&path=bk&q=0`, env)])
-      .toEqual([1023750, 3000, { children: 1, kept: 1, rows: null, bucketsOnly: true }, [200, 'ok'], refusal('scan-not-indexed')])
+  it('…at the fleet root too: refused, never the catalog\'s or the walk\'s answer', async () => {
+    const env = envOf(true, store([A, B], [A]))
+    expect(await Promise.all([call(subtree, `date=${B}&path=&q=0`, env), call(diff, `from=${A}&to=${B}&path=&q=0`, env)]))
+      .toEqual([refusal('scan-not-indexed'), refusal('scan-not-indexed')])
   })
 
   it('a scan outside the generation (even a light literal); unset, it reads the path store as before', async () => {

@@ -19,13 +19,14 @@ import { hasExtras } from '../_lib/extras.js'
 import { ATTEN_DEFAULT, buildView, FILTER_VIEW_V, LensUnavailable, MIN_AREA_DEFAULT, NotFound, QUANT } from '../_lib/view.js'
 import { hexNote, hexQuery, indexedGate, staticTag } from '../_lib/staticFilter.js'
 import { FilterRejected, indexedOnly, rejectBody, rejectQuery, rejectScope } from '../_lib/indexedOnly.js'
-import { cacheKeyFor, cacheMatch, cacheStore, isPartial, keepFor, serverTiming, UPGRADE_PHASE2_MS, upgradePartial } from '../_lib/edgeCache.js'
+import { cacheEnvTag, cacheKeyFor, cacheMatch, cacheStore, isPartial, keepFor, serverTiming, UPGRADE_PHASE2_MS, upgradePartial } from '../_lib/edgeCache.js'
 import { LENS_PRIMARY_ONLY, storeKey, withStore } from '../_lib/stores.js'
 import { lensParam, ME_UNRESOLVED, resolveLens } from '../_lib/me.js'
 import { askBox, boxFor, boxStatus, type BoxEnv, withProvenance } from '../_lib/queryBox.js'
 import { extrasFor } from '../_lib/extras.js'
 import { isScanId } from '../../src/scanSlug.js'
 import { indexedScan, noScan, scanArg } from '../_lib/scanArg.js'
+import { traceJoins } from '../_lib/shared.js'
 
 
 type SubtreeCtx = { request: Request; env: Env; waitUntil?: (p: Promise<unknown>) => void }
@@ -44,6 +45,7 @@ async function subtree(ctx0: SubtreeCtx, gate: boolean): Promise<Response> {
   if (ctx1 instanceof Response) return ctx1
   const ctx = withPathStore(ctx1)
   const st = serverTiming()
+  traceJoins(ctx.env, st.trace)
   if (!storeReady(ctx.env)) {
     return new Response('subtree API not configured (missing index store creds)', { status: 503 })
   }
@@ -128,10 +130,10 @@ async function subtree(ctx0: SubtreeCtx, gate: boolean): Promise<Response> {
     query = hx.query
     const [head, xtra, g, indexed] = await st.time('pre', Promise.all([lens && ctx.env.DB || owner && await hasLedger(ctx.env) ? ledgerHead(ctx.env) : Promise.resolve(0), hasExtras(ctx.env, date), pathGens(ctx.env, [date]), indexedScan(ctx.env, date, true)]))
     if (!indexed) return noScan('date', date)
-    const cacheKey = cacheKeyFor('subtree',
+    const cacheKey = cacheKeyFor('subtree', cacheEnvTag(ctx.env, ctx.request),
       `${date}/${encodeURIComponent(path)}?w=${w}&h=${h}&a=${minArea}&t=${atten}&l=${lensTag}` +
         `&o=${rawOwner ?? ''}&b=${by ?? ''}&D=${depth ?? ''}&cl=${classKey(classes)}&x=${xtra ? 1 : 0}&F=${query && !full ? 0 : 1}&qs=${query ? qp.syntax : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}&g=${g}&st=${staticTag(ctx.env, query)}${query ? `&fv=${FILTER_VIEW_V}` : ''}` +
-        // The root's answer carries the deployment's `ROOT_LABEL`, and a dev stack shares its prod's KV.
+        // The root's answer carries the deployment's `ROOT_LABEL` (kept in the key: dropping it would flush prod's root entries).
         (path === '' ? `&rl=${encodeURIComponent(ctx.env.ROOT_LABEL ?? '')}` : ''),
       storeKey(ctx.env),
     )

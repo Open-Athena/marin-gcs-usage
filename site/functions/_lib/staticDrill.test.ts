@@ -9,7 +9,7 @@ import { type Blobs, type Hit, scanAt, StaticNames } from './staticNames'
 import { sqliteD1 } from './testD1'
 import { type D1Variant, fixture, FILES, readJson, seedGeneration } from './testStore'
 import { buildDiff, buildView, type DiffRow, NotFound, type View, type ViewNode } from './view'
-import { SEARCH_LIMITS, type SearchLimits, searchKey } from './search'
+import { searchKey } from './search'
 
 vi.mock('@rdub/file-tree/stores/s3', async () => ({ S3Store: (await import('./testStore')).S3Store }))
 
@@ -321,28 +321,21 @@ describe('the map\'s views from the drilldown (`/api/subtree`)', () => {
     ])
   })
 
-  it('a rollup under an owner pool, a heavy literal on a scan past the drill base: the view reads as before', async () => {
+  it('a rollup under an owner pool reads as before; a heavy literal on a scan past the drill base is refused', async () => {
     const asked: string[] = []
     const src = drillSource(drillBlobs(undefined, { 'scans.json': { scans: [{ id: A }] } }))
     const spy: HitSource = { async hits(k, u) { asked.push(`${k}@${u}`); return src.hits(k, u) } }
     const env = envStatic(heavyStore(spy))
-    const [onA, onB, pool] = await Promise.all([view(env, A, 'bk/fill', '0'), view(env, B, 'bk/fill', '0'), view(env, A, 'bk/fill', '0', { owner: 'unowned' })])
-    expect([onA.tier, onB.tier.split('+')[0], pool.tier.split('+')[0], asked]).toEqual(['rollup', 'search', 'search', ['0@bk/fill', '0@bk/fill', '0@bk/fill']])
-    const [rB, rPool] = await Promise.all([view(base, B, 'bk/fill', '0'), view(base, A, 'bk/fill', '0', { owner: 'unowned' })])
-    expect([sansP1(onB), sansP1(pool)]).toEqual([sansP1(rB), sansP1(rPool)])
+    const [onA, onB, pool] = await Promise.all([view(env, A, 'bk/fill', '0'), view(env, B, 'bk/fill', '0').catch((e: FilterRejected) => e.reject.code), view(env, A, 'bk/fill', '0', { owner: 'unowned' })])
+    expect([onA.tier, onB, pool.tier.split('+')[0], asked]).toEqual(['rollup', 'scan-not-indexed', 'search', ['0@bk/fill', '0@bk/fill', '0@bk/fill']])
+    const rPool = await view(base, A, 'bk/fill', '0', { owner: 'unowned' })
+    expect(sansP1(pool)).toEqual(sansP1(rPool))
   })
 })
 
 describe('a heavy literal on a scan its drilldown doesn\'t cover (a run with no live `drill/` cuts the stack)', () => {
-  /** The drill covering `A` only (B past it, as cw's scans past a merged run built without its `drill/`), the
-   *  fleet root's catalog beside it; `noSearch`: B's search sidecars absent (cw: "no search index"). */
-  const cutEnv = () => {
-    const src = drillSource(drillBlobs(undefined, { 'scans.json': { scans: [{ id: A }] } }))
-    const s = heavyStore(src)
-    return envStatic({ ...s, catalog: new StaticCatalog(drillBlobs()) })
-  }
-  /** A search cut before it is exact (cw had no search sidecars at all: the same outcome, no exact search). */
-  const CUT: SearchLimits = { ...SEARCH_LIMITS, triRgs: 1, namesRgs: 1, pathRgs: 1, rowsRgs: 1, keptRows: 1 }
+  /** The drill covering `A` only (B past it, as cw's scans past a merged run built without its `drill/`). */
+  const cutEnv = () => envStatic(heavyStore(drillSource(drillBlobs(undefined, { 'scans.json': { scans: [{ id: A }] } }))))
   const outcome = async (p: Promise<View>) => {
     try {
       const v = await p
@@ -353,39 +346,27 @@ describe('a heavy literal on a scan its drilldown doesn\'t cover (a run with no 
     }
   }
 
-  it('below the root: an exact search answers; with none, refused `scan-not-indexed` — never the approximate "no matches" the base\'s thresholded read gives; the covered scan from the drill', async () => {
+  it('`scan-not-indexed` at every depth and under an owner — never the walk\'s "no matches"; the covered scan from the drill', async () => {
     const env = cutEnv()
     const exp = expected.views['0']['bk/fill']
-    const searched = await view(env, B, 'bk/fill', '0')
-    const walked = await view(base, B, 'bk/fill', '0', { searchLimits: CUT })
     expect([
-      [searched.tier.split('+')[0], searched.partial ?? null, searched.approximate ?? null],
-      await outcome(view(env, B, 'bk/fill', '0', { searchLimits: CUT })),
-      await outcome(view(env, B, 'bk', '0', { searchLimits: CUT })),
-      [walked.partial ?? walked.approximate ?? null],
+      await outcome(view(env, B, 'bk/fill', '0')),
+      await outcome(view(env, B, 'bk', '0')),
+      await outcome(view(env, B, '', '0')),
+      await outcome(view(env, B, 'bk/fill', '0', { owner: 'unowned' })),
       await outcome(view(env, A, 'bk/fill', '0')),
     ]).toEqual([
-      ['search', null, null],
       ['refused', 'scan-not-indexed'],
       ['refused', 'scan-not-indexed'],
-      [true],
+      ['refused', 'scan-not-indexed'],
+      ['refused', 'scan-not-indexed'],
       ['rollup', { n: 3000, b: total(exp[A]!)[0], o: total(exp[A]!)[1] }, null],
     ])
   })
 
-  it('at the fleet root: the catalog\'s per-bucket cells (exact bytes and objects on the uncovered scan); under an owner, refused', async () => {
-    const env = cutEnv()
-    const v = await view(env, B, '', '0', { searchLimits: CUT })
-    const [b, o] = total(expected.views['0'][''][B]!)
-    expect([v.tier, v.tree.b, v.tree.o, v.rollup, v.approximate]).toEqual(['rollup', b, o, { children: 1, kept: 1, rows: null, bucketsOnly: true }, undefined])
-    expect(await outcome(view(env, B, '', '0', { owner: 'unowned', searchLimits: CUT }))).toEqual(['refused', 'scan-not-indexed'])
-  })
-
   it('a member the drill\'s live tiers don\'t know (its heavy source declines): refused, not walked', async () => {
-    const src = drillSource(drillBlobs(undefined, { 'scans.json': { scans: [{ id: A }] } }))
     const none: HitSource = { hits: async () => null }
-    const env = envStatic(heavyStore(none))
-    expect([await outcome(view(env, B, 'bk/fill', '0', { searchLimits: CUT })), (await src.hits('nomatch', ''))]).toEqual([['refused', 'scan-not-indexed'], null])
+    expect(await outcome(view(envStatic(heavyStore(none)), B, 'bk/fill', '0'))).toEqual(['refused', 'scan-not-indexed'])
   })
 })
 

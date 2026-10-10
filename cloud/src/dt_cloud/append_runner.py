@@ -201,8 +201,9 @@ class RunStore(Protocol):
     def read_json(self, key: str) -> dict: ...
     def create(self, key: str, text: str) -> None:
         """Write a new key; `FileExistsError` if it exists (never overwrites)."""
-    def upload(self, local: Path, prefix: str) -> list[dict]:
-        """Every file under `local` → `prefix/<rel>`, the top `meta.json` last; `{key, size}` per file."""
+    def upload(self, local: Path, prefix: str, last: tuple[str, ...] = ("meta.json",)) -> list[dict]:
+        """Every file under `local` → `prefix/<rel>`, the `last` (relative paths, in that order) after all others;
+        `{key, size}` per file."""
     def lease(self, owner: str, now: datetime, ttl_s: int) -> dict | None:
         """Take the merge lease for `owner`: None when taken, else the holder's record."""
     def release(self, owner: str) -> None: ...
@@ -236,8 +237,9 @@ class LocalRunStore:
         with open(p, "x") as fh:
             fh.write(text)
 
-    def upload(self, local: Path, prefix: str) -> list[dict]:
-        files = sorted((p for p in local.rglob("*") if p.is_file()), key=lambda p: (p == local / "meta.json", p))
+    def upload(self, local: Path, prefix: str, last: tuple[str, ...] = ("meta.json",)) -> list[dict]:
+        rank = {r: i for i, r in enumerate(last)}
+        files = sorted((p for p in local.rglob("*") if p.is_file()), key=lambda p: (rank.get(p.relative_to(local).as_posix(), -1), p))
         out = []
         for p in files:
             key = f"{prefix}/{p.relative_to(local).as_posix()}"
@@ -301,10 +303,10 @@ class GcsRunStore:
         except PreconditionFailed as e:
             raise FileExistsError(key) from e
 
-    def upload(self, local: Path, prefix: str) -> list[dict]:
+    def upload(self, local: Path, prefix: str, last: tuple[str, ...] = ("meta.json",)) -> list[dict]:
         from .static_names import upload_tree
 
-        return upload_tree(local, self.bucket, f"{self.prefix}/{prefix}", last=("meta.json",))
+        return upload_tree(local, self.bucket, f"{self.prefix}/{prefix}", last=last)
 
     def lease(self, owner: str, now: datetime, ttl_s: int) -> dict | None:
         from google.api_core.exceptions import NotFound, PreconditionFailed
@@ -767,10 +769,14 @@ class Runner:
         scans appended."""
         have, layouts = self.have()
         todo = pending_scans(have, self.published(layouts, have[-1]), scan_id, catch_up)
+        # Every listed run's missing tiers first (a scan's own build reads its earlier runs').
+        built = self.backfill()
         if not todo:
             self.log(f"{scan_id}: already appended; {self.rerun_note()}")
             if scan_id == have[-1]:
                 self.rerun(scan_id)
+            elif built:
+                self.r2_newest()
             self.carries()
             return []
         if len(todo) > 1:
@@ -848,6 +854,19 @@ class Runner:
     def drilled(self, runs: list[dict]) -> set[str]:
         """The runs carrying a drill (merged only with each other)."""
         return set()
+
+    def backfill(self) -> bool:
+        """Give every run the newest manifest lists the tiers it lacks (a store with optional per-run tiers: the static
+        index's drill and anchors), before any scan's stages. Returns whether any step ran (its runs then need the R2
+        copy: `run`'s). None here."""
+        return False
+
+    def r2_newest(self) -> None:
+        """The R2 job for the newest manifest (a scan's, or a revision): its runs, then it."""
+        keys = self.manifests()
+        if keys:
+            stem = keys[-1].rsplit("/", 1)[-1].removesuffix(".json")
+            self.r2(parse_manifest(f"{stem}.json")[0], stem)
 
     def merge_job(self, scan: str) -> tuple[str, dict]:
         """The merge job (one task: the due carries, each a revision)."""

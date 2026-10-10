@@ -552,5 +552,5 @@ describe('interval store: base + runs', () => {
       }
     }
     expect(totals).toEqual({ cases: 450, candidates: 1839, pruned: 58, rows: 108595 })
-  })
+  }, 60_000)  // 450 cases over the fixture's sorts: seconds alone, past the 5 s default under the parallel suite
 })

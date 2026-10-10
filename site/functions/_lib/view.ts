@@ -41,7 +41,7 @@ import { shared } from './shared.js'
 import { storeKey } from './stores.js'
 import { extrasFor } from './extras.js'
 import { loadRegistry } from './identity.js'
-import { covers, declined, dirsOnlyOf, dirsOnlySplit, fromDrill, heavyUncovered, type Hit, type Rollup, rollupAt, staticFilterStore, staticKey } from './staticFilter.js'
+import { covers, declined, dirsOnlyOf, dirsOnlySplit, fromDrill, type Hit, type Rollup, rollupAt, staticFilterStore, staticKey } from './staticFilter.js'
 import { scanAt } from './staticNames.js'
 import { FilterRejected, indexedOnly, reject } from './indexedOnly.js'
 
@@ -857,14 +857,9 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       const raw = skey ? await sfs!.source.hits(skey, path, { firstPaint: o.firstPaint }) : null
       let shits = raw
       // A heavy literal on a scan its drilldown doesn't cover (a run with no live `drill/` cuts the drill's
-      // stack: that run's scans and every later one's), or that its heavy source declined: at the fleet root
-      // the catalog's buckets when they cover the scan (no owners); else only an exact search below answers —
+      // stack: that run's scans and every later one's), or that its heavy source declined: `scan-not-indexed` —
       // never the thresholded walk, which can't see a heavy literal's matches and reads as "no matches".
-      let heavyCut = !!skey && !raw && !!sfs!.source.heavyDeclined?.(skey)
-      if (shits && fromDrill(shits) && !covers(shits, [date])) {
-        shits = owner ? null : await heavyUncovered(sfs!, skey!, path, [date])
-        heavyCut = !shits
-      }
+      if (skey && (raw ? fromDrill(raw) && !covers(raw, [date]) : !!sfs!.source.heavyDeclined?.(skey))) throw new FilterRejected(reject('scan-not-indexed'))
       // A heavy literal's rollups know no owners: under one, the view reads as before.
       const off = shits && !covers(shits, [date]) ? 'after the drill base' : shits?.rollup && owner ? 'rollup: no owners' : null
       if (off) shits = null
@@ -905,7 +900,6 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       // A search cut before it found anything (its heaviest name alone is
       // over budget) says nothing: the thresholded read below answers instead.
       const found = searched && (searched.roots.length || !searched.truncated) ? searched : null
-      if (heavyCut && !(found && !found.truncated)) throw new FilterRejected(reject('scan-not-indexed'))
       if (found) {
         p1 = aggregate(found.rows)
         roots = found.roots

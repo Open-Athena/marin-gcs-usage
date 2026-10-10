@@ -11,6 +11,7 @@ import { searchKey } from './search'
 import { resetUpgrades } from './edgeCache'
 import { warmSubtree } from '../api/subtree'
 import { onRequestGet as diffGet } from '../api/diff'
+import type { FilterRejected } from './indexedOnly'
 
 vi.mock('@rdub/file-tree/stores/s3', async () => ({ S3Store: (await import('./testStore')).S3Store }))
 
@@ -258,11 +259,11 @@ describe('matchLists: a response lists the tree\'s roots, then the heaviest, up 
 })
 
 describe('static filter: dispatch', () => {
-  it('a range over `maxRows` asks the heavy source; none → today\'s read (the search sidecars)', async () => {
+  it('a range over `maxRows` asks the heavy source; its decline is `scan-not-indexed` (a member its drill\'s live tiers don\'t know yet), never the walk', async () => {
     const asked: [string, string][] = []
     const none: HitSource = { async hits(key, under) { asked.push([key, under]); return null } }
-    const v = await view(envStatic(staticStore({ maxRows: 3, heavy: none })), A, 'bk', 'tomat')
-    expect([asked, v.tier.split('+')[0], matchedRows(v)]).toEqual([[['tomat', 'bk']], 'search', expected.roots.tomat.bk[A]])
+    const got = await view(envStatic(staticStore({ maxRows: 3, heavy: none })), A, 'bk', 'tomat').catch((e: FilterRejected) => e.reject.code)
+    expect([asked, got]).toEqual([[['tomat', 'bk']], 'scan-not-indexed'])
   })
 
   it('the heavy source\'s hits serve the view statically', async () => {

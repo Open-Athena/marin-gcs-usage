@@ -43,7 +43,9 @@ import { LoadFailure, mapSlot } from './LoadFailure'
 import { REJECT_MESSAGES, rejectQuery } from '../functions/_lib/indexedOnly'
 import { FilterFlags, FilterNote, matchedNote } from './FilterNote'
 import { BulkBar } from './BulkBar'
-import { setCurrentScan, useMyUser, useOwnerIndex, useOwners } from './owners'
+import { setCurrentScan, useMyUserState, useOwnerIndex, useOwners } from './owners'
+import { ledgerRevOf, ownerScope, ownerScopeReady, pageLedgerKey, scopeKeyOf } from './viewScope'
+import { useRegistryLoaded } from './identities'
 import { applyLedger } from './ledgerOverlay'
 import { MultiSelect } from './MultiSelect'
 import { SiteNav, topbarH } from './SiteNav'
@@ -121,9 +123,7 @@ const SPANS: [string, number][] = [['1d', 1], ['3d', 3], ['7d', 7], ['14d', 14],
 // The owner axis: `?o` is the unowned pool, `?o=*` the owned one, `?o=me`
 // or a user key (`?o=rw`) a person (`ownerParam`); absent = everything. Owned = a person owns it (inferred from
 // paths/runs, or assigned); unowned
-// = the nobody-owns-it pool. A user narrows "owned" to that person.
-type OwnerMode = 'all' | 'owned' | 'unowned' | 'user' | 'others'
-
+// = the nobody-owns-it pool. A user narrows "owned" to that person (`OwnerMode`, `viewScope.ts`).
 
 // Home-page section anchors, top to bottom — the scroll-spy keeps `#hash`
 // tracking the one in view, and deep links scroll to it. Old ids keep working.
@@ -253,24 +253,19 @@ function AppContent() {
     return on.size > 0 && on.size < CLASS_AXES.length ? on : null
   }, [clP])
   const setClasses = (ks: ClassAxis[]) => setClP(ks.length === 0 || ks.length === CLASS_AXES.length ? undefined : CLASS_AXES.filter(c => ks.includes(c)).join(''))
-  const myUser = useMyUser(ident?.email, ownersMode)
-  // Owner axis. `me` resolves to the signed-in user's attribution id (a
+  const { user: myUser, ready: myUserReady } = useMyUserState(ident?.email, ownersMode)
+  // Owner axis (`viewScope.ts`). `me` resolves to the signed-in user's attribution id (a
   // shared `?o=me` link shows each reader their own files); an unmapped
   // email resolves to nothing, and the axis falls back to "all" with a note.
   // `?o=!<key>,<key>` — the "owned by someone OTHER than these people" pool
   // (the sweep console's "show me the conflicts under this band" link). The
   // excluded users resolve to canonical ids for the server's row filter.
-  const notUsers: string[] =
-    ownersMode && oP?.startsWith('!') ? oP.slice(1).split(',').filter(Boolean).map(k => canonId(k)) : []
-  const ownerUser: string | null =
-    !ownersMode || !oP || oP === 'owned' || oP === 'unowned' || oP.startsWith('!') ? null
-    : oP === 'me' ? myUser
-    : canonId(oP)
-  const ownerMode: OwnerMode =
-    !ownersMode || !oP ? 'all'
-    : notUsers.length ? 'others'
-    : oP === 'owned' ? 'owned' : oP === 'unowned' ? 'unowned' : ownerUser ? 'user' : 'all'
-  const meUnmapped = ownersMode && oP === 'me' && !myUser
+  const owner = ownerScope({ ownersMode, oP, byP, myUser, canon: canonId })
+  const { notUsers, ownerUser, ownerMode, meUnmapped, activeLens, assigner } = owner
+  // Its params wait on the registry (a golfed key) and the viewer's id (`me`): the view's queries hold
+  // until they're final, so a cold `?o=…` load sends each request once.
+  const registryLoaded = useRegistryLoaded()
+  const scopeReady = ownerScopeReady({ ownersMode, oP, byP, registryReady: registryLoaded || rulesQ.isError, myUserReady })
   const setOwnerUser = (u: string | undefined) => setOP(u === undefined ? undefined : u === 'me' ? 'me' : shortUserKey(canonId(u)))
   // Flip a picked person between their own bytes (`?o=<key>`) and everyone
   // else's under the current view (`?o=!<key>`) — the ≠ toggle beside the picker.
@@ -278,33 +273,28 @@ function AppContent() {
     const key = ownerUser ? shortUserKey(ownerUser) : notUsers.length ? shortUserKey(notUsers[0]) : null
     if (key) setOP(on ? `!${key}` : key)
   }
-  const viewUser = ownerUser
   // Every scope axis is applied server-side by /api/subtree (specs/
   // view-serving.md §2): a user (`lens=user:`, the live assignments folded in), a
   // pool (`o=`), the classes (`cl=`), the name filter (`q=`). The client
   // receives exactly the current view and only draws it.
-  const lensUser = viewUser
-  const activeLens = lensUser ? `user:${lensUser}` : null
   // …and unscoped: a filter under a user, owner pool or class scope is refused there too.
   const fScopeRefused = indexedOnly && !!fqRaw && fParse.ok && (!!activeLens || ownerMode !== 'all' || !!classSet) ? REJECT_MESSAGES['unsupported-scope'] : undefined
   const fq = fParse.ok && !fScopeRefused ? fqRaw : undefined
-  const assigner = ownersMode && byP ? canonId(byP) : null
   const scopeQs =
-    (activeLens ? `&lens=${activeLens}` : '') +
-    (activeLens && assigner ? `&by=${encodeURIComponent(assigner)}` : '') +
-    (ownerMode === 'owned' || ownerMode === 'unowned' ? `&o=${ownerMode}` : '') +
-    (notUsers.length ? `&o=!${notUsers.map(encodeURIComponent).join(',')}` : '') +
+    owner.qs +
     (classSet ? `&cl=${CLASS_AXES.filter(c => classSet.has(c)).join('')}` : '') +
     (fq ? `&q=${encodeURIComponent(fq)}&qs=${syntax.id}` : '')
   // A user lens or an owner pool folds the live ledger server-side, so those
   // views' queries carry its revision: an assignment (or its undo) refetches
-  // them; everything else ignores the ledger.
+  // them; everything else ignores the ledger. The ledger's first load is not a
+  // change (`pageLedgerKey`): a view fired before `/api/actions` lands keeps its key.
   const ledgerRev = useMemo(() => {
     let max = 0
     for (const r of ownerIdx.owners.values()) max = Math.max(max, r.action_id)
-    return `${ownerIdx.count}.${max}`
+    return ledgerRevOf(ownerIdx.count, max)
   }, [ownerIdx])
-  const scopeKey = scopeQs + (activeLens || /&o=/.test(scopeQs) ? `|ledger=${ledgerRev}` : '')
+  const ledger = pageLedgerKey(ledgerRev, ownersQ.data !== undefined)
+  const scopeKey = scopeKeyOf(scopeQs, owner.ledgered, ledger)
   // One-time legacy-param rewrite onto the two axes, so old links (Slack
   // digests, /user pages) work and re-share in the current form:
   //   ?l=todo → ?k=u · ?l=unclaimed|communal, ?t=unattributed|communal → bare ?o
@@ -410,7 +400,7 @@ function AppContent() {
   const subtreeQs = useQueries({
     queries: subtreePaths.map(p => ({
       queryKey: ['subtree', store.key, asof, p, canW, scopeKey],
-      enabled: !!asof,
+      enabled: !!asof && scopeReady,
       staleTime: Infinity,
       // Retry transient failures, but not the deterministic ones (409: no
       // user index for this scan; 413: view too wide) — those surface as-is.
@@ -443,7 +433,7 @@ function AppContent() {
       queryKey: ['subtree', store.key, asof, p, canW, scopeKey, 'depth1'],
       // Deepest path only — see `dataFor`; ancestors use it only under a filter, where it is the
       // exact forest of match roots (cheap from the static name index).
-      enabled: !!asof && (i === subtreePaths.length - 1 || !!fq),
+      enabled: !!asof && scopeReady && (i === subtreePaths.length - 1 || !!fq),
       staleTime: Infinity,
       retry: false,
       // Plain view: one depth band. Filtered view: the whole forest from the
@@ -555,7 +545,7 @@ function AppContent() {
   if (tree) lastTree.current = tree
   // The live ownership ledger over the scan's attribution (`applyLedger`):
   // assignments recolor the map and its legend as soon as `/api/actions`
-  // refetches. A pool or user-lens view also re-reads (`ledgerRev` is in its
+  // refetches. A pool or user-lens view also re-reads (`ledger` is in its
   // key) and comes back with the ledger folded in; a user lens is left as served.
   const heldTree = tree ?? lastTree.current
   const mapTree = useMemo(
@@ -776,7 +766,7 @@ function AppContent() {
   // paint costs as much as the full walk (gcs 2026-10-02: 9.3 s vs 4.5 s).
   const diffQ1 = useQuery<DiffData, Error>({
     queryKey: ['diff', store.key, diffPrev, asof, graftPath, canW, scopeKey, 'l1'],
-    enabled: !!asof && !!diffPrev && !fq,
+    enabled: !!asof && !!diffPrev && scopeReady && !fq,
     staleTime: Infinity,
     retry: false,
     queryFn: async ({ signal }: { signal?: AbortSignal }) => {
@@ -799,7 +789,7 @@ function AppContent() {
   const diffSlotH = useRef(0)
   const diffQ = useQuery<DiffData, Error>({
     queryKey: ['diff', store.key, diffPrev, asof, graftPath, canW, scopeKey],
-    enabled: !!asof && !!diffPrev,
+    enabled: !!asof && !!diffPrev && scopeReady,
     // While the full walk aligns: the bucket-level diff of the SAME pair once
     // it lands, else the last pair's diff — drawn dimmed either way, so the
     // section holds its height and shows something before the detail.
@@ -824,7 +814,7 @@ function AppContent() {
   // a second or two, so the +X / Δobjects line shows while the rows align.
   const diffSumQ = useQuery<DiffData, Error>({
     queryKey: ['diff', store.key, diffPrev, asof, graftPath, canW, scopeKey, 'summary'],
-    enabled: !!asof && !!diffPrev,
+    enabled: !!asof && !!diffPrev && scopeReady,
     staleTime: Infinity,
     retry: false,
     queryFn: async ({ signal }: { signal?: AbortSignal }) => {
@@ -1249,7 +1239,7 @@ function AppContent() {
         </p>
       )}
       {ownersQ.error && <p className="tab-note err">Assignments unavailable: {ownersQ.error.message}</p>}
-      {meUnmapped && (
+      {meUnmapped && myUserReady && (
         <p className="tab-note">
           Your email isn't mapped to an owner id yet — ping Ryan (or an admin can add you at{' '}
           <code>/admin/db/user_emails</code>); pick any user from the owner menu to view their files.
@@ -1314,8 +1304,8 @@ function AppContent() {
               // The scope, not the directory, is what's empty here: say whose
               // filter came up dry rather than describe a 0-byte directory.
               <p className="hint leaf-note">
-                {ownerMode === 'user' && lensUser
-                  ? <><b>{shortName(lensUser)}</b> owns nothing under <code>{mapPath[mapPath.length - 1].n}</code> in this scan</>
+                {ownerMode === 'user' && ownerUser
+                  ? <><b>{shortName(ownerUser)}</b> owns nothing under <code>{mapPath[mapPath.length - 1].n}</code> in this scan</>
                   : ownerMode === 'unowned'
                     ? <>Nothing under <code>{mapPath[mapPath.length - 1].n}</code> is unowned in this scan</>
                     : ownerMode === 'owned'
@@ -1399,7 +1389,8 @@ function AppContent() {
         scans={scans} times={times} fmt={fmtS} prefix={drillPath}
         user={ownerUser}
         pool={ownerMode === 'unowned' ? 'unowned' : ownerMode === 'owned' ? 'owned' : null}
-        ledgerRev={ledgerRev}
+        ledgerRev={ledger}
+        scopeReady={scopeReady}
         onPickDate={setDP}
         onBrush={brushRange}
         window={diffWindow}
