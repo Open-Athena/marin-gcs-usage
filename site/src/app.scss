@@ -1943,6 +1943,8 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
   &::before { content: '· '; color: var(--ink-3); }
 }
 .fflags { margin-left: 8px; }
+// The hex-run rule's note (`FilterNote.tsx` `HexRunsInfo`): an info icon, its text in a tooltip.
+.fhex { cursor: help; }
 
 // The filter box's syntax card (`QueryHelp.tsx`), inside a pinnable tooltip.
 .qhelp-card {

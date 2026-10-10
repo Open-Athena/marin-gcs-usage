@@ -22,6 +22,7 @@ import { REJECT_MESSAGES } from './indexedOnly.js'
 import { catalogAnswer, type CatalogIo, type CatalogMeta, type Member } from './staticCatalog.js'
 import { type Answer, type Blobs, cacheIndexes, type Io, r2Blobs, staticGen, staticPrefix, type Totals } from './staticNames.js'
 import { tiers } from './staticRuns.js'
+import { type HexRule, hexAffected } from './hexRuns.js'
 
 export type StaticNameEnv = { NAME_SUMMARY_STATIC?: string; INDEX_R2?: R2Bucket; STATIC_GEN?: string; STATIC_MAX_ROWS?: string; STORE_BUCKETS?: string; STORE?: string; DB?: D1Database }
 export const staticEnabled = (env: StaticNameEnv): boolean => env.NAME_SUMMARY_STATIC === '1' && !!env.INDEX_R2
@@ -44,8 +45,8 @@ export interface NameReader {
 /** The catalog (`StaticCatalog`, or `TieredCatalog`). */
 export interface CatalogReader { info(): Promise<CatalogMeta>; lookup(q: string): Promise<{ io: CatalogIo; member: Member | null; scans?: string[] }> }
 /** `dirOnly`: the scans indexed from a dir-only (v1) source (`staticRuns.ts` `dirOnlyScans`): their totals are
- *  the literal's folder-name matches only. */
-export interface Store { names: NameReader; catalog: CatalogReader; scans: () => Promise<string[]>; dirOnly?: () => Promise<string[]>; clock: () => Promise<number> }
+ *  the literal's folder-name matches only. `hexRuns`: the generation's hex-run rule (absent or null: the full index). */
+export interface Store { names: NameReader; catalog: CatalogReader; scans: () => Promise<string[]>; dirOnly?: () => Promise<string[]>; clock: () => Promise<number>; hexRuns?: () => Promise<HexRule | null> }
 let held: { r2: R2Bucket; gen: string; store: Store } | undefined
 
 // The Workers clock only advances across I/O; a cache miss pins "now" after CPU-bound work (decode).
@@ -58,7 +59,7 @@ export function store(r2: R2Bucket, gen: string): Store {
     // The base generation plus its runs (`staticRuns.ts`), each tier's indexes cached under its own prefix.
     const pre = (dir: string | null) => dir ? `${root}/${dir}` : root
     const t = tiers(blobs, { indexCache: dir => cacheIndexes(caches.default, pre(dir)), catalogCache: dir => cacheIndexes(caches.default, pre(dir), 'catalog-v1'), clock: tick })
-    held = { r2, gen, store: { names: t.names, catalog: t.catalog, scans: t.scans, dirOnly: t.dirOnly, clock: tick } }
+    held = { r2, gen, store: { names: t.names, catalog: t.catalog, scans: t.scans, dirOnly: t.dirOnly, clock: tick, hexRuns: () => t.names.hexRuns() } }
   }
   return held.store
 }
@@ -143,7 +144,10 @@ export async function staticSummary(env: StaticNameEnv, params: URLSearchParams,
     const gen = staticGen(env)
     s ??= store(env.INDEX_R2!, gen)
     const asked = datedNameRequest(params), key = asked.name
-    const [have, meta] = await Promise.all([s.scans(), s.catalog.info()])
+    const [have, meta, rule] = await Promise.all([s.scans(), s.catalog.info(), s.hexRuns?.() ?? null])
+    // A hex-affected literal on a generation with the hex-run rule: answered as always, and the body says that
+    // matches inside long hex ids aren't counted (`hexRuns`, the page's note).
+    const hex = rule && hexAffected(key, rule) ? { hexRuns: { min: rule.min, tail: rule.tail } } : {}
     // `date` / `from` name a scan of the STORE, resolved as every page and API does (`scanArg.ts`
     // `indexedScan`: a held id is itself, a slug the latest store scan it names; `2026-10-09` = that day's
     // latest scan when no scan is that id) — never the latest scan the static index happens to hold, which
@@ -188,7 +192,7 @@ export async function staticSummary(env: StaticNameEnv, params: URLSearchParams,
         ...(dirsOnly.includes(date) ? { dirs_only: true } : {}),
       }
     })
-    let body: unknown = sides[0]
+    let body: unknown = { ...sides[0], ...hex }
     if (request.from) {
       const [before, after] = sides
       const d = (a: { b: number; o: number }, b: { b: number; o: number }) => ({ b: b.b - a.b, o: b.o - a.o })
@@ -196,6 +200,7 @@ export async function staticSummary(env: StaticNameEnv, params: URLSearchParams,
         schema: 'dated-name-summary-diff-v1', logical_store: store_, from: request.from, date: request.date, pattern: key, path: '',
         exact: true, incremental: false, levels: 1, scope: HOT_SCOPE, before, after, delta: d(before.root, after.root), capabilities: { ...CAPABILITIES },
         buckets: before.buckets.map((a, i) => { const b = after.buckets[i]; return { path: a.path, before: { pre: a.pre, post: a.post, b: a.b, o: a.o }, after: { pre: b.pre, post: b.post, b: b.b, o: b.o }, delta: d(a, b) } }),
+        ...hex,
       }
     }
     parseName(body, request) // the page's own contract check, before it leaves the Worker

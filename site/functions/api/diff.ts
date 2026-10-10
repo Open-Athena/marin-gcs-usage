@@ -17,7 +17,7 @@ import { pathGens, withPathStore, storeReady, type Lens } from '../_lib/index.js
 import { hasLedger, ledgerHead } from '../_lib/ledger.js'
 import { classKey, parseClasses, parseOwner, queryParam, QueryError } from '../_lib/scope.js'
 import { ATTEN_DEFAULT, buildDiff, FILTER_VIEW_V, LensUnavailable, MIN_AREA_DEFAULT, NotFound, QUANT } from '../_lib/view.js'
-import { indexedGate, staticTag } from '../_lib/staticFilter.js'
+import { hexNote, hexQuery, indexedGate, staticTag } from '../_lib/staticFilter.js'
 import { FilterRejected, indexedOnly, rejectBody, rejectQuery, rejectScope } from '../_lib/indexedOnly.js'
 import { cacheKeyFor, cacheMatch, cacheStore, isPartial, keepFor, serverTiming, UPGRADE_PHASE2_MS, upgradePartial } from '../_lib/edgeCache.js'
 import { LENS_PRIMARY_ONLY, storeKey, withStore } from '../_lib/stores.js'
@@ -74,7 +74,7 @@ export const onRequestGet = async (ctx0: { request: Request; env: Env; waitUntil
     if (e instanceof QueryError) return new Response(`bad query: ${e.message}`, { status: 400 })
     throw e
   }
-  const query = qp.query
+  let query = qp.query
   // An indexed-only deployment: one literal, unscoped (`_lib/indexedOnly.ts`), before auth or any read.
   const refused = query && indexedOnly(ctx.env) ? rejectQuery(qRaw, url.searchParams.get('qs'), ctx.env.QUERY_SYNTAX) ?? rejectScope(!!(lens || owner || classes)) : null
   if (refused) return new Response(rejectBody(refused), { status: 400, headers: { 'content-type': 'application/json' } })
@@ -93,6 +93,9 @@ export const onRequestGet = async (ctx0: { request: Request; env: Env; waitUntil
     if (resolved === null) return new Response(ME_UNRESOLVED, { status: 400 })
     lens = resolved
     const lensTag = lensParam(lens)
+    // The static index's hex-run rule: substrings match where they `occur` under it, static or not (`hexRuns.ts`).
+    const hx = await hexQuery(ctx.env, query)
+    query = hx.query
     const [head, g] = await st.time('pre', Promise.all([lens && ctx.env.DB || owner && await hasLedger(ctx.env) ? ledgerHead(ctx.env) : Promise.resolve(0), pathGens(ctx.env, [from, to])]))
     const cacheKey = cacheKeyFor('diff',
       `${from}/${to}/${encodeURIComponent(path)}?w=${w}&h=${h}&a=${minArea}&t=${atten}&n=${top}&l=${lensTag}` +
@@ -114,7 +117,7 @@ export const onRequestGet = async (ctx0: { request: Request; env: Env; waitUntil
         path,
         ...(lens ? { lens: lensTag } : {}),
         ...(owner ? { owner } : {}),
-        ...(query ? { q: qRaw } : {}),
+        ...(query ? { q: qRaw, ...hexNote(hx.hexRuns, query.ast) } : {}),
         ...diff,
         threshold: Math.round(diff.threshold),
         ...(diff.interiors?.late ? { budgetCut: true } : {}),

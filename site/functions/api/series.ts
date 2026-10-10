@@ -18,7 +18,7 @@ import { snapshotsPrefix } from '../_lib/shared.js'
 import { type Lens, makeStore, pathGens, withPathStore, pathScans, storeReady } from '../_lib/index.js'
 import { hasLedger, ledgerHead } from '../_lib/ledger.js'
 import { classKey, ownerKey, ownerOk, parseClasses, parseOwner, QueryError, queryParam } from '../_lib/scope.js'
-import { liveTotal, rollupTotal, staticFilterStore, staticLiteral, staticTag } from '../_lib/staticFilter.js'
+import { hexNote, hexQuery, liveTotal, rollupTotal, staticFilterStore, staticLiteral, staticTag } from '../_lib/staticFilter.js'
 import { indexedOnly, reject, rejectBody, rejectQuery, rejectScope } from '../_lib/indexedOnly.js'
 import { readRootAgg, readRootRows } from '../_lib/view.js'
 import { type OverTime, overTimePoint, readOverTime } from '../_lib/overTime.js'
@@ -119,6 +119,9 @@ export const onRequestGet = async (ctx0: Ctx & { waitUntil?: (p: Promise<unknown
   const strict = !!qp.query && indexedOnly(env)
   const refused = strict ? rejectQuery(url.searchParams.get('q'), url.searchParams.get('qs'), env.QUERY_SYNTAX) ?? rejectScope(!!(lens || owner || classes)) : null
   if (refused) return new Response(rejectBody(refused), { status: 400, headers: { 'content-type': 'application/json' } })
+  // The static index's hex-run rule: substrings match where they `occur` under it, static or not (`hexRuns.ts`).
+  const hx = await hexQuery(env, qp.query)
+  qp.query = hx.query
   const query = qp.query && !qp.query(path) ? qp.query : undefined
   if (qp.query && !query) paths.length = 0
   const sfs = query && !lens && !classes ? staticFilterStore(env) : null
@@ -253,6 +256,6 @@ export const onRequestGet = async (ctx0: Ctx & { waitUntil?: (p: Promise<unknown
     for (const g of got) if (g) points.push(g)
   }
   points.sort((a, b) => a.date.localeCompare(b.date))
-  const body = JSON.stringify({ path, ...(unindexed.length ? { unindexed: unindexed.sort() } : {}), ...(paths.length ? { paths } : {}), ...(lens ? { lens: lensTag } : {}), ...(owner ? { owner } : {}), points, ...(split ? { roots: rootPoints(rootsByDate) } : {}) })
+  const body = JSON.stringify({ path, ...(qp.query ? hexNote(hx.hexRuns, qp.query.ast) : {}), ...(unindexed.length ? { unindexed: unindexed.sort() } : {}), ...(paths.length ? { paths } : {}), ...(lens ? { lens: lensTag } : {}), ...(owner ? { owner } : {}), points, ...(split ? { roots: rootPoints(rootsByDate) } : {}) })
   return cacheStore(env, cacheKey, body, { 'server-timing': st.header(), ...(engine ? { 'x-query-engine': engine } : {}) }, ctx.waitUntil?.bind(ctx))
 }

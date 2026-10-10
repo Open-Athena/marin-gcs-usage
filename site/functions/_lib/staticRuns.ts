@@ -19,6 +19,7 @@
  *  its scans and every later one's are `scan-not-indexed` until it loads. */
 import { type CatalogIo, type CatalogMeta, type Member, StaticCatalog } from './staticCatalog.js'
 import { type Blobs, cmp, FirstHits, type Io, type IndexCache, type GroupIndex, StaticNames } from './staticNames.js'
+import { type HexRule, ruleOf, sameRule } from './hexRuns.js'
 
 export interface RunInfo { key: string; first: string; last: string; level: number; scans: string[] }
 export interface Manifest { gen: string; date: string; base_scans?: number; scans: string[]; runs: RunInfo[] }
@@ -41,7 +42,7 @@ export interface Broken { dir: string; error: string; at: number }
 /** The tiers a reader may use: the base and the runs up to the first broken one (tiers are cumulative, so a scan
  *  at or after a broken tier is never answered from the ones before it), the scans they cover, and a version
  *  naming that stack. `broken`: the tier the stack was cut at. */
-export interface TierState { version: string; scans: string[]; tiers: Tier[]; manifest: Manifest | null; broken?: Broken; dirOnly?: string[] }
+export interface TierState { version: string; scans: string[]; tiers: Tier[]; manifest: Manifest | null; broken?: Broken; dirOnly?: string[]; hexRuns: HexRule | null }
 
 /** The base's scans whose source was a v1 index (`scans.json` `version: 1`): it lists directories only, so a
  *  name match on one of its files is invisible there — the index holds that scan, but not its objects. */
@@ -127,22 +128,30 @@ export class Tiers {
       const manifest = await latestManifest(this.blobs)
       const all = [this.tier(null), ...(manifest?.runs ?? []).map(r => this.tier(r.key))]
       const ok = await Promise.all(all.map(x => this.usable(x, t)))
+      // Every tier answers under the base's hex-run rule (its `catalog/meta.json` `hex_runs`): a run recording
+      // another is broken (cut there), never mixed in.
+      const hexRuns = ok[0] ? ruleOf((await all[0].catalog.info()).hex_runs) : null
+      for (let i = 1; i < all.length; i++) {
+        if (!ok[i]) continue
+        const r = ruleOf((await all[i].catalog.info()).hex_runs)
+        if (!sameRule(r, hexRuns)) { this.mark(all[i].dir, new Error(`static tiers: ${all[i].dir}/catalog/meta.json hex_runs ${JSON.stringify(r)} disagrees with the base's ${JSON.stringify(hexRuns)}`)); ok[i] = false }
+      }
       const n = ok.indexOf(false)
       this.cut = n >= 0
-      if (n === 0) return { version: 'none', scans: [], tiers: [], manifest, broken: this.broken.get('') }
+      if (n === 0) return { version: 'none', scans: [], tiers: [], manifest, broken: this.broken.get(''), hexRuns: null }
       if (!manifest) {
         try {
           const doc = await this.blobs.json<{ scans: { id: string; version?: number }[] }>('scans.json')
-          return { version: 'base', scans: doc.scans.map(s => s.id).sort(), tiers: all, manifest: null, dirOnly: dirOnlyScans(doc) }
+          return { version: 'base', scans: doc.scans.map(s => s.id).sort(), tiers: all, manifest: null, dirOnly: dirOnlyScans(doc), hexRuns }
         } catch (e) {
           this.mark(null, e)
           this.cut = true
-          return { version: 'none', scans: [], tiers: [], manifest: null, broken: this.broken.get('') }
+          return { version: 'none', scans: [], tiers: [], manifest: null, broken: this.broken.get(''), hexRuns: null }
         }
       }
       // The base's dir-only scans (its `scans.json`; a run appends one scan of the current format).
       const dirOnly = await this.blobs.json<{ scans: { id: string; version?: number }[] }>('scans.json').then(dirOnlyScans, () => [])
-      if (n < 0) return { version: manifest.date, scans: [...manifest.scans].sort(), tiers: all, manifest, dirOnly }
+      if (n < 0) return { version: manifest.date, scans: [...manifest.scans].sort(), tiers: all, manifest, dirOnly, hexRuns }
       // Cut at run `n - 1`: its scans and every later run's drop out; the stack's hit lists are those of the
       // manifest that ended at the run before it (versioned by its newest scan, as that manifest was).
       const runs = manifest.runs.slice(0, n - 1), dropped = new Set(manifest.runs.slice(n - 1).flatMap(r => r.scans))
@@ -152,6 +161,7 @@ export class Tiers {
         tiers: all.slice(0, n),
         manifest,
         broken: this.broken.get(manifest.runs[n - 1].key),
+        hexRuns,
         dirOnly,
       }
     })()
@@ -164,10 +174,10 @@ export class Tiers {
   /** `f` over every usable tier of the current state. A tier whose read fails is `broke`n and `f` re-run over the
    *  re-cut stack (the lowest failing tier first), so the result is always a whole stack's: `state` is the one
    *  it was read over (its `scans` the ones the result is exact on). */
-  async each<T>(f: (t: Tier) => Promise<T>): Promise<{ state: TierState; got: T[] }> {
+  async each<T>(f: (t: Tier, state: TierState) => Promise<T>): Promise<{ state: TierState; got: T[] }> {
     for (let tries = 0; ; tries++) {
       const state = await this.state()
-      const got = await Promise.allSettled(state.tiers.map(f))
+      const got = await Promise.allSettled(state.tiers.map(t => f(t, state)))
       const bad = got.findIndex(g => g.status === 'rejected')
       if (bad < 0) return { state, got: got.map(g => (g as PromiseFulfilledResult<T>).value) }
       const reason = (got[bad] as PromiseRejectedResult).reason
@@ -188,8 +198,8 @@ export async function latestManifest(blobs: Blobs): Promise<Manifest | null> {
 }
 
 /** First-hit folds of one literal from several tiers, combined: per `(path, usr, vf)` the smallest `vt`. */
-export function combineFolds(key: string, folds: FirstHits[]): FirstHits {
-  const out = new FirstHits(key)
+export function combineFolds(key: string, folds: FirstHits[], rule: HexRule | null = null): FirstHits {
+  const out = new FirstHits(key, rule)
   const at = new Map<string, number>()
   for (const f of folds) {
     out.rows_read += f.rows_read
@@ -220,6 +230,8 @@ export class TieredNames {
   constructor(readonly tiers: Tiers) {}
 
   async version(): Promise<string> { return (await this.tiers.state()).version }
+  /** The generation's hex-run rule (the base's; every usable tier agrees), null = the full index. */
+  async hexRuns(): Promise<HexRule | null> { return (await this.tiers.state()).hexRuns }
   /** The current stack: its version and the scans it covers. */
   async snapshot(): Promise<{ version: string; scans: string[] }> { const { version, scans } = await this.tiers.state(); return { version, scans } }
 
@@ -241,9 +253,9 @@ export class TieredNames {
       const ext = await this.extent(key, probe)
       if (ext && ext.rows > maxRows) { const { version, scans } = await this.tiers.state(); return { io: { ...probe, rows_read: ext.rows }, fold: null, version, scans } }
     }
-    const { state, got } = await this.tiers.each(t => t.names.read(key))
+    const { state, got } = await this.tiers.each((t, st) => t.names.read(key, Infinity, { rule: st.hexRuns }))
     const io = got.length ? sumIo(got.map(g => g.io)) : { ...noIo(), tiers: 0 }
-    return { io, fold: combineFolds(key, got.map(g => g.fold!)), version: state.version, scans: state.scans }
+    return { io, fold: combineFolds(key, got.map(g => g.fold!), state.hexRuns), version: state.version, scans: state.scans }
   }
 
   async answer(key: string, dates: string[], maxRows = Infinity) {

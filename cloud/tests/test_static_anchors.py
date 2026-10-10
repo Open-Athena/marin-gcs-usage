@@ -349,10 +349,10 @@ def test_a_mutated_reader_fails(world, monkeypatch):
     with monkeypatch.context() as m:
         orig = an.fold
 
-        def contains_parent(rows, key, under=None):
+        def contains_parent(rows, key, under=None, rule=None):
             """The contains literal's parent test (the lowercase parent holds the literal) on top of the per-segment one."""
             text = an.parse_key(key)[0]
-            return [r for r in orig(rows, key, under) if text not in (r["path"].rsplit("/", 1)[0].lower() if "/" in r["path"] else "")]
+            return [r for r in orig(rows, key, under, rule) if text not in (r["path"].rsplit("/", 1)[0].lower() if "/" in r["path"] else "")]
         m.setattr(an, "fold", contains_parent)
         assert differs()
     with monkeypatch.context() as m:
