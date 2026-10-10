@@ -29,7 +29,7 @@
  * `f = n_children(P) − kept` — objects and dirs alike.
  */
 import type { Env } from './auth.js'
-import { type IndexHandle, isStore, ivLastRead, type Lens, openIndex, perScan, planRects, planSizeRects, readAsks, readRects, readRows, readSizeRects, type Rect, type Row, sizeVariant, type Span, TooWide, type Trace, withTrace } from './index.js'
+import { folded, type IndexHandle, isStore, ivLastRead, type Lens, openIndex, perScan, planRects, slices, planSizeRects, readAsks, readRects, readRows, readSizeRects, type Rect, type Row, sizeVariant, type Span, TooWide, type Trace, withTrace } from './index.js'
 import { type FoldedLens, ownerLens, poolLens } from './owners.js'
 import { type ClassScope, classRow, nameFilter, type NamePred, ownerKey, ownerOk, type OwnerScope } from './scope.js'
 import { filterThreshold, looseThreshold, matchRoots, pickTier, rebasedThreshold, rootRects } from './filter.js'
@@ -1279,7 +1279,12 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
   const regionRects: Rect[] = regions.map(r => r.path === path
     ? { dLo: dP + 1, dHi: 1e9, pLo, pHi }
     : { dLo: r.depth, dHi: 1e9, pLo: r.path, pHi: r.path + '0' })
-  const allRows = regionRects.length ? await readRects(pick.all!, regionRects, thrAt) : []
+  // On the interval store the regions' totals come from the folded `bysize` sort: one row per path with its
+  // exact total, every path over the threshold and no other. (A path-first read over the slices' dyadic
+  // segments selects a run per depth per segment: a big user's root regions went past `decodeSpans`' cap.)
+  const allRows = !regionRects.length ? []
+    : pick.all!.asOf != null ? await readSizeRects(withTrace(await openIndex(folded(env), date, 'bysize'), tr), regionRects, thrAt)
+    : await readRects(pick.all!, regionRects, thrAt)
   let aggs = new Map<string, Agg>() // the scoped aggregate per path
   const aggDepth = new Map<string, number>()
   const foldedOf = new Map<string, number>()
@@ -1641,8 +1646,8 @@ function kidsIndex(kept: Map<string, Agg>, path: string): Map<string, string[]> 
 /** The store root's crumb label: `ROOT_LABEL` (wrangler var) per deployment. */
 const rootName = (path: string, env?: Env) => (path === '' ? env?.ROOT_LABEL ?? 'all buckets' : path.split('/').pop()!)
 
-/** A read scoped by owner or class needs owner-slice rows: per-scan stores (`perScan`). */
-const sliced = (env: Env, o: { lens?: Lens; owner?: OwnerScope; classes?: ClassScope; by?: string }): Env => (o.lens || o.owner || o.classes || o.by ? perScan(env) : env)
+/** A read scoped by owner or class needs owner-slice rows: the interval store's slice sorts (`slices`). */
+const sliced = (env: Env, o: { lens?: Lens; owner?: OwnerScope; classes?: ClassScope; by?: string }): Env => (o.lens || o.owner || o.classes || o.by ? slices(env) : env)
 
 export async function buildView(env0: Env, o: ViewOpts): Promise<View> {
   const env = sliced(env0, o)
@@ -1972,6 +1977,7 @@ export async function buildDiff(env0: Env, o: DiffOpts): Promise<Diff> {
       got = (await readAsks(await fine(date), take.map(q => ({ depth: q.d, path: q.cp })), r => want.has(`${r.depth}\0${r.path}`), { maxGroups: 120, stop: () => lookupsOff })).rows
     } catch (e) {
       if (!/too wide/.test(String((e as Error).message ?? e))) throw e
+      tr?.('perask', take.length)
       await perAsk(take)
       return out
     }
