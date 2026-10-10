@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { HttpError } from './batches'
 import { CoverError, type Resolved } from './filterCover'
-import { actController, type ActDeps, type ActState, afterResolve, CONFIRM_OVER, ROW_CONFIRM_OVER } from './matchAct'
+import { actBlock, actController, type ActDeps, type ActState, afterResolve, CONFIRM_OVER, ROW_CONFIRM_OVER } from './matchAct'
 
 // The action's state machine with its sends stubbed: each test records every state it passes through, and
 // every request it would send.
@@ -165,5 +165,27 @@ describe('not acted on: muted in place (never red), unless it failed', () => {
     release({ items: [dir('b/x')], complete: true })
     await p
     expect([h.shape(), h.sent]).toEqual([['resolving', 'idle'], []])
+  })
+})
+
+describe('actBlock: which filtered views offer no action on their matches', () => {
+  it('a refusal, a catalog (per-bucket) answer, a rollup, an approximate read — each its reason, in that precedence; a listed view: none', () => {
+    expect([
+      actBlock({ refused: true, rollup: true, bucketsOnly: true, approximate: true }),
+      actBlock({ rollup: true, bucketsOnly: true }),
+      actBlock({ bucketsOnly: 'scoped' }),
+      actBlock({ rollup: true }),
+      actBlock({ approximate: true }),
+      actBlock({}),
+      actBlock({ refused: false, rollup: false, bucketsOnly: false, approximate: false }),
+    ]).toEqual([
+      'This view was refused, so it has no matches to act on. Narrow the term, or drill to where it is answered.',
+      'Only per-bucket totals are known for this term here, not its matches. Narrow the term to act on them.',
+      'Only per-bucket totals are known for this term here, not its matches. Narrow the term to act on them.',
+      'This term is too common to list here: the view shows per-folder totals, not its matches. Narrow the term, or drill in.',
+      'These matches are approximate (read without the search index), so some may be missing. Narrow the term, or drill in.',
+      null,
+      null,
+    ])
   })
 })

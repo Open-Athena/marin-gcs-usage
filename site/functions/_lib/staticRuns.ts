@@ -41,7 +41,12 @@ export interface Broken { dir: string; error: string; at: number }
 /** The tiers a reader may use: the base and the runs up to the first broken one (tiers are cumulative, so a scan
  *  at or after a broken tier is never answered from the ones before it), the scans they cover, and a version
  *  naming that stack. `broken`: the tier the stack was cut at. */
-export interface TierState { version: string; scans: string[]; tiers: Tier[]; manifest: Manifest | null; broken?: Broken }
+export interface TierState { version: string; scans: string[]; tiers: Tier[]; manifest: Manifest | null; broken?: Broken; dirOnly?: string[] }
+
+/** The base's scans whose source was a v1 index (`scans.json` `version: 1`): it lists directories only, so a
+ *  name match on one of its files is invisible there — the index holds that scan, but not its objects. */
+export const dirOnlyScans = (doc: { scans: { id: string; version?: number }[] }): string[] =>
+  doc.scans.filter(s => s.version === 1).map(s => s.id).sort()
 /** Make a tier's readers over its `Blobs` (index caches keyed by `dir`, so tiers never share an entry). */
 export type MakeTier = (blobs: Blobs, dir: string | null) => Omit<Tier, 'dir'>
 
@@ -127,15 +132,17 @@ export class Tiers {
       if (n === 0) return { version: 'none', scans: [], tiers: [], manifest, broken: this.broken.get('') }
       if (!manifest) {
         try {
-          const scans = (await this.blobs.json<{ scans: { id: string }[] }>('scans.json')).scans.map(s => s.id).sort()
-          return { version: 'base', scans, tiers: all, manifest: null }
+          const doc = await this.blobs.json<{ scans: { id: string; version?: number }[] }>('scans.json')
+          return { version: 'base', scans: doc.scans.map(s => s.id).sort(), tiers: all, manifest: null, dirOnly: dirOnlyScans(doc) }
         } catch (e) {
           this.mark(null, e)
           this.cut = true
           return { version: 'none', scans: [], tiers: [], manifest: null, broken: this.broken.get('') }
         }
       }
-      if (n < 0) return { version: manifest.date, scans: [...manifest.scans].sort(), tiers: all, manifest }
+      // The base's dir-only scans (its `scans.json`; a run appends one scan of the current format).
+      const dirOnly = await this.blobs.json<{ scans: { id: string; version?: number }[] }>('scans.json').then(dirOnlyScans, () => [])
+      if (n < 0) return { version: manifest.date, scans: [...manifest.scans].sort(), tiers: all, manifest, dirOnly }
       // Cut at run `n - 1`: its scans and every later run's drop out; the stack's hit lists are those of the
       // manifest that ended at the run before it (versioned by its newest scan, as that manifest was).
       const runs = manifest.runs.slice(0, n - 1), dropped = new Set(manifest.runs.slice(n - 1).flatMap(r => r.scans))
@@ -145,6 +152,7 @@ export class Tiers {
         tiers: all.slice(0, n),
         manifest,
         broken: this.broken.get(manifest.runs[n - 1].key),
+        dirOnly,
       }
     })()
     this.cur = p
@@ -278,10 +286,10 @@ export function tiers(blobs: Blobs, opts: {
   /** A cut state's lifetime (`Tiers`). */
   brokenTtlMs?: number
   log?: (msg: string) => void
-} = {}): { tiers: Tiers; names: TieredNames; catalog: TieredCatalog; scans: () => Promise<string[]> } {
+} = {}): { tiers: Tiers; names: TieredNames; catalog: TieredCatalog; scans: () => Promise<string[]>; dirOnly: () => Promise<string[]> } {
   const t = new Tiers(blobs, (b, dir) => ({
     names: new StaticNames(b, opts.indexCache?.(dir), opts.clock),
     catalog: new StaticCatalog(b, opts.catalogCache?.(dir)),
   }), opts.ttlMs, opts.now, opts.brokenTtlMs, opts.log)
-  return { tiers: t, names: new TieredNames(t), catalog: new TieredCatalog(t), scans: async () => (await t.state()).scans }
+  return { tiers: t, names: new TieredNames(t), catalog: new TieredCatalog(t), scans: async () => (await t.state()).scans, dirOnly: async () => (await t.state()).dirOnly ?? [] }
 }

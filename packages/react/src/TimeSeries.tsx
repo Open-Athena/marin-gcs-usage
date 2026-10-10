@@ -148,6 +148,11 @@ export interface TimeSeriesProps<T> {
   /** A highlighted x-window (e.g. the diff range the page is showing), drawn
    *  as a shaded band behind the series. */
   window?: [number, number]
+  /** x's with no data (e.g. scans an index doesn't cover): the x-range spans
+   *  them, each stretch of them is shaded, and every line and area breaks
+   *  across them instead of joining its neighbours — a missing value is never
+   *  drawn as a value. */
+  gaps?: number[]
   /** Extra CSS on the outer wrapper. */
   className?: string
   style?: CSSProperties
@@ -156,6 +161,30 @@ export interface TimeSeriesProps<T> {
 }
 
 const DEFAULT_COLORS = DEFAULT_PALETTE
+
+/** A series' sorted x's cut at the gaps: index ranges `[i, j]` (inclusive) with no gap strictly between
+ *  consecutive points — each drawn as its own line. */
+export function splitAtGaps(xs: readonly number[], gaps: readonly number[]): [number, number][] {
+  if (!xs.length) return []
+  const g = [...gaps].sort((a, b) => a - b)
+  const out: [number, number][] = []
+  let start = 0
+  for (let i = 1; i < xs.length; i++) if (g.some(x => x > xs[i - 1] && x < xs[i])) { out.push([start, i - 1]); start = i }
+  out.push([start, xs.length - 1])
+  return out
+}
+
+/** The gaps' stretches `[from, to]`: consecutive gap x's with no data x between them. */
+export function gapStretches(gaps: readonly number[], xs: readonly number[]): [number, number][] {
+  const g = [...new Set(gaps)].sort((a, b) => a - b)
+  const out: [number, number][] = []
+  for (const x of g) {
+    const last = out[out.length - 1]
+    if (last && !xs.some(d => d > last[1] && d < x)) last[1] = x
+    else out.push([x, x])
+  }
+  return out
+}
 
 const PAD = { top: 12, right: 16, bottom: 24, left: 56 }
 
@@ -200,6 +229,7 @@ export function TimeSeries<T>({
   onPickX,
   onBrush,
   window: xWindow,
+  gaps,
   className,
   style,
   height,
@@ -233,6 +263,7 @@ export function TimeSeries<T>({
     for (const s of series) for (const p of s.points) xs.push(getX(p))
     for (const s of fitTo) for (const p of s.points) ys.push(getY(p))
     if (xs.length === 0) return { xMin: 0, xMax: 1, yMin: 0, yMax: 1 }
+    xs.push(...(gaps ?? []))
     const yMinRaw = Math.min(...ys)
     const yMaxRaw = Math.max(...ys)
     const pad = fit ? Math.max(yMaxRaw - yMinRaw, Math.abs(yMaxRaw) * 0.01) * 0.05 : 0
@@ -245,7 +276,7 @@ export function TimeSeries<T>({
       yMin: yScale === 'log' ? Math.max(1, yMinRaw) : fit ? yMinRaw - pad : below,
       yMax: fit ? yMaxRaw + pad : yMaxRaw > 0 ? yMaxRaw * 1.05 : yMaxRaw < 0 ? 0 : 1,
     }
-  }, [series, getX, getY, yScale, yFrom])
+  }, [series, getX, getY, yScale, yFrom, gaps])
 
   const plotW = Math.max(0, dims.w - PAD.left - PAD.right)
   const plotH = Math.max(0, dims.h - PAD.top - PAD.bottom)
@@ -425,6 +456,22 @@ export function TimeSeries<T>({
               ))}
             </g>
           )}
+          {/* Gaps: each stretch of x's without data, shaded. */}
+          {gaps && gaps.length > 0 && (
+            <g pointerEvents="none" className="dt-ts-gaps">
+              {gapStretches(gaps, allXs).map(([a, b]) => (
+                <rect
+                  key={`g${a}`}
+                  className="dt-ts-gap"
+                  x={xToPx(a) - (a === b ? 1 : 0)}
+                  y={PAD.top}
+                  width={Math.max(2, xToPx(b) - xToPx(a))}
+                  height={plotH}
+                  fill="var(--dt-ts-gap, rgba(139,148,158,0.12))"
+                />
+              ))}
+            </g>
+          )}
           {/* Series + callouts stay inside the plot: a fitted y-range clips
               whatever falls below it (a stack's lower bands) instead of
               painting over the axis. */}
@@ -510,23 +557,28 @@ export function TimeSeries<T>({
             const color = s.color ?? DEFAULT_COLORS[si % DEFAULT_COLORS.length]
             const sortedPts = [...s.points].sort((a, b) => getX(a) - getX(b))
             const seg = (pts: T[]) => pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${xToPx(getX(p))} ${yToPx(getY(p))}`).join(' ')
-            const linePath = seg(sortedPts)
-            // A band's lower edge is its baseline, walked back; a plain area
-            // drops to the axis.
-            const base = getY0
-              ? [...sortedPts].reverse().map(p => `L ${xToPx(getX(p))} ${yToPx(getY0(p))}`).join(' ')
-              : `L ${xToPx(getX(sortedPts[sortedPts.length - 1]))} ${PAD.top + plotH} L ${xToPx(getX(sortedPts[0]))} ${PAD.top + plotH}`
-            const areaPath = (s.area ?? area) ? `${linePath} ${base} Z` : null
-            // `dashBeforeX`: the line up to (and joining) the first point at or
-            // past it is dashed; the rest solid.
-            const cut = s.dashBeforeX != null ? sortedPts.findIndex(p => getX(p) >= s.dashBeforeX!) : -1
-            const dashed = cut > 0 ? seg(sortedPts.slice(0, cut + 1)) : null
-            const solid = cut > 0 ? seg(sortedPts.slice(cut)) : linePath
+            // One run per stretch between gaps (`splitAtGaps`): never a line across missing data.
+            const runs = splitAtGaps(sortedPts.map(getX), gaps ?? []).map(([i, j]) => sortedPts.slice(i, j + 1))
+            const drawn = runs.map(run => {
+              const linePath = seg(run)
+              // A band's lower edge is its baseline, walked back; a plain area
+              // drops to the axis.
+              const base = getY0
+                ? [...run].reverse().map(p => `L ${xToPx(getX(p))} ${yToPx(getY0(p))}`).join(' ')
+                : `L ${xToPx(getX(run[run.length - 1]))} ${PAD.top + plotH} L ${xToPx(getX(run[0]))} ${PAD.top + plotH}`
+              const areaPath = (s.area ?? area) ? `${linePath} ${base} Z` : null
+              // `dashBeforeX`: the line up to (and joining) the first point at or
+              // past it is dashed; the rest solid.
+              const cut = s.dashBeforeX != null ? run.findIndex(p => getX(p) >= s.dashBeforeX!) : -1
+              const dashed = cut > 0 ? seg(run.slice(0, cut + 1)) : null
+              const solid = cut > 0 ? seg(run.slice(cut)) : linePath
+              return { areaPath, dashed, solid }
+            })
             return (
               <g key={s.key}>
-                {areaPath && <path d={areaPath} fill={color} fillOpacity={getY0 ? 0.35 : 0.15} />}
-                {dashed && <path d={dashed} fill="none" stroke={color} strokeWidth={s.strokeWidth ?? 1.75} strokeDasharray="4 4" />}
-                <path d={solid} fill="none" stroke={color} strokeWidth={s.strokeWidth ?? 1.75} />
+                {drawn.map((d, i) => d.areaPath && <path key={`a${i}`} d={d.areaPath} fill={color} fillOpacity={getY0 ? 0.35 : 0.15} />)}
+                {drawn.map((d, i) => d.dashed && <path key={`d${i}`} d={d.dashed} fill="none" stroke={color} strokeWidth={s.strokeWidth ?? 1.75} strokeDasharray="4 4" />)}
+                {drawn.map((d, i) => <path key={`s${i}`} className="dt-ts-line" d={d.solid} fill="none" stroke={color} strokeWidth={s.strokeWidth ?? 1.75} />)}
                 {(s.dots ?? true) && sortedPts.map((p, i) => (
                   <circle
                     key={i}

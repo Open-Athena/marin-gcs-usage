@@ -46,9 +46,9 @@ async function readTree(dir: string, into: Map<string, ArrayBuffer>, rel = ''): 
 
 /** The static store: the suffix index on `scans`, literals over 40 suffix rows from the drill, whose base
  *  generation is `drillScans`. */
-function store(scans = [A, B], drillScans = [A, B]): StaticFilterStore {
+function store(scans = [A, B], drillScans = [A, B], dirOnly: string[] = []): StaticFilterStore {
   const heavy = drillSource(blobsOf(drillFiles, { 'scans.json': { scans: drillScans.map(id => ({ id })) } }))
-  return { source: new SuffixHits(new StaticNames(blobsOf(filterFiles)), { maxRows: 40, heavy }), scans: async () => scans, gen: 'fixture' }
+  return { source: new SuffixHits(new StaticNames(blobsOf(filterFiles)), { maxRows: 40, heavy }), scans: async () => scans, dirOnly: async () => dirOnly, gen: 'fixture' }
 }
 const envOf = (flag: boolean, s: StaticFilterStore = store()): Env => {
   const env = { ...base, ...(flag ? { FILTER_INDEXED_ONLY: '1' } : {}) } as Env
@@ -222,6 +222,25 @@ describe('the map routes, flag set: a scan the static index doesn\'t cover', () 
     const r = await series({ request: new Request('http://localhost/api/series?path=bk/fill&q=0'), env: envOf(true, store([A, B], [A])) })
     const j = await r.json() as { points: { date: string }[]; unindexed?: string[] }
     expect([r.status, j.points.map(p => p.date), j.unindexed]).toEqual([200, [A], [B]])
+  })
+
+  // Unset, the same: a scan the static answer doesn't cover is a gap named in `unindexed` — never the current
+  // scan's roots read on it, nor a zero. A dir-only (v1) scan the generation holds is one too: its files are invisible.
+  it.each([[true], [false]])('the series (flag %s): uncovered and dir-only scans are gaps, named', async flag => {
+    const got = async (qs: string, s: StaticFilterStore) => {
+      const r = await series({ request: new Request(`http://localhost/api/series?${qs}`), env: envOf(flag, s) })
+      const j = await r.json() as { points: { date: string; b: number }[]; unindexed?: string[] }
+      return [r.status, j.points.map(p => p.date), j.unindexed ?? null]
+    }
+    expect(await Promise.all([
+      got('path=bk/fill&q=0', store([A, B], [A])),
+      got('path=bk&q=tomat', store([A, B], [A, B], [A])),
+      got('path=bk&q=tomat', store([A, B])),
+    ])).toEqual([
+      [200, [A], [B]],
+      [200, [B], [A]],
+      [200, [A, B], null],
+    ])
   })
 
   it('a literal the view root holds is the plain view (nothing to search), on any scan', async () => {
