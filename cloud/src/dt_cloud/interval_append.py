@@ -72,7 +72,7 @@ from .append_runner import (  # noqa: F401 — NOT_NEXT, StateIncomplete: as thi
     scans_of,
 )
 from .static_names import OPEN, U64, err, q, read_json, upload_tree, write_sorted
-from .static_profile import Profile, from_mapping
+from .static_profile import Profile, from_mapping, level_arg, parse_compact_level
 
 PREFIX = ist.PREFIX
 #: The served sorts a run carries: what the Worker reads (`R2_SERVED` less the standalone `reads` sort and the
@@ -412,7 +412,7 @@ class Config:
 
 #: Env overrides of an interval profile's `append` fields (a staged source tree, a job image, the R2 endpoint).
 ENV = {"src": "INTERVAL_STORE_SRC", "image": "INTERVAL_STORE_IMAGE", "r2_endpoint": "R2_ENDPOINT", "project": "GCP_PROJECT",
-       "gen": "INTERVAL_STORE_GEN", "machine": "INTERVAL_STORE_MACHINE"}
+       "gen": "INTERVAL_STORE_GEN", "machine": "INTERVAL_STORE_MACHINE", "compact_level": "INTERVAL_STORE_COMPACT_LEVEL"}
 
 
 def load_config(profile: str | None, environ: dict[str, str] | None = None) -> Config:
@@ -428,8 +428,14 @@ def load_config(profile: str | None, environ: dict[str, str] | None = None) -> C
     over = {}
     for k, var in ENV.items():
         raw = (env.get(var) or "").strip()
-        if raw:
-            over[k] = tuple(s.strip() for s in raw.split(",") if s.strip()) if k == "src" else raw
+        if not raw:
+            continue
+        if k == "src":
+            over[k] = tuple(s.strip() for s in raw.split(",") if s.strip())
+        elif k == "compact_level":
+            over[k] = parse_compact_level(var, raw)
+        else:
+            over[k] = raw
     p = replace(p, **over)
     for f in ("gen", "bucket", "scratch", "layouts", "region", "image", "sa", "r2_bucket"):
         if getattr(p, f) in (None, "", ()):
@@ -465,7 +471,7 @@ class Runner(ar.Runner):
         return ar.job_spec(self.p, name, tasks, commands, stage=stage, purpose="interval-store", component=COMPONENT, **kw)
 
     def merge_job(self, scan: str) -> tuple[str, dict]:
-        return self.job("merge", scan, 1, "interval_append", ["carry", *duckdb_args(self.p.machine)])
+        return self.job("merge", scan, 1, "interval_append", ["carry", "-L", level_arg(self.p.compact_level), *duckdb_args(self.p.machine)])
 
     def one(self, d: str) -> None:
         run = f"{self.root}/deltas/{d}"
@@ -689,13 +695,14 @@ def ranges_cmd(bucket, gen, ranges_gen, scratch, scan, force, index, mount, mem,
 @cli.command("publish")
 @stage_options
 @option("-d", "--scan", required=True, help="The scan")
+@option("-L", "--compact-level", type=ar.Level(), default=ar.COMPACT_LEVEL, help=ar.LEVEL_HELP)
 @option("-m", "--mount", required=True, help="Local mount of the data bucket")
 @option("-M", "--mem", default="100GB", help="DuckDB memory limit")
 @option("-n", "--dry-run", is_flag=True, help="Print the manifest (and the carries it makes due); cut and write nothing")
 @option("-p", "--threads", default=16, type=int, help="DuckDB threads")
 @option("-s", "--skip-published", is_flag=True, help="Exit 0 when `manifests/<D>.json` exists (a retried publish+r2 task goes on to the copy)")
 @option("-T", "--tmp", default="/stage/tmp", help="Scratch dir")
-def publish_cmd(bucket, gen, ranges_gen, scratch, scan, mount, mem, dry_run, threads, skip_published, tmp) -> None:
+def publish_cmd(bucket, gen, ranges_gen, scratch, scan, compact_level, mount, mem, dry_run, threads, skip_published, tmp) -> None:
     """Cut the run's served sorts (`deltas/<D>/served/`, then its `meta.json`), then write `manifests/<D>.json` once: the
     newest earlier manifest's runs plus D's at level 0 (`publish_run`), after checking every file of every run it lists.
     No carries: those run apart (`carry`, the merge stage)."""
@@ -715,7 +722,7 @@ def publish_cmd(bucket, gen, ranges_gen, scratch, scan, mount, mem, dry_run, thr
     if dry_run:
         prev = latest_key(store.keys("manifests/"), before=scan)
         after = [*(store.read_json(prev)["runs"] if prev else []), {"key": rk, "first": scan, "last": scan, "level": 0, "scans": [scan]}]
-        print(json.dumps({"runs": [r["key"] for r in after], "carries_due": [[[r["key"] for r in ins], m["key"]] for ins, m in plan_carries(after)[1]]}, indent=1))
+        print(json.dumps({"runs": [r["key"] for r in after], "carries_due": [[[r["key"] for r in ins], m["key"]] for ins, m in plan_carries(after, max_level=compact_level)[1]]}, indent=1))
         return
     if store.exists(f"{rk}/meta.json"):
         err(f"{rk}: cut")
@@ -736,20 +743,21 @@ def publish_cmd(bucket, gen, ranges_gen, scratch, scan, mount, mem, dry_run, thr
 
 @cli.command("carry")
 @stage_options
+@option("-L", "--compact-level", type=ar.Level(), default=ar.COMPACT_LEVEL, help=ar.LEVEL_HELP)
 @option("-m", "--mount", required=True, help="Local mount of the data bucket (the merges read the runs)")
 @option("-M", "--mem", default="100GB", help="DuckDB memory limit (the merged runs' cut)")
 @option("-N", "--max-merges", type=IntRange(min=1), help="Stop after this many merged runs")
 @option("-n", "--dry-run", is_flag=True, help="Print the plan; merge and write nothing")
 @option("-p", "--threads", default=16, type=int, help="DuckDB threads")
 @option("-T", "--tmp", default="/stage/tmp", help="Scratch dir for merges")
-def carry_cmd(bucket, gen, ranges_gen, scratch, mount, mem, max_merges, dry_run, threads, tmp) -> None:
+def carry_cmd(bucket, gen, ranges_gen, scratch, compact_level, mount, mem, max_merges, dry_run, threads, tmp) -> None:
     """Run the newest manifest's due carries (`append_runner.plan_carries`, `merge_pending`): each merged run into its own
     dir (its deltas, its cut, its `meta.json` last), then a revision `manifests/<id>.m<NNN>.json` listing it. One merger
     per generation (a lease in the scratch bucket); resumable."""
     store = GcsRunStore(bucket, scratch, gen, prefix=PREFIX)
     k = read_json(f"gs://{bucket}/{PREFIX}/{ranges_gen}/ranges.json")["k"]
     doc = ar.merge_pending(store, carry(gen, k, threads=threads, mem=mem), Path(mount) / PREFIX / gen, tmp=Path(tmp), dry_run=dry_run,
-                           max_merges=max_merges)
+                           max_merges=max_merges, max_level=compact_level)
     print(json.dumps(doc, indent=1))
 
 
