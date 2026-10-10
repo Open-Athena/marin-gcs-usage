@@ -415,6 +415,29 @@ if [ "${SKIP_STATIC_NAMES:-0}" != "1" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; 
   fi
 fi
 
+# Interval store (specs/interval-store.md §2.7): append this scan to the change-
+# interval path store as a run beside its base generation — per key range on
+# Batch, the run's served sorts, the binary counter's merges, R2, then the
+# immutable `manifests/<scan>.json`. `-c` first appends any earlier published
+# scan still pending, in scan-id order. On by default; INTERVAL_STORE_APPEND=0 opts out (the
+# site reads the store only under `PATH_STORE=opt-in` + `ps=iv` until the read
+# switch). Bounded and never fatal: past INTERVAL_STORE_TIMEOUT or on a failure
+# the scan still publishes and reads per-scan; every stage skips what's done,
+# so a rerun resumes. Its Batch tasks run this job's own image (the profile
+# pins an older one, without `interval_append`).
+if [ "${INTERVAL_STORE_APPEND:-1}" = "1" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+  if R2_ENDPOINT=${R2_ENDPOINT:-https://$CLOUDFLARE_ACCOUNT_ID.r2.cloudflarestorage.com} INTERVAL_STORE_PROFILE=gcs \
+      INTERVAL_STORE_IMAGE=${INTERVAL_STORE_IMAGE:-$JOB_IMAGE} DISKY_LABELS=${DISKY_LABELS:-app=disky,deployment=gcs} \
+      timeout "${INTERVAL_STORE_TIMEOUT:-60m}" dt-cloud interval-store append -c "$SNAP_ID"; then
+    phase interval-store
+  else
+    rc=$?
+    echo "WARN: interval-store append failed for $SNAP_ID (exit $rc$([ $rc = 124 ] && echo ', timed out'))" >&2
+    slack_post "⚠️ \`dt-cloud\` $SNAP_ID: the interval store append failed (exit $rc$([ $rc = 124 ] && echo ', timed out after '"${INTERVAL_STORE_TIMEOUT:-60m}")) — the scan publishes and reads per-scan. Resume: \`INTERVAL_STORE_PROFILE=gcs INTERVAL_STORE_IMAGE=$JOB_IMAGE dt-cloud interval-store append -c $SNAP_ID\`."
+    phase interval-store "failed (exit $rc)"
+  fi
+fi
+
 # Footer-in-D1: sync the path-index parquet footer into the site's D1 so the
 # reader skips the cold-isolate footer parse (specs/done/path-agnostic-serving.md
 # §2.1). Needs CLOUDFLARE_API_TOKEN (D1 write) + CLOUDFLARE_ACCOUNT_ID — set as
