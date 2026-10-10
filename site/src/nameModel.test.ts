@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { loadName, nameHasDetail, nameLiteral, namePageParams, nameRequest, parseName } from './nameModel'
+import { loadName, nameLiteral, namePageParams, nameRequest, parseName } from './nameModel'
 import { nameDiff, nameFixture } from './nameTestFixtures'
 
 const request = { date: '2026-10-05', name: 'datakit' }
@@ -10,13 +10,11 @@ describe('unified exact schemas and truthful plans', () => {
   it.each(['catalog', 'bounded-name-postings'] as const)('parses complete %s body without inventing a catalog schema or artifact identity', plan => {
     const body = nameFixture(plan)
     expect(parseName(body, request)).toEqual({ after: view(body), execution: { after: execution(body) } })
-    expect(nameHasDetail(parseName(body, request))).toBe(plan === 'catalog')
   })
-  it.each([['catalog', 'catalog', true], ['catalog', 'bounded-name-postings', false], ['bounded-name-postings', 'catalog', false], ['bounded-name-postings', 'bounded-name-postings', false]] as const)
-    ('validates complete %s/%s comparisons and gates detail=%s', (before, after, detail) => {
+  it.each([['catalog', 'catalog'], ['catalog', 'bounded-name-postings'], ['bounded-name-postings', 'catalog'], ['bounded-name-postings', 'bounded-name-postings']] as const)
+    ('validates complete %s/%s comparisons', (before, after) => {
       const body = nameDiff(before, after), r = { ...request, from: '2026-10-04' }, result = parseName(body, r)
       expect(result).toEqual({ before: view(body.before), after: view(body.after), delta: { b: -6, o: -2 }, execution: { before: execution(body.before), after: execution(body.after) } })
-      expect(nameHasDetail(result)).toBe(detail)
     })
   it.each(['unknown plan', 'missing proof', 'false proof', 'source oracle claim', 'empty source', 'empty description', 'cold catalog metadata', 'invalid identity'])('refuses %s execution metadata', issue => {
     const body = nameFixture()
@@ -34,9 +32,9 @@ describe('unified exact schemas and truthful plans', () => {
     const body = nameDiff(); body.before.source_identity.generation = 'other'
     expect(() => parseName(body, { ...request, from: '2026-10-04' })).toThrow('Name summary comparison has inconsistent frozen source identities.')
   })
-  it.each(['hot schema', 'partial buckets', 'wrong root', 'wrong literal', 'rounded integer', 'wrong delta', 'wrong geometry'])('rejects %s rather than returning partial totals', issue => {
+  it.each(['foreign schema', 'partial buckets', 'wrong root', 'wrong literal', 'rounded integer', 'wrong delta', 'wrong geometry'])('rejects %s rather than returning partial totals', issue => {
     const body = nameDiff()
-    if (issue === 'hot schema') body.schema = 'hot-l1-batch-catalog-diff-v1'
+    if (issue === 'foreign schema') body.schema = 'unknown-diff-v1'
     if (issue === 'partial buckets') body.after.buckets.pop()
     if (issue === 'wrong root') body.after.root.o++
     if (issue === 'wrong literal') body.before.pattern = '.json'

@@ -1,10 +1,10 @@
-"""Ground truth for the filter bench (specs/filter-query-service.md §6 phase 1):
+"""Ground truth for the filter bench (specs/done/filter-query-service.md §6 phase 1):
 each query's exact match roots and net totals under each view root, computed
 from a store generation's `path` sort.
 
 Two methods, which must agree (`--check`):
 
-- **names-first** (phase 0's method, specs/filter-query-service-p0.md §A.2):
+- **names-first** (phase 0's method, specs/done/filter-query-service-p0.md §A.2):
   the query's candidate last segments (`query.plan_positive` /
   `plan_negative`, the search index's lemma) are matched against the v1
   vocabulary (`path-index.names.parquet`), mapped to `path`-sort row groups by

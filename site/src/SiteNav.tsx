@@ -205,6 +205,7 @@ function NavMenu({ extra }: { extra?: MenuEntry[] }) {
               {canAssign && store.owners && link('/assignments', 'Assignments')}
               {store.staging && link('/staged', 'Staged')}
               {link('/scans', 'Scan runs')}
+              {link('/health', 'Health')}
               {DEFAULT_STORE.metaTree && <a role="menuitem" className="mi" href={DEFAULT_STORE.metaTree} target="_blank" rel="noreferrer" onClick={() => m.setOpen(false)}>Meta <span className="dim">(the data bucket)</span> ↗</a>}
               {isAdmin && link('/admin', 'Admin')}
               {/* The store switcher — only a multi-store deploy has one

@@ -22,7 +22,6 @@ import { FilterRejected, indexedOnly, rejectBody, rejectQuery, rejectScope } fro
 import { cacheEnvTag, cacheKeyFor, cacheMatch, cacheStore, isPartial, keepFor, serverTiming, UPGRADE_PHASE2_MS, upgradePartial } from '../_lib/edgeCache.js'
 import { LENS_PRIMARY_ONLY, storeKey, withStore } from '../_lib/stores.js'
 import { lensParam, ME_UNRESOLVED, resolveLens } from '../_lib/me.js'
-import { askBox, boxFor, boxStatus, type BoxEnv } from '../_lib/queryBox.js'
 import { isScanId } from '../../src/scanSlug.js'
 import { scanArg } from '../_lib/scanArg.js'
 import { traceJoins } from '../_lib/shared.js'
@@ -134,20 +133,9 @@ export const onRequestGet = async (ctx0: { request: Request; env: Env; waitUntil
     const hit = await st.time('match', cacheMatch(ctx.env, cacheKey))
     if (hit) return isPartial(hit) ? upgrade(hit) : hit
 
-    // The serving box first, when the deployment has one (`_lib/queryBox.ts`).
-    const env = ctx.env as Env & BoxEnv
-    const box = boxFor(env, url)
-    let engine = env.QUERY_BOX_URL ? 'worker;box=skip' : undefined
-    if (box) {
-      const a = await st.time('box', askBox(env, box, 'diff', url.searchParams))
-      if (a.kind === 'answer' && a.status !== 200) return boxStatus(a)
-      if (a.kind === 'answer') return await cacheStore(ctx.env, cacheKey, a.body, { 'server-timing': st.header(), 'x-query-engine': a.engine }, ctx.waitUntil?.bind(ctx))
-      engine = `worker;fallback=${a.why}`
-    }
-
     const { body, keep } = await render({ trace: st.trace })
     // A phase 2 cut short by its time budget: kept briefly (`keepFor`, as subtree.ts).
-    const res = await cacheStore(ctx.env, cacheKey, body, { 'server-timing': st.header(), ...(engine ? { 'x-query-engine': engine } : {}) }, ctx.waitUntil?.bind(ctx), keep)
+    const res = await cacheStore(ctx.env, cacheKey, body, { 'server-timing': st.header() }, ctx.waitUntil?.bind(ctx), keep)
     return keep === true ? res : upgrade(res)
   } catch (e) {
     if (e instanceof NotFound) return new Response('path not found in either scan', { status: 404 })

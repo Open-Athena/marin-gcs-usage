@@ -74,8 +74,8 @@ def fetch(path):
 
 
 def test_url():
-    e = SubtreeEngine(fetch, DATE, params="qe=box", cold=True, rng=random.Random(1))
-    assert e.url(CASES[0], "bk/x y") == "/api/subtree?cv=2&w=1408&h=896&minArea=12.140892&date=2026-10-01&path=bk%2Fx%20y&q=ckpt%20-tmp&qs=simple&full=1&qe=box"
+    e = SubtreeEngine(fetch, DATE, params="ps=iv", cold=True, rng=random.Random(1))
+    assert e.url(CASES[0], "bk/x y") == "/api/subtree?cv=2&w=1408&h=896&minArea=12.140892&date=2026-10-01&path=bk%2Fx%20y&q=ckpt%20-tmp&qs=simple&full=1&ps=iv"
 
 
 def test_run(truth):

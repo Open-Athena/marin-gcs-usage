@@ -26,7 +26,7 @@ from dt_cloud import interval_append as ia
 from dt_cloud import interval_store as ist
 from dt_cloud import static_names as sn
 from dt_cloud.static_append import push_run, run_key
-from dt_cloud.static_profile import Profile
+from dt_cloud.static_profile import Profile, parse_compact_level
 
 #: Four scans in the base (three v1 indexes, one v2 store generation), then four appended (v2, a timed id among them).
 DATES = ["2026-07-30", "2026-07-31", "2026-08-02", "2026-08-03", "2026-08-04", "2026-08-04T1236", "2026-08-05", "2026-08-07"]
@@ -674,10 +674,11 @@ class Fake:
             runs = self.keys[f"{G1}/{prev}"]["runs"] if prev else []
             self.keys[f"{G1}/manifests/{d}.json"] = {"date": d, "runs": [*runs, *_l0(d)]}
         elif stage == "merge":
+            level = parse_compact_level("-L", words[words.index("-L") + 1])
             while True:
                 key = self.manifests()[-1]
                 m = self.keys[f"{G1}/{key}"]
-                _, merges = ar.plan_carries(m["runs"])
+                _, merges = ar.plan_carries(m["runs"], max_level=level)
                 if not merges:
                     break
                 ins, out = merges[0]
@@ -717,7 +718,7 @@ def _r2(d: str, manifest: str | None = None) -> tuple[str, str]:
     return ("r2", f"r2 -d {d}{f' -m {manifest}' if manifest else ''} {COMMON}")
 
 
-MERGE = ("merge", f"carry -M 90GB -p 16 {COMMON} -m /gcs/data")
+MERGE = ("merge", f"carry -L 5 -M 90GB -p 16 {COMMON} -m /gcs/data")
 
 
 def test_the_chain_appends_strictly_in_scan_id_order():
@@ -852,7 +853,7 @@ def test_jobs_are_the_profiles_and_carry_the_cost_label(monkeypatch):
     f.runner().run("2026-08-04")
     f.runner().run("2026-08-04")  # published: the copy's own job
     f.runner().run("2026-08-04T1236")  # then a carry: the merge job
-    (_, ranges), (_, publish), (_, r2), _, _, (_, merge) = f.jobs
+    (_, ranges), (_, publish), (_, r2), _, _, (merge_name, merge) = f.jobs
     want = {"app": "disky", "deployment": "t", "component": "interval-store"}
     for spec in (ranges, publish, r2, merge):
         assert spec["allocationPolicy"]["labels"] == want
@@ -864,10 +865,24 @@ def test_jobs_are_the_profiles_and_carry_the_cost_label(monkeypatch):
     assert cmd(r2) == ("set -euo pipefail; mkdir -p /stage/tmp /stage/out && cd /stage && python3 -u -m dt_cloud.interval_append r2 "
                        "-d 2026-08-04 -b data -g g1 -R g0 -S scr")
     assert cmd(merge) == ("set -euo pipefail; mkdir -p /stage/tmp /stage/out && cd /stage && python3 -u -m dt_cloud.interval_append carry "
-                          "-M 90GB -p 16 -b data -g g1 -R g0 -S scr -m /gcs/data")
+                          "-L 5 -M 90GB -p 16 -b data -g g1 -R g0 -S scr -m /gcs/data")
     assert r2["taskGroups"][0]["taskSpec"]["environment"] == R2_ENV
+    # the merge job: as the stages' account (the R2 account is the same), with the R2 env for its status record on R2,
+    # and its own name (the record's holder)
     assert (merge["allocationPolicy"]["serviceAccount"]["email"], merge["allocationPolicy"]["instances"][0]["policy"]["machineType"],
-            "secretVariables" in merge["taskGroups"][0]["taskSpec"]["environment"]) == ("sa@x", "n2-highmem-16", False)
+            merge["taskGroups"][0]["taskSpec"]["environment"]) == (
+        "sa@x", "n2-highmem-16", {**R2_ENV, "variables": {**R2_ENV["variables"], "DT_JOB_NAME": merge_name}})
+
+
+def test_the_merge_job_gets_no_r2_env_when_the_r2_account_differs():
+    """A job runs as one account: the merge's must write the data bucket, so when the R2 copy's account is another, the
+    merge runs without the R2 env (its status record isn't written; /health doesn't see it)."""
+    f = Fake(["2026-08-03", "2026-08-04", "2026-08-04T1236"], r2_sa="r2@x")
+    f.runner().run("2026-08-04")
+    f.runner().run("2026-08-04T1236")
+    merge_name, merge = next((n, s) for n, s in f.jobs if s["labels"]["stage"] == "merge")
+    assert (merge["allocationPolicy"]["serviceAccount"]["email"], merge["taskGroups"][0]["taskSpec"]["environment"]) == (
+        "sa@x", {"variables": {"STATIC_NAMES_BUCKET": "data", "STATIC_NAMES_SCRATCH": "scr", "DT_JOB_NAME": merge_name}})
 
 
 def test_the_profile_drives_the_append(tmp_path):

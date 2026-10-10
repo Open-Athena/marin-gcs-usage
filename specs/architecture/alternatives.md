@@ -76,8 +76,8 @@ The sparse-query intuition is useful for **frequent expensive predicates**, not 
 Next gates should test maintained popular-predicate summaries and subtree-first queries, then complete correctness across dates and publication failures. Prepared Set membership and ordered aggregation were measured and rejected for worse pruning/latency; finer granules did not provide a decisive broad-query win. Limits should remain explicit refusals, not silent truncation. The aim is exact bounded aggregation, not rendering millions of cells and not declaring broad search fundamentally hopeless.
 
 [serving-options]: ../serving-options.md
-[filter-query-service]: ../filter-query-service.md
-[phase-0]: ../filter-query-service-p0.md
+[filter-query-service]: ../done/filter-query-service.md
+[phase-0]: ../done/filter-query-service-p0.md
 [path-store]: ../path-store.md
 [path-store-search]: ../path-store-search.md
-[ch-store]: ../ch-store.md
+[ch-store]: ../done/ch-store.md

@@ -60,7 +60,7 @@ it('offers only metadata dates and retains the mixed-date URL baseline without f
     expect(html.match(/<select name="date">(.*?)<\/select>/)?.[1]).toBe('<option>2026-10-04</option><option>2026-10-05</option><option selected="">2026-10-06</option>')
     expect(html.match(/<select name="from">(.*?)<\/select>/)?.[1]).toBe('<option value="">No baseline</option><option>2026-10-04</option><option selected="">2026-10-05</option>')
     expect(html.match(/<p id="hot-availability" class="hot-note">(.*?)<\/p>/)?.[1]).toBe('2026-10-06: catalog literals only, using membership qualified on 2026-10-04, 2026-10-05—not a current-scan frequency claim. Other literals are unavailable for those scans, not zero matches; no on-demand fallback.')
-    expect(links(html)).toEqual([['/', 'Map'], ['/hot', 'catalog-only preview'], ['/', 'storage map']])
+    expect(links(html)).toEqual([['/', 'Map'], ['/', 'storage map']])
     expect(roots.map(row => row.b)).toEqual([8, 10])
     expect(tableRows(html)).toEqual([
       ['All buckets', '8', '5', '10', '6', '+2', '+1'], ['bucket-a', '8', '3', '10', '4', '+2', '+1'], ['bucket-b', '0', '2', '0', '2', '0', '0'],
@@ -88,7 +88,7 @@ it('single dated scan reload has no baseline and preserves zero-byte object coun
     const html = render(client, '/names?date=2026-10-06&name=datakit')
     expect(html.match(/<select name="from">(.*?)<\/select>/)?.[1]).toBe('<option value="" selected="">No baseline</option><option>2026-10-04</option><option>2026-10-05</option>')
     expect(tableRows(html)).toEqual([['All buckets', '0', '2'], ['bucket-a', '0', '0'], ['bucket-b', '0', '2'], ['bucket-c', '0', '0'], ['bucket-d', '0', '0'], ['bucket-e', '0', '0'], ['bucket-f', '0', '0']])
-    expect(links(html)).toEqual([['/', 'Map'], ['/hot', 'catalog-only preview'], ['/', 'storage map']])
+    expect(links(html)).toEqual([['/', 'Map'], ['/', 'storage map']])
     expect([...html.matchAll(/<p role="alert">(.*?)<\/p>/g)].map(([, text]) => text)).toEqual([])
   } finally { client.clear() }
 })
@@ -128,16 +128,14 @@ it('failed metadata shows no guessed dates, cached result, maps or totals', () =
     expect(roots).toEqual([])
   } finally { client.clear() }
 })
-it.each(['catalog', 'bounded-name-postings'] as const)('renders truthful %s status and only catalog detail links', plan => {
+it.each(['catalog', 'bounded-name-postings'] as const)('renders truthful %s status and no bucket detail links', plan => {
   const client = new QueryClient(), body = nameFixture(plan)
   client.setQueryData(['name-summary', body.date, body.pattern, undefined], parseName(body, { date: body.date, name: body.pattern }))
   try {
     const html = render(client)
     expect(planParagraphs(html)).toBe(`<p class="hot-note">2026-10-05: ${plan === 'catalog' ? 'Catalog (precomputed)' : 'Bounded name postings (on demand)'}. ${body.source} — ${body.validation.description}</p>`)
-    expect(links(html)).toEqual([['/', 'Map'], ...(plan === 'catalog' ? Array.from('abcdef', letter => [`/hot?name=datakit&amp;date=2026-10-05&amp;path=bucket-${letter}`, `bucket-${letter}`]) : []), ['/hot', 'catalog-only preview'], ['/', 'storage map']])
-    expect([...html.matchAll(/<span>Hover a bucket(.*?)<\/span>/g)].map(([, text]) => text)).toEqual([plan === 'catalog'
-      ? ' or press Enter on it for exact totals. Select a bucket to open prepared detail, or use the table links.'
-      : ' or press Enter on it for exact totals. No deeper drill-down.'])
+    expect(links(html)).toEqual([['/', 'Map'], ['/', 'storage map']])
+    expect([...html.matchAll(/<span>Hover a bucket(.*?)<\/span>/g)].map(([, text]) => text)).toEqual([' or press Enter on it for exact totals. No deeper drill-down.'])
     expect(roots.map(row => row.b)).toEqual([8])
   } finally { client.clear() }
 })
@@ -147,7 +145,7 @@ it('mixed comparison shows both source plans and no prepared bucket detail', () 
   try {
     const html = render(client, '/names?date=2026-10-05&name=datakit&from=2026-10-04')
     expect(planParagraphs(html)).toBe('<p class="hot-note">2026-10-04: Catalog (precomputed). registered precomputed batch artifact — pinned catalog validation</p><p class="hot-note">2026-10-05: Bounded name postings (on demand). bounded dated name postings; directory rollups are atomic — bounded exact first-hit coverage; no per-request source oracle</p>')
-    expect(links(html)).toEqual([['/', 'Map'], ['/hot', 'catalog-only preview'], ['/', 'storage map']])
+    expect(links(html)).toEqual([['/', 'Map'], ['/', 'storage map']])
     expect(roots.map(row => row.b)).toEqual([14, 8])
   } finally { client.clear() }
 })

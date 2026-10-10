@@ -6,13 +6,12 @@ Two stages, each embarrassingly parallel on GCP Batch (`job/static-names.sh`):
 1. **Intervals.** Every published scan's `path` sort (the deployment profile's key templates, e.g.
    `listing/<scan>/index/<gen>/path-index.parquet` or `cw-l2/<scan>/index/<gen>/path-index.parquet`)
    becomes SCD-2 version intervals: one row per `(depth, path, usr)` version with `[vf, vt)`
-   (`vt` = 2106 while open) and its values, exactly the versions the ClickHouse store's
-   `nodes`/`closures` hold (`chstore/ingest.py`): a key's rows merged per scan as the
-   ingest merges them, and a new version whenever any value changes (the weighted mean
-   stamp compared to the second, banker's rounding as ClickHouse's `round`) or the key
-   was absent from a scan in between. The kernel is `pyrmts.intervals` (gaps-and-islands,
-   key-range planning and predicates, one-scan append), run per `(depth, path)` key range
-   (`ranges.json`), so a range task reads only its row groups of each scan. `append` adds
+   (`vt` = 2106 while open) and its values: a key's rows merged per scan (`MERGED`), and
+   a new version whenever any value changes (the weighted mean stamp compared to the
+   second, rounded half to even) or the key was absent from a scan in between. The
+   kernel is `pyrmts.intervals` (gaps-and-islands, key-range planning and predicates,
+   one-scan append), run per `(depth, path)` key range (`ranges.json`), so a range task
+   reads only its row groups of each scan. `append` adds
    one scan to a range's intervals (open versions × the scan: a full join), the per-scan
    delta, and must equal a rebuild.
 2. **Suffixes.** From the intervals: one row per (lowercase name suffix of three or more
@@ -33,8 +32,6 @@ import os
 import re
 import shutil
 import sys
-from dataclasses import dataclass
-from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
 from time import monotonic
@@ -51,9 +48,9 @@ from .static_profile import data_bucket, layouts as profile_layouts, profile, sc
 err = partial(print, file=sys.stderr, flush=True)
 
 PREFIX = "static-names"
-OPEN = 4291747200  # 2106-01-01 00:00:00 UTC: a version's `vt` while open (`chstore.schema.OPEN`)
+OPEN = 4291747200  # 2106-01-01 00:00:00 UTC: a version's `vt` while open
 U64 = 1 << 64
-#: The values whose change opens a version (`chstore.schema.VALUE_COLS`); `mtime_mean` is stored rounded.
+#: The values whose change opens a version; `mtime_mean` is stored rounded.
 VALUE_COLS = ["kind", "size", "n_files", "n_children", "n_desc", "mtime", "mtime_mean", "mtime_w", "last_read", "c2", "c3", "c4"]
 KEY_COLS = ["depth", "path", "usr"]
 INTERVAL_RG = 65536
@@ -157,7 +154,7 @@ def pick_scans(objects: Iterable[tuple[str, dict]], layouts: Iterable[str], *, s
 
 def list_scans(bucket: str, *, layouts: Iterable[str], start: str | None = None,
                through: str | None = None) -> dict:
-    """Every scan's `path` sort, as the store ingests it (`chstore.ingest.default_src`): per scan id the newest
+    """Every scan's `path` sort: per scan id the newest
     generation under `layouts` (`pick_scans`); pinned by GCS generation, size, md5 and crc32c."""
     from google.cloud import storage
 
@@ -187,53 +184,6 @@ def range_preds(r: dict) -> list[str]:
     from pyrmts.intervals import key_range_pieces
 
     return key_range_pieces(RANGE_COLS, r["lo"], r["hi"])
-
-
-@dataclass(frozen=True)
-class Piece:
-    """A conjunctive `(depth, path)` filter: depths `[dlo, dhi]`, paths `[plo, phi)` (only within one depth).
-    Only `ch_digest_sql` renders these (as ClickHouse literals); DuckDB reads use `range_preds`."""
-    dlo: int
-    dhi: int
-    plo: str | None = None
-    phi: str | None = None
-
-    def sql(self) -> str:
-        parts = [f"depth >= {self.dlo}", f"depth <= {self.dhi}"]
-        if self.plo:
-            parts.append(f"path >= {q(self.plo)}")
-        if self.phi is not None:
-            parts.append(f"path < {q(self.phi)}")
-        return " AND ".join(parts)
-
-
-MAX_DEPTH = 255
-
-
-def pieces(lo: tuple[int, str], hi: tuple[int, str] | None) -> list[Piece]:
-    """The range `[lo, hi)` of `(depth, path)` keys (`hi` None = unbounded) as conjunctive pieces, so
-    each piece's filter prunes a `(depth, path)`-sorted file by its row-group statistics."""
-    (d0, p0) = lo
-    if hi is None:
-        out = [Piece(d0, d0, p0 or None, None)] if p0 else [Piece(d0, MAX_DEPTH)]
-        if p0:
-            out.append(Piece(d0 + 1, MAX_DEPTH))
-        return out
-    (d1, p1) = hi
-    if (d1, p1) <= (d0, p0):
-        raise ValueError(f"empty range {lo} → {hi}")
-    if d0 == d1:
-        return [Piece(d0, d0, p0 or None, p1)]
-    out = []
-    first_whole = d0 if not p0 else d0 + 1
-    if p0:
-        out.append(Piece(d0, d0, p0, None))
-    last_whole = d1 - 1
-    if first_whole <= last_whole:
-        out.append(Piece(first_whole, last_whole))
-    if p1:
-        out.append(Piece(d1, d1, None, p1))
-    return out
 
 
 def plan_ranges(scans: dict, k: int, mount: str | None = None) -> dict:
@@ -287,8 +237,8 @@ V1_SELECT = """depth::UTINYINT AS depth, path, coalesce(usr, '') AS usr, 'dir' A
     -1::BIGINT AS n_children, -1::BIGINT AS n_desc, -1::BIGINT AS mtime,
     CASE WHEN coalesce(wb, 0) > 0 THEN coalesce(wts, 0) / wb ELSE 0 END::DOUBLE AS mtime_mean, coalesce(wb, 0)::BIGINT AS mtime_w,
     coalesce(a, -1)::INTEGER AS last_read, coalesce(c2, 0)::BIGINT AS c2, coalesce(c3, 0)::BIGINT AS c3, coalesce(c4, 0)::BIGINT AS c4"""
-#: A scan's rows for one key merged as the ingest merges them (`chstore.ingest.MERGED`), the mean stamp then
-#: rounded to the second the way ClickHouse's `round` does (half to even) — the value the change test compares.
+#: A scan's rows for one key merged into one, the mean stamp then rounded to the second (half to even) — the
+#: value the change test compares.
 MERGED = """any_value(kind) AS kind, sum(size)::BIGINT AS size, sum(n_files)::BIGINT AS n_files, max(n_children) AS n_children,
     max(n_desc) AS n_desc, max(mtime) AS mtime,
     round_even(CASE WHEN count(*) = 1 THEN any_value(mtime_mean) ELSE sum(mtime_mean * mtime_w) / greatest(sum(mtime_w), 1) END, 0) AS mtime_mean,
@@ -430,7 +380,7 @@ def hist_sql(table: str, rule: HexRule | None = None) -> str:
 
 def digests(con, table: str) -> dict:
     """Per scan epoch: versions opened (count, Σ md5 mod 2⁶⁴ of `depth|path|usr|vf|size|n_files`) and closed
-    (of `depth|path|usr|vf|vt`) — the same strings `verify-intervals` hashes in ClickHouse."""
+    (of `depth|path|usr|vf|vt`)."""
     from pyrmts.intervals import interval_digests
 
     return interval_digests(con, table, [*KEY_COLS, "vf", "size", "n_files"], [*KEY_COLS, "vf", "vt"], OPEN)
@@ -445,7 +395,7 @@ def build_range(scans: dict, ranges: dict, i: int, out: Path, *, mount: str | No
 
     `coalesced`: the coalesced versions straight from the scans instead (one pass; runs keyed on
     `ANSWER_COLS` only): `cintervals/r####.parquet` and `chist/r####.parquet`, byte-identical to
-    `coalesce_range` over the full intervals. No `digest/` (ClickHouse verifies the full intervals)."""
+    `coalesce_range` over the full intervals. No `digest/`."""
     t0 = monotonic()
     r = ranges["ranges"][i]
     preds = range_preds(r)
@@ -1046,8 +996,7 @@ def ranges_cmd(k: int, mount: str | None, scans_json: str) -> None:
 def intervals_cmd(bucket, coalesced, gen, force, index, mount, mem, per_task, out, threads, only, tmp, no_upload) -> None:
     """Build key ranges' intervals over every scan of the generation's `scans.json`, one connection
     per task (each range uploaded as it finishes; its digest, written last, marks it done). `-C`: the
-    coalesced versions in one pass instead (a deployment with no ClickHouse store to verify full intervals
-    against), byte-identical to `intervals` then `coalesce`."""
+    coalesced versions in one pass instead, byte-identical to `intervals` then `coalesce`."""
     from google.cloud import storage
 
     prefix = f"{PREFIX}/{gen}"
@@ -1435,89 +1384,6 @@ def manifest_cmd(bucket, gen, subdirs) -> None:
     print(json.dumps(doc, indent=1))
 
 
-def ch_lit(s: str) -> str:
-    """A ClickHouse string literal."""
-    return "'" + s.replace("\\", "\\\\").replace("'", "\\'") + "'"
-
-
-def ch_digest_sql(ranges: dict, only: list[int] | None, nodes: str = "nodes", closures: str = "closures") -> str:
-    """ClickHouse statements printing, per scan, the versions it opened and closed in the given ranges (all
-    when `only` is None) as `kind ts count digest` TSV rows — the strings `digests` hashes, summed as
-    `reinterpretAsUInt64(MD5(…))` (= DuckDB's `md5_number_upper`), which wraps mod 2⁶⁴ as the sum does here."""
-    def where() -> str:
-        if only is None:
-            return "1"
-        ors = []
-        for i in only:
-            r = ranges["ranges"][i]
-            for pc in pieces(tuple(r["lo"]), tuple(r["hi"]) if r["hi"] else None):
-                parts = [f"depth >= {pc.dlo}", f"depth <= {pc.dhi}"]
-                if pc.plo:
-                    parts.append(f"path >= {ch_lit(pc.plo)}")
-                if pc.phi is not None:
-                    parts.append(f"path < {ch_lit(pc.phi)}")
-                ors.append("(" + " AND ".join(parts) + ")")
-        return " OR ".join(ors)
-
-    opened = ("concat(toString(depth), '|', path, '|', toString(usr), '|', toString(toUnixTimestamp(vf)), '|', toString(size), '|', "
-              "toString(n_files))")
-    closed = "concat(toString(depth), '|', path, '|', toString(usr), '|', toString(toUnixTimestamp(vf)), '|', toString(toUnixTimestamp(vt)))"
-    w = where()
-    return (f"SELECT 'opened', toUnixTimestamp(vf) AS ts, count(), sum(reinterpretAsUInt64(MD5({opened}))) FROM {nodes} WHERE {w} "
-            f"GROUP BY ts ORDER BY ts SETTINGS max_threads = 16 FORMAT TSV;\n"
-            f"SELECT 'closed', toUnixTimestamp(vt) AS ts, count(), sum(reinterpretAsUInt64(MD5({closed}))) FROM {closures} WHERE {w} "
-            f"GROUP BY ts ORDER BY ts SETTINGS max_threads = 16 FORMAT TSV;\n")
-
-
-@cli.command("ch-digest-sql")
-@option("-c", "--closures", default="closures", help="ClickHouse closures table (`m_closures`: the name index's copy)")
-@option("-n", "--nodes", default="nodes", help="ClickHouse nodes table (`m_nodes`: the name index's copy)")
-@option("-r", "--range", "only", help="Comma-separated range indices (default: every key)")
-@argument("ranges_json")
-def ch_digest_sql_cmd(closures, nodes, only, ranges_json) -> None:
-    """Print the ClickHouse per-scan digest statements (pipe to `job/ch-store.sh sql -`)."""
-    sys.stdout.write(ch_digest_sql(read_json(ranges_json), [int(x) for x in only.split(",")] if only else None, nodes, closures))
-
-
-@cli.command("verify-intervals")
-@option("-b", "--bucket", default=data_bucket, help="Bucket")
-@option("-g", "--gen", required=True, help="Generation")
-@option("-r", "--range", "only", help="Comma-separated range indices (default: every range)")
-@argument("ch_tsv")
-def verify_intervals_cmd(bucket, gen, only, ch_tsv) -> None:
-    """Compare the generation's per-scan opened/closed counts and digests (summed over its ranges' digest
-    files) with ClickHouse's (`ch-digest-sql` output). Prints a JSON report; exit 1 on any difference."""
-    from google.cloud import storage
-
-    prefix = f"{PREFIX}/{gen}"
-    b = storage.Client().bucket(bucket)
-    ranges = read_json(f"gs://{bucket}/{prefix}/ranges.json")
-    idx = [int(x) for x in only.split(",")] if only else [r["i"] for r in ranges["ranges"]]
-    mine: dict[tuple[str, int], list[int]] = {}
-    for i in idx:
-        d = json.loads(b.blob(f"{prefix}/digest/r{i:04d}.json").download_as_bytes())
-        for ts, kinds in d["digests"].items():
-            for kind, (n, h) in kinds.items():
-                cur = mine.setdefault((kind, int(ts)), [0, 0])
-                cur[0] += n
-                cur[1] = (cur[1] + h) % U64
-    theirs: dict[tuple[str, int], list[int]] = {}
-    for line in Path(ch_tsv).read_text().splitlines():
-        parts = line.split("\t")
-        if len(parts) != 4 or parts[0] not in ("opened", "closed"):
-            continue
-        theirs[(parts[0], int(parts[1]))] = [int(parts[2]), int(parts[3]) % U64]
-    keys = sorted(set(mine) | set(theirs), key=lambda k: (k[1], k[0]))
-    diff = {f"{k[0]} {datetime.fromtimestamp(k[1], timezone.utc):%Y-%m-%d}": {"static": mine.get(k), "ch": theirs.get(k)}
-            for k in keys if mine.get(k) != theirs.get(k)}
-    report = {"gen": gen, "ranges": len(idx), "scans": len({k[1] for k in keys}), "keys": len(keys),
-              "opened": sum(v[0] for k, v in mine.items() if k[0] == "opened"), "closed": sum(v[0] for k, v in mine.items() if k[0] == "closed"),
-              "equal": not diff, "diff": diff}
-    print(json.dumps(report, indent=1))
-    if diff:
-        raise SystemExit(1)
-
-
 #: What the Worker reads (`r2-copy`): the shards, their sidecars, the plan and scans, and the catalog's served files
 #: (not its census or per-shard cells).
 R2_SERVED = ("sx/", "sidecar/", "sidecar.parquet", "shards.json", "scans.json", "catalog/cells.parquet", "catalog/index.parquet",
@@ -1583,38 +1449,6 @@ def r2_copy_cmd(bucket, gen, dry_run, only, workers, exclude) -> None:
             print(k)
         return
     print(json.dumps({"gen": gen, **doc}))
-
-
-@cli.command("compare-answers")
-@argument("ch_jsonl")
-@argument("static_jsonl")
-def compare_answers_cmd(ch_jsonl, static_jsonl) -> None:
-    """Compare `query` answers with ClickHouse's (`job/static-names.sh ch-answers`): per (term, date), the
-    nonzero buckets' bytes and objects must be equal. Prints a JSON report (with each term's I/O); exit 1
-    on any difference."""
-    ref = {}
-    for line in Path(ch_jsonl).read_text().splitlines():
-        if line.startswith("{"):
-            d = json.loads(line)
-            ref[(d["q"], d["date"])] = {k: list(v) for k, v in d["buckets"].items()}
-    pairs, diffs, terms = 0, {}, {}
-    for line in Path(static_jsonl).read_text().splitlines():
-        if not line.startswith("{"):
-            continue
-        d = json.loads(line)
-        terms[d["q"]] = {**d.get("io", {}), **{k: d[k] for k in ("rows_matching", "source", "rows", "cells") if k in d}, "s": d.get("s")}
-        for date, buckets in (d["answers"] or {}).items():
-            mine = {k: v for k, v in buckets.items() if v[0] or v[1]}
-            if (d["q"], date) not in ref:
-                continue
-            pairs += 1
-            if mine != ref[(d["q"], date)]:
-                diffs[f"{d['q']} {date}"] = {"static": mine, "ch": ref[(d["q"], date)]}
-    missing = sorted(f"{q} {d}" for q, d in ref if q not in terms)
-    report = {"pairs": pairs, "equal": pairs - len(diffs), "missing": missing, "diff": diffs, "terms": terms}
-    print(json.dumps(report, indent=1))
-    if diffs or missing or not pairs:
-        raise SystemExit(1)
 
 
 @cli.command("query")

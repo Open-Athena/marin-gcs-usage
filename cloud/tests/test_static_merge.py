@@ -294,6 +294,31 @@ def test_publish_adds_a_level_0_run_and_merges_run_apart(chain, tmp_path):
     assert not (tmp_path / "scratch" / "merge.lease.json").exists()
 
 
+def test_a_stack_with_an_l0_below_an_l1_reads_exactly(chain, tmp_path):
+    """gcs's `2026-10-08c` after 10-10: [L0 10-09, L1 T1236..10-10], then T1514's L0 on top — levels not monotone (an
+    oldest run with a drill, the newer ones without: drill parity keeps it apart while the next two carry). The runs stay
+    in scan order with contiguous spans, so every manifest reads exactly (brute force per scan, and the rebuild once it
+    covers every scan), and the next scan's L0 carries nothing (L1 vs L0); the lone L0 is never merged with a later one."""
+    a, b, c, d = chain["runs"]
+    store = _store(chain, tmp_path)
+    store.create(f"deltas/{a}/drill/meta.json", "{}")  # `a` drilled, `b`/`c` not: parity keeps `a` out of the carry
+    for s in (a, b, c):
+        _publish(store, s)
+    bc = sa.run_key(b, c)
+    got = _merge(store, tmp_path)
+    assert [(m["inputs"], m["output"], m["level"], m["manifest"]) for m in got["merged"]] == [
+        ([f"deltas/{b}", f"deltas/{c}"], bc, 1, f"manifests/{c}.m001.json")]
+    assert _stack(store, f"manifests/{c}.m001.json") == [(f"deltas/{a}", 0), (bc, 1)]
+    _publish(store, d)
+    assert _stack(store, f"manifests/{d}.json") == [(f"deltas/{a}", 0), (bc, 1), (f"deltas/{d}", 0)]
+    assert _merge(store, tmp_path, dry_run=True) == {"manifest": f"manifests/{d}.json", "plan": []}
+    assert store.read_json(f"manifests/{d}.json")["scans"] == chain["ids"]
+    keys = sm.manifest_keys(store.keys("manifests/"))
+    assert keys == [f"manifests/{s}" for s in (f"{a}.json", f"{b}.json", f"{c}.json", f"{c}.m001.json", f"{d}.json")]
+    for k in keys:
+        _check_readers(chain, store, k)
+
+
 def test_parallel_tier_merges_write_the_same_bytes(chain, tmp_path):
     """Each tier in its own process (`jobs` > 1) writes exactly what one process does."""
     a, b = chain["runs"][:2]
@@ -598,3 +623,146 @@ def test_backfill_tier_refuses(tmp_path):
         f"{key}/ holds 1 drill objects this backfill doesn't write (e.g. {key}/drill/stray.parquet): not writing into it",
     ]
     assert not store.exists(f"{key}/drill/meta.json")
+
+
+# ── The merge status record (`merging.json` on R2, for /health) ────────────
+
+
+class RecordingStatus:
+    """A `MergeStatus` that keeps every write (`("put", doc)` / `("delete",)`) and the record as R2 would hold it; `fail`:
+    every write raises (R2 down)."""
+
+    def __init__(self, fail: bool = False):
+        self.events: list[tuple] = []
+        self.doc: dict | None = None
+        self.fail = fail
+
+    def put(self, doc: dict) -> None:
+        if self.fail:
+            raise ConnectionError("r2 unreachable")
+        self.events.append(("put", json.loads(json.dumps(doc))))
+        self.doc = json.loads(json.dumps(doc))
+
+    def delete(self) -> None:
+        if self.fail:
+            raise ConnectionError("r2 unreachable")
+        self.events.append(("delete",))
+        self.doc = None
+
+
+T0 = int(NOW.timestamp())
+
+
+def _record(merges: list[dict], done: list[dict], manifest: str, **kw) -> dict:
+    return {"holder": "sn-merge-x", "owner": "test", "state": "merging", "started_ts": T0, "updated_ts": T0, "heartbeat_s": None,
+            "lease_s": sm.LEASE_S, "manifest": manifest, "merges": merges, "done": done, **kw}
+
+
+def test_the_status_record_is_written_refreshed_and_removed(chain, tmp_path, monkeypatch):
+    """Two carries in one job (the fourth scan publishes while the first builds): the record is written as the first
+    starts (its plan, the job's name as holder), rewritten when its revision lands (the next carry planned, the first
+    done), and removed once nothing is due. A job killed mid-merge leaves the record as R2 held it then: still
+    `merging`, its `updated_ts` aging (with no heartbeat refreshing it), which /health flags as stuck."""
+    monkeypatch.setenv("DT_JOB_NAME", "sn-merge-x")
+    a, b, c, d = chain["runs"]
+    store = _store(chain, tmp_path)
+    for s in (a, b, c):
+        _publish(store, s)
+    status = RecordingStatus()
+    mid: list[dict | None] = []
+
+    def build(*args, **kw):
+        mid.append(status.doc)  # what R2 holds while the run builds (and after a kill here)
+        if not store.exists(f"manifests/{d}.json"):
+            _publish(store, d)
+        return sm.build_merged_run(*args, **kw)
+
+    ticks = iter(range(100))  # the lease's clock read, then one per record write
+    got = sm.merge_pending(store, store.root, tmp=tmp_path / "work", owner="test", now=lambda: NOW + timedelta(seconds=next(ticks)), log=lambda m: None,
+                           build=build, status=status, heartbeat_s=None)
+    ab, ad = sa.run_key(a, b), sa.run_key(a, d)
+    assert [(m["output"], m["manifest"]) for m in got["merged"]] == [(ab, f"manifests/{d}.m001.json"), (ad, f"manifests/{d}.m002.json")]
+    first = _record([{"inputs": [f"deltas/{a}", f"deltas/{b}"], "output": ab, "level": 1, "first": a, "last": b, "scans": 2}], [], f"manifests/{c}.json",
+                    started_ts=T0 + 1, updated_ts=T0 + 1)
+    second = _record([{"inputs": [ab, f"deltas/{c}", f"deltas/{d}"], "output": ad, "level": 2, "first": a, "last": d, "scans": 4}],
+                     [{"output": ab, "manifest": f"manifests/{d}.m001.json"}], f"manifests/{d}.m001.json", started_ts=T0 + 1, updated_ts=T0 + 2)
+    assert status.events == [("put", first), ("put", second), ("delete",)]
+    assert mid == [first, second]
+    assert status.doc is None
+
+
+def test_the_heartbeat_refreshes_the_record_while_a_run_builds(chain, tmp_path):
+    """A long build: the record's `updated_ts` advances every `heartbeat_s` (nothing else changes), and stops with the merge
+    (the delete is the last write)."""
+    a, b, c = chain["runs"][:3]
+    store = _store(chain, tmp_path)
+    for s in (a, b, c):
+        _publish(store, s)
+    status = RecordingStatus()
+    ticks = iter(range(10_000))
+
+    def build(*args, **kw):
+        import time
+        time.sleep(0.3)
+        return sm.build_merged_run(*args, **kw)
+
+    sm.merge_pending(store, store.root, tmp=tmp_path / "work", owner="test", now=lambda: NOW + timedelta(seconds=next(ticks)), log=lambda m: None,
+                     build=build, status=status, heartbeat_s=0.02)
+    puts = [e[1] for e in status.events if e[0] == "put"]
+    assert status.events[-1] == ("delete",)
+    assert len(puts) >= 3
+    assert [{k: v for k, v in p.items() if k != "updated_ts"} for p in puts] == [{k: v for k, v in puts[0].items() if k != "updated_ts"}] * len(puts)
+    beats = [p["updated_ts"] for p in puts]
+    assert beats == sorted(set(beats))
+    assert puts[0]["started_ts"] == puts[0]["updated_ts"] < beats[-1]
+
+
+def test_a_failed_merge_marks_the_record_failed_and_keeps_it(chain, tmp_path):
+    """A merge that raises (the lease released): the record stays on R2, `state: failed` with the error, until the next
+    merge takes the lease — which writes its own, and removes it when done."""
+    a, b, c = chain["runs"][:3]
+    store = _store(chain, tmp_path)
+    for s in (a, b, c):
+        _publish(store, s)
+    status = RecordingStatus()
+
+    def boom(*args, **kw):
+        raise Boom("killed while building")
+
+    with pytest.raises(Boom):
+        _merge(store, tmp_path, build=boom, status=status, heartbeat_s=None)
+    ab = sa.run_key(a, b)
+    plan = [{"inputs": [f"deltas/{a}", f"deltas/{b}"], "output": ab, "level": 1, "first": a, "last": b, "scans": 2}]
+    merging = _record(plan, [], f"manifests/{c}.json", holder="test")
+    assert status.events == [("put", merging), ("put", {**merging, "state": "failed", "error": "Boom: killed while building"})]
+    assert not (tmp_path / "scratch" / "merge.lease.json").exists()
+    _merge(store, tmp_path, status=status, heartbeat_s=None)
+    assert (status.events[2:], status.doc) == ([("put", merging), ("delete",)], None)
+
+
+def test_status_write_failures_never_fail_the_merge(chain, tmp_path):
+    """R2 unreachable: every status write fails, each logged; the merge publishes exactly what it does without a status."""
+    a, b, c = chain["runs"][:3]
+    store = _store(chain, tmp_path)
+    for s in (a, b, c):
+        _publish(store, s)
+    logs = []
+    got = sm.merge_pending(store, store.root, tmp=tmp_path / "work", owner="test", now=lambda: NOW, log=logs.append,
+                           status=RecordingStatus(fail=True), heartbeat_s=None)
+    assert [m["manifest"] for m in got["merged"]] == [f"manifests/{c}.m001.json"]
+    assert _stack(store, f"manifests/{c}.m001.json") == [(sa.run_key(a, b), 1), (f"deltas/{c}", 0)]
+    assert [m for m in logs if m.startswith("merge status")] == [
+        "merge status: write failed, not fatal: r2 unreachable", "merge status: delete failed, not fatal: r2 unreachable"]
+
+
+def test_a_held_lease_leaves_the_record_alone(chain, tmp_path):
+    """Another holder's merge: this job neither writes nor removes the record."""
+    a, b, c = chain["runs"][:3]
+    store = _store(chain, tmp_path)
+    for s in (a, b, c):
+        _publish(store, s)
+    (tmp_path / "scratch").mkdir()
+    (tmp_path / "scratch" / "merge.lease.json").write_text(json.dumps({"owner": "other", "at": (NOW - timedelta(hours=1)).isoformat()}))
+    status = RecordingStatus()
+    assert _merge(store, tmp_path, status=status, heartbeat_s=None)["merged"] == []
+    assert status.events == []

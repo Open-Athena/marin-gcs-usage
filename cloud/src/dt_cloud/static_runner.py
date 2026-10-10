@@ -56,7 +56,7 @@ from .append_runner import (  # noqa: F401 — the shared names, as this module 
     task_command,
 )
 from .static_names import PREFIX, err
-from .static_profile import Profile, profile
+from .static_profile import Profile, level_arg, profile
 
 #: A stage's cost-attribution `component` (`cost_labels`); the rest of the chain is `static-names`.
 STAGE_COMPONENTS = {"drill": "drill", "anchors": "anchors", "drill-merge": "drill", "anchors-merge": "anchors"}
@@ -122,7 +122,7 @@ class Runner(ar.Runner):
         return {r["key"] for r in runs if self.exists(f"{self.root}/{r['key']}/drill/meta.json")}
 
     def merge_job(self, scan: str) -> tuple[str, dict]:
-        return self.job("merge", scan, 1, "static_merge", ["carry", "-g", self.cfg.gen])
+        return self.job("merge", scan, 1, "static_merge", ["carry", "-g", self.cfg.gen, "-L", level_arg(self.cfg.compact_level)], r2=self.merge_r2())
 
     def one(self, d: str) -> None:
         run = f"{self.root}/deltas/{d}"

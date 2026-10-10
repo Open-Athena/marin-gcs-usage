@@ -1,6 +1,20 @@
 # Retiring the ch-store VM
 
-Status: **prepared, nothing stopped or deleted** (2026-10-09). Ryan agreed to retire the VM once the static name search has run on gcs prod for a few days. This spec is the inventory, the preconditions, and the ordered runbook. Every destructive step is marked **needs Ryan's go**.
+Status: **mostly executed** (2026-10-10). What ran, by runbook step:
+
+| Step | State |
+|---|---|
+| 1 Site stops referencing the box | done: gcs prod + dev drop every `QUERY_BOX_*` var (gcs `b667b554`); `/names` answers from the static index |
+| 2–3 Timer, containers | implied by step 5 |
+| 4 Keep what is not derived | **skipped, data lost**: the VM was deleted from gcs's own inventory before this runbook was read, with no snapshot and no `vm-final/` copy. The ~5 GB of non-derived `/data` artifacts (bench-*, hot-l1-catalog, dated-l1-*, hot-frequency-sweeps, prof, ch-native builds) are gone; what remains is `gs://oa-gcs-usage-dvx/scratch/bench/ch-store/` (1.6 GB: inputs, native-l2-stage, queries, scripts, src, static, test-checkout) and the conclusions in `done/ch-store.md` |
+| 5 Delete the VM and disk | done ~15:40 UTC (`job/ch-store.sh delete`); no instance or disk remains |
+| 6 Tunnel + DNS | done: `pulumi up -s gcs`, 3 deleted; `gcs-query.oa.dev` no longer resolves; the `query_host` block stays as an unset opt-in |
+| 7 Account-wide R2 token | **open**: the hash compare is impossible (`/data/r2-index.env` went with the disk); find it in the dashboard by elimination (not `gcs-static-index-r2-*`, m3's or the r2 demo's; likely created ~10-08/09 for the VM's static-names setup), then roll or delete it (Ryan) |
+| 8 GCS staging | **open**: now the only surviving copy, so the suggestion is to keep `scratch/bench/ch-store/` (1.6 GB) — Ryan's call |
+| 9 Code | done: `cloud` `c41a5778` (tag `ch-store-final` = `fc9aeec7`), gcs `b667b554` / `c1b91518` |
+| 10 Local and memory | done (2026-10-10): worktrees `wt/ch-daily`, `wt/ch-retire`, `wt/ch-retire-gcs`, `wt/ch-tunnel`, `wt/ch-remove` and `wt/ch-store` removed, their ignored notes and logs moved to `tmp/archive-<name>/` first (`wt/ch-store`'s 2.1 GB — `tmp/` incl. the local ClickHouse binary and servers' data, `.dvc/cache`, `dvx.db`, the ignored DVX outputs under `static-names/2026-10-08{,c}/` — to `tmp/archive-ch-store/`, after stopping its two orphaned local ClickHouse servers, started 10-07); branches archived as annotated tags `archive/ch-daily` (`5a7039b6`), `archive/ch-remove` (`db5e97c8`), `archive/ch-retire` (`70a2b477`), `archive/ch-retire-gcs` (`8f47b8d3`, superseded on `gcs` by `f00b6210`), `archive/ch-tunnel` (`2edea467`), `archive/ch-store` (`33557ba6`) and deleted; `tmp/ch-store-ip` deleted. Kept: branch `catalog-append` (2 static-catalog commits not on `gcs`; its worktree removed, its `tmp/` in `tmp/archive-catalog-append/`), remote `o/ch-store` (`73f8a266`), and the agent worktree `.claude/worktrees/agent-ac91f1f5…` (`exp/ch-suspend`) |
+
+Move this spec to `done/` once 7, 8 and 10 are settled. Prepared 2026-10-09: Ryan agreed to retire the VM once the static name search has run on gcs prod for a few days. This spec is the inventory, the preconditions, and the ordered runbook.
 
 The VM was the experiment platform for an append-only historical query service ([`ch-store.md`], [`filter-query-service.md`], [`serving-options.md`]). It ended up serving one production-adjacent thing, the name search, which now comes from the static name index on R2 (`specs/static-append.md` on `gcs`, `specs/architecture/static-name-search.md`). Nothing in gcs prod reads from the VM any more; its last jobs are the hourly `ch-daily` catch-up and, until the code change below, the R2 copy in `job/static-daily.sh`.
 
@@ -138,6 +152,6 @@ List prices from the Cloud Billing catalog (2026-10-09; this project has no BigQ
 
 Not saved: the GCS → R2 copies. The VM sent 617.7 GB in the 24 h to 12:00 UTC on 2026-10-09 (the 2026-10-08c base and drilldown, ≈ $74 of egress); the same bytes leave us-east1 from the Batch copy now. Steady state that is ~1.1 GB/day (`static-append.md`). The replacement pipeline (`static-daily`) costs ≈ $0.53/day (≈ $16/month), so the net saving is **≈ $710/month at list (≈ $635 with sustained use)**.
 
-[`ch-store.md`]: ch-store.md
-[`filter-query-service.md`]: filter-query-service.md
+[`ch-store.md`]: done/ch-store.md
+[`filter-query-service.md`]: done/filter-query-service.md
 [`serving-options.md`]: serving-options.md

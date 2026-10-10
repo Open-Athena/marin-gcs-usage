@@ -378,8 +378,8 @@ All 7 scans took about 2.4 hours on 8 vCPU. A daily increment would be about 20 
 
 **Cost of both experiments:** about $4 of the $40 budget (VMs about 6 h, Batch about 0.5 h of n2-highmem-16). Both VMs, their disks and the Batch job records were deleted and checked gone. The index copies and exports under `scratch/bench/serving-exp/` were deleted, except the run records under `runs/`.
 
-[filter-query-service]: filter-query-service.md
-[p0]: filter-query-service-p0.md
+[filter-query-service]: done/filter-query-service.md
+[p0]: done/filter-query-service-p0.md
 [path-store]: path-store.md
 [lambda-quotas]: https://docs.aws.amazon.com/lambda/latest/dg/gettingstarted-limits.html
 [lambda-mem]: https://docs.aws.amazon.com/lambda/latest/dg/configuration-memory.html

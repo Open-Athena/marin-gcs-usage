@@ -5,7 +5,7 @@
 // answers `configured: false` rather than 500.
 import type { D1Database } from '@cloudflare/workers-types'
 import {
-  failedAt, outputIndex, type OutputDelta, phaseSpans, type PhaseSpan, runSecs, type RunSummary, type ScanRun,
+  byRunTime, failedAt, outputIndex, type OutputDelta, phaseSpans, type PhaseSpan, runSecs, type RunSummary, type ScanRun,
   type ScanRunOutput, type ScanRunPhase, summarize, withDeltas,
 } from '../../src/scanRunsModel.js'
 
@@ -51,15 +51,14 @@ export function scanRunDetail(rows: ScanRunRows, id: string, now: number): ScanR
   const run = rows.runs.find(r => r.run_id === id)
   if (!run) return null
   const phases = rows.phases.filter(p => p.run_id === id).sort((a, b) => a.seq - b.seq)
-  const byStart = (a: ScanRun, b: ScanRun) => (a.started_ts ?? 0) - (b.started_ts ?? 0) || a.run_id.localeCompare(b.run_id)
   const heads = rows.runs.filter(r => !r.parent)
   const scans = [...new Set(heads.map(r => r.scan))].sort()
   const i = scans.indexOf(run.scan)
   return {
     run, secs: runSecs(run, now), failed_at: failedAt(run, phases), phases, spans: phaseSpans(run, phases),
     outputs: withDeltas(run, rows.outputs, outputIndex(rows.runs, rows.outputs)),
-    downstream: rows.runs.filter(r => r.parent === id).sort(byStart),
-    siblings: heads.filter(r => r.scan === run.scan && r.run_id !== id).sort(byStart),
+    downstream: rows.runs.filter(r => r.parent === id).sort(byRunTime),
+    siblings: heads.filter(r => r.scan === run.scan && r.run_id !== id).sort(byRunTime),
     prev_scan: i > 0 ? scans[i - 1] : null,
     next_scan: i >= 0 && i < scans.length - 1 ? scans[i + 1] : null,
   }
