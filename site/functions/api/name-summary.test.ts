@@ -141,4 +141,25 @@ describe('an anchored name (`^q`, `q$`): /names reads literals only', () => {
     }
     expect([literal, fetcher.mock.calls.length]).toEqual([[200, 200, 200], 3])
   })
+  it('`\^q`, `q\$`, `\\` and a quoted `"^q"` are literals: forwarded unescaped, answered; a bare `^foo` / `foo$` still refused', async () => {
+    const got = []
+    for (const [name, literal] of [['foo\\$', 'foo$'], ['\\^foo', '^foo'], ['"^foo"', '^foo'], ['"foo$"', 'foo$'], ['^foo\\$', null], ['a\\\\b', 'a\\b'], ['^foo', null], ['foo$', null], ['^$', '^$']]) {
+      if (literal) fetcher.mockResolvedValueOnce(new Response(JSON.stringify(nameFixture('bounded-name-postings', '2026-10-05', literal))))
+      const before = fetcher.mock.calls.length
+      const r = await request(new URLSearchParams({ date: '2026-10-05', name: name! }).toString())
+      const sent = fetcher.mock.calls.slice(before).map(c => new URL(String(c[0])).searchParams.get('name'))
+      got.push([name, r.status, r.status === 200 ? sent : await r.json()])
+    }
+    expect(got).toEqual([
+      ['foo\\$', 200, ['foo$']],
+      ['\\^foo', 200, ['^foo']],
+      ['"^foo"', 200, ['^foo']],
+      ['"foo$"', 200, ['foo$']],
+      ['^foo\\$', 400, ANCHOR],
+      ['a\\\\b', 200, ['a\\b']],
+      ['^foo', 400, ANCHOR],
+      ['foo$', 400, ANCHOR],
+      ['^$', 200, ['^$']],
+    ])
+  })
 })
