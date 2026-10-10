@@ -19,7 +19,7 @@ import { classKey, parseClasses, parseOwner, queryParam, QueryError } from '../_
 import { ATTEN_DEFAULT, buildDiff, FILTER_VIEW_V, LensUnavailable, MIN_AREA_DEFAULT, NotFound, QUANT } from '../_lib/view.js'
 import { hexNote, hexQuery, indexedGate, staticTag } from '../_lib/staticFilter.js'
 import { FilterRejected, indexedOnly, rejectBody, rejectQuery, rejectScope } from '../_lib/indexedOnly.js'
-import { cacheKeyFor, cacheMatch, cacheStore, isPartial, keepFor, serverTiming, UPGRADE_PHASE2_MS, upgradePartial } from '../_lib/edgeCache.js'
+import { cacheEnvTag, cacheKeyFor, cacheMatch, cacheStore, isPartial, keepFor, serverTiming, UPGRADE_PHASE2_MS, upgradePartial } from '../_lib/edgeCache.js'
 import { LENS_PRIMARY_ONLY, storeKey, withStore } from '../_lib/stores.js'
 import { lensParam, ME_UNRESOLVED, resolveLens } from '../_lib/me.js'
 import { askBox, boxFor, boxStatus, type BoxEnv } from '../_lib/queryBox.js'
@@ -97,7 +97,7 @@ export const onRequestGet = async (ctx0: { request: Request; env: Env; waitUntil
     const hx = await hexQuery(ctx.env, query)
     query = hx.query
     const [head, g] = await st.time('pre', Promise.all([lens && ctx.env.DB || owner && await hasLedger(ctx.env) ? ledgerHead(ctx.env) : Promise.resolve(0), pathGens(ctx.env, [from, to])]))
-    const cacheKey = cacheKeyFor('diff',
+    const cacheKey = cacheKeyFor('diff', cacheEnvTag(ctx.env, ctx.request),
       `${from}/${to}/${encodeURIComponent(path)}?w=${w}&h=${h}&a=${minArea}&t=${atten}&n=${top}&l=${lensTag}` +
         `&o=${rawOwner ?? ''}&cl=${classKey(classes)}&qs=${query ? qp.syntax : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}&s=${summary ? 1 : 0}&D=${depth ?? ''}&g=${g}&st=${staticTag(ctx.env, query)}${query ? `&fv=${FILTER_VIEW_V}` : ''}`,
       storeKey(ctx.env),

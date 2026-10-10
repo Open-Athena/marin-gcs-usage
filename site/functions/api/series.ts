@@ -25,7 +25,7 @@ import { type OverTime, overTimePoint, readOverTime } from '../_lib/overTime.js'
 import { parsePaths } from '../_lib/filter.js'
 import { SERIES_MAX_PATHS } from '../_lib/seriesLimits.js'
 import { metaRoots, rootPoints, type RootRow } from '../_lib/series.js'
-import { cacheKeyFor, cacheMatch, cacheStore, serverTiming } from '../_lib/edgeCache.js'
+import { cacheEnvTag, cacheKeyFor, cacheMatch, cacheStore, serverTiming } from '../_lib/edgeCache.js'
 import { LENS_PRIMARY_ONLY, storeKey, withStore } from '../_lib/stores.js'
 import { lensParam, ME_UNRESOLVED, resolveLens } from '../_lib/me.js'
 import { askBox, boxFor, boxStatus, type BoxEnv } from '../_lib/queryBox.js'
@@ -146,7 +146,7 @@ export const onRequestGet = async (ctx0: Ctx & { waitUntil?: (p: Promise<unknown
   // chart load re-read one point per scan (≈8 rounds of D1 + range reads for
   // a 94-scan history, 5–20 s) while the diff beside it was a cache hit.
   const g = await st.time('gens', pathGens(env, dates))
-  const cacheKey = cacheKeyFor('series', `${encodeURIComponent(path)}?P=${encodeURIComponent(paths.join(','))}&l=${lensTag}&o=${owner ? ownerKey(owner) : ''}&cl=${classKey(classes)}&s=${split ?? ''}&qs=${query ? qp.syntax : ''}&q=${encodeURIComponent(query ? url.searchParams.get('q') ?? '' : '')}&st=${staticTag(env, query)}&d=${dates.join(',')}&x=${extra.join(',')}&head=${head}&g=${g}`, storeKey(env))
+  const cacheKey = cacheKeyFor('series', cacheEnvTag(env, request), `${encodeURIComponent(path)}?P=${encodeURIComponent(paths.join(','))}&l=${lensTag}&o=${owner ? ownerKey(owner) : ''}&cl=${classKey(classes)}&s=${split ?? ''}&qs=${query ? qp.syntax : ''}&q=${encodeURIComponent(query ? url.searchParams.get('q') ?? '' : '')}&st=${staticTag(env, query)}&d=${dates.join(',')}&x=${extra.join(',')}&head=${head}&g=${g}`, storeKey(env))
   const hit = await st.time('cache', cacheMatch(env, cacheKey))
   if (hit) return hit
 

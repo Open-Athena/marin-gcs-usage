@@ -56,7 +56,7 @@ async function db(): Promise<D1Database> {
 }
 const STORE = { GCS_HMAC_KEY_ID: 'k', GCS_HMAC_SECRET: 's', STORE_BUCKET: 'my-data' }
 /** A localhost request: `identify` is the dev identity, signed in as `DEV_EMAIL`. */
-const envAs = async (email: string): Promise<Env> => ({ ...STORE, DB: await db(), DEV_EMAIL: email }) as Env
+const envAs = async (email: string): Promise<Env> => ({ ...STORE, DB: await db(), DEV_EMAIL: email, PROD_HOST: 'localhost' }) as Env
 const at = (env: Env, path: string) => ({ request: new Request(`http://localhost${path}`), env })
 
 describe('ownerIdFor: the `@me` / `me` rule', () => {
