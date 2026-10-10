@@ -10,7 +10,7 @@ import pytest
 
 from dt_cloud import static_runner as sd
 from dt_cloud.static_merge import manifest_keys, manifest_name, parse_manifest, plan_carries, rebase
-from dt_cloud.static_profile import Profile, load_profile
+from dt_cloud.static_profile import Profile, load_profile, parse_compact_level
 from dt_cloud.static_profile_examples import CW
 
 GEN = "2026-10-09cw"
@@ -99,13 +99,13 @@ class Fake:
         self._calls.append(("publish", d))
         self.keys[f"{ROOT}/manifests/{d}.json"] = {"date": d, "runs": self.runs(d)}
 
-    def carry(self) -> None:
-        """What `static_merge carry` does: each due carry's run, then a revision of the newest manifest listing it."""
+    def carry(self, level: int | None) -> None:
+        """What `static_merge carry -L <level>` does: each due carry's run, then a revision of the newest manifest listing it."""
         while True:
             key = self.newest()
             m = self.keys[key]
             drilled = {r["key"] for r in m["runs"] if f"{ROOT}/{r['key']}/drill/meta.json" in self.keys}
-            _, merges = plan_carries(m["runs"], drilled)
+            _, merges = plan_carries(m["runs"], drilled, level)
             if not merges:
                 return
             ins, out = merges[0]
@@ -148,7 +148,7 @@ class Fake:
             self.keys[key] = None
         if stage == "merge":
             # The job does its work whatever the wait; a wait of 0 (`runs add`'s default) stops watching it at once.
-            self.carry()
+            self.carry(parse_compact_level("-L", words[words.index("-L") + 1]))
             if wait == 0:
                 raise sd.StillRunning(f"Batch job {name}: still running after 0s")
 
@@ -193,7 +193,7 @@ def _r2(d: str, runs: list[str], manifest: str | None = None) -> tuple:
 
 def _merge(wait: float | None = 0) -> tuple:
     """The merge stage's job: one task, `static_merge carry` on the mount, watched for `wait` s."""
-    return ("merge", 1, _py("static_merge", "carry", "-g", GEN), wait)
+    return ("merge", 1, _py("static_merge", "carry", "-g", GEN, "-L", "5"), wait)
 
 
 def _chain(d: str, runs: list[str], drill: bool = False, anchors: bool = False) -> list[tuple]:
