@@ -1,9 +1,11 @@
-import { beforeAll, describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it, vi } from 'vitest'
 import type { Env } from './auth'
-import { openIndex, pathGens, usMap, withPathStore } from './index'
+import { type Ask, openIndex, pathGens, readAsks, readRows, type Row, usMap, withPathStore } from './index'
 import { sqliteD1 } from './testD1'
-import { fixture, readJson } from './testStore'
+import { type D1Variant, fixture, readJson, seedGeneration } from './testStore'
 import { buildDiff, buildView, type ViewNode } from './view'
+
+vi.mock('@rdub/file-tree/stores/s3', async () => ({ S3Store: (await import('./testStore')).S3Store }))
 
 // The change-interval path store read as of a scan (`PATH_STORE=intervals`, specs/interval-store.md):
 // `fixtures/iv/` is one generation over six synthetic scans (three v1 indexes, three v2 store
@@ -124,6 +126,60 @@ describe('interval store', () => {
       'interval-store/g1/served/path.groups.parquet',
       'interval-store/g1/served/path.parquet',
     ])
+  })
+
+  it('a lookup bounded by another scan\'s version of the path finds exactly what an unbounded one does', async () => {
+    // What a diff knows of a name it looks up (`Ask.vtLe` / `vfGe`): the other scan's row. A path's
+    // versions never overlap, so the one live here closed by the time that row's opened, or opened once
+    // it closed. Every row live at one scan, asked at every other where it isn't live. (This store's
+    // segments each hold the versions closing at one scan, so a scan's own time test already selects
+    // only groups that can answer and the bound prunes nothing more; on dyadic segments it skips the
+    // open segment and the blocks outside the window — measured on gcs, specs/interval-store.md §6.2.)
+    const DATES = [...new Set(cases.map(c => c.date))].sort()
+    const live = new Map(await Promise.all(DATES.map(async d => [d, await readRows(await openIndex(env, d, 'path'), 1, 64, '', '\uffff')] as const)))
+    const key = (r: { depth: number; path: string }) => `${r.depth}\0${r.path}`
+    const rowsOf = (rs: Row[]) => rs.map(r => [r.depth, r.path, r.vf, r.vt, r.size, r.n_files]).sort((x, y) => (`${x[0]}${x[1]}${x[2]}` < `${y[0]}${y[1]}${y[2]}` ? -1 : 1))
+    let asked = 0
+    let found = 0
+    const groups = { bounded: 0, plain: 0 }
+    for (const here of DATES) {
+      const h = await openIndex(env, here, 'path')
+      const D = h.asOf!
+      for (const there of DATES) {
+        if (there === here) continue
+        const asks: Ask[] = live.get(there)!.filter(r => !(r.vf! <= D && D < r.vt!))
+          .map(r => ({ depth: r.depth, path: r.path, ...(D < r.vf! ? { vtLe: r.vf! } : { vfGe: r.vt! }) }))
+        const want = new Set(asks.map(a => key(a as { depth: number; path: string })))
+        const keep = (r: Row) => want.has(key(r))
+        const [b, u] = await Promise.all([
+          readAsks(h, asks, keep, { maxGroups: 1 << 20 }),
+          readAsks(h, asks.map(a => ({ depth: a.depth, path: (a as { path: string }).path })), keep, { maxGroups: 1 << 20 }),
+        ])
+        expect({ here, there, rows: rowsOf(b.rows) }).toEqual({ here, there, rows: rowsOf(u.rows) })
+        asked += asks.length
+        found += b.rows.length
+        groups.bounded += b.groups
+        groups.plain += u.groups
+      }
+    }
+    expect({ asked, found, groups }).toEqual({ asked: 580, found: 510, groups: { bounded: 155, plain: 155 } })
+  })
+
+  it('leaves a per-scan read of a date it holds as it was: one isolate serves both under `PATH_STORE=opt-in`', async () => {
+    // A per-scan v1 generation of the store's first scan, with a coarse tier (the fine tier's rows, floor 1).
+    const D = '2026-07-30'
+    const { db, raw } = await sqliteD1('cw')
+    const v1 = await readJson<Record<string, D1Variant>>('path-index-zstd.d1.json')
+    const tier = { parquet: 'path-index-zstd.parquet', groups: 'path-index-zstd.groups.json' }
+    seedGeneration(raw, { date: D, gen: 'p1', dir: `listing/${D}/index/p1`, variants: { ...v1, coarse20: { ...v1.path, schema: { ...v1.path.schema, floor_bytes: 1 } } }, files: { path: tier, coarse20: tier } })
+    const per = { DB: db, ROOT_LABEL: 'all buckets', GCS_HMAC_KEY_ID: 'k', GCS_HMAC_SECRET: 's' } as Env
+    const o = { date: D, path: '', w: 1280, h: 800, minArea: 12, atten: 2, threshold: 1 }
+    const before = await buildView(per, o)
+    // The store's read of the date finds its `path` sort a store sort, so no coarse tier answers it…
+    const held = await buildView({ ...per, PATH_STORE: 'intervals', INTERVAL_STORE_GEN: 'g1', INDEX_R2: r2([]) } as Env, o)
+    // …which says nothing about the per-scan generation's coarse tier.
+    const after = await buildView(per, o)
+    expect([before.index, before.tier, held.index, after.index, after.tier, after.tree]).toEqual(['d1', 'coarse20', 'iv:g1', 'd1', 'coarse20', before.tree])
   })
 
   it('diffs two scans from the store', async () => {
