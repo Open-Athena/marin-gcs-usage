@@ -112,6 +112,9 @@ class Fake:
             self.keys[f"{ROOT}/{out['key']}/meta.json"] = None
             if all(r["key"] in drilled for r in ins):
                 self.keys[f"{ROOT}/{out['key']}/drill/meta.json"] = None
+            for t in ("anchors", "anchors/start"):  # `run_tiers`: names + anchors when every input carries them
+                if all(f"{ROOT}/{r['key']}/{t}/meta.json" in self.keys for r in ins):
+                    self.keys[f"{ROOT}/{out['key']}/{t}/meta.json"] = None
             scan, rev = parse_manifest(key.rsplit("/", 1)[-1])
             self.keys[f"{ROOT}/manifests/{manifest_name(scan, rev + 1)}"] = {**m, "runs": rebase(m["runs"], [r["key"] for r in ins], out)}
 
@@ -128,6 +131,16 @@ class Fake:
             return
         words = call[2].split()
         d = words[words.index("-d") + 1] if "-d" in words else None
+        if stage in ("drill-merge", "anchors-merge"):
+            # `static_merge tier`: the merged run's tier, from its scans' level-0 runs' (each must have it)
+            key, tier = words[words.index("-r") + 1], words[words.index("-t") + 1]
+            ms = manifest_keys([k.removeprefix(f"{ROOT}/") for k in self.keys if k.startswith(f"{ROOT}/manifests/")])
+            run = next(r for m in reversed(ms) for r in self.keys[f"{ROOT}/{m}"]["runs"] if r["key"] == key)
+            assert all(f"{ROOT}/deltas/{x}/{tier}/meta.json" in self.keys for x in run["scans"]), (key, tier)
+            self.keys[f"{ROOT}/{key}/{tier}/meta.json"] = None
+            if tier == "anchors" and all(f"{ROOT}/deltas/{x}/anchors/start/meta.json" in self.keys for x in run["scans"]):
+                self.keys[f"{ROOT}/{key}/anchors/start/meta.json"] = None
+            return
         out = {"append": [f"{ROOT}/deltas/{d}/dhist/r{i:04d}.parquet" for i in range(8)], "shards": [f"{ROOT}/deltas/{d}/sidecar.parquet"],
                "catalog": [f"{ROOT}/deltas/{d}/catalog/meta.json"], "drill": [f"{ROOT}/deltas/{d}/drill/meta.json"],
                "anchors": [f"{ROOT}/deltas/{d}/anchors/meta.json", *([f"{ROOT}/deltas/{d}/anchors/start/meta.json"] if f"{ROOT}/anchors/start/meta.json" in self.keys else [])]}.get(stage, [])
@@ -156,6 +169,11 @@ def _py(module: str, *args: str, mount: bool = True) -> str:
 def _runs(*ids: str) -> list[dict]:
     """Level-0 runs of scans `ids`, as `publish` lists them."""
     return [{"key": f"deltas/{d}", "first": d, "last": d, "level": 0, "scans": [d]} for d in ids]
+
+
+def _had(d: str, *tiers: str) -> dict:
+    """Run `deltas/<d>`'s `tiers` (`drill`, `anchors`, `anchors/start`) built, and with `anchors`, the base's anchors."""
+    return {**{f"{ROOT}/deltas/{d}/{t}/meta.json": None for t in tiers}, **({f"{ROOT}/anchors/meta.json": None} if "anchors" in tiers else {})}
 
 
 def _r2(d: str, runs: list[str], manifest: str | None = None) -> tuple:
@@ -257,9 +275,10 @@ def test_an_appended_scan_without_its_drill_gets_it_then_the_r2_copy():
     its drill, then copies it (its `meta.json` last) and prunes."""
     d = "2026-10-09T1236"
     runs = _runs("2026-10-09", d)
-    f = Fake({f"{ROOT}/manifests/{d}.json": {"date": d, "runs": runs}}, [d])
+    f = Fake({f"{ROOT}/manifests/{d}.json": {"date": d, "runs": runs}, **_had("2026-10-09", "drill")}, [d])
     assert f.daily(DRILL).run(d) == []
-    assert f.calls == [_chain(d, [], drill=True)[4], _r2(d, ["2026-10-09", d]), ("prune", d)]
+    # both runs drilled now: the carry is due
+    assert f.calls == [_chain(d, [], drill=True)[4], _r2(d, ["2026-10-09", d]), ("prune", d), _merge()]
 
 
 def test_dry_run_submits_nothing():
@@ -387,22 +406,22 @@ def test_a_run_without_the_starts_with_catalog_gets_its_anchors_stage_again():
     d = "2026-10-09T1236"
     runs = _runs("2026-10-09", d)
     keys = {f"{ROOT}/manifests/{d}.json": {"date": d, "runs": runs}, f"{ROOT}/deltas/{d}/drill/meta.json": None, f"{ROOT}/deltas/{d}/anchors/meta.json": None,
-            f"{ROOT}/anchors/start/meta.json": None}
+            f"{ROOT}/anchors/start/meta.json": None, **_had("2026-10-09", "drill", "anchors", "anchors/start")}
     f = Fake(keys, [d])
     assert f.daily(ANCHORS).run(d) == []
-    assert f.calls == [_chain(d, [], drill=True, anchors=True)[5], _r2(d, ["2026-10-09", d]), ("prune", d)]
+    assert f.calls == [_chain(d, [], drill=True, anchors=True)[5], _r2(d, ["2026-10-09", d]), ("prune", d), _merge()]
     assert f"{ROOT}/deltas/{d}/anchors/start/meta.json" in f.keys
     f.calls = []
-    f.daily(ANCHORS).run(d)
+    f.daily(ANCHORS, merge=False).run(d)
     assert f.calls == [_r2(d, ["2026-10-09", d]), ("prune", d)]
 
 
 def test_an_appended_scan_without_its_anchors_gets_them_then_the_r2_copy():
     d = "2026-10-09T1236"
     runs = _runs("2026-10-09", d)
-    f = Fake({f"{ROOT}/manifests/{d}.json": {"date": d, "runs": runs}, f"{ROOT}/deltas/{d}/drill/meta.json": None}, [d])
+    f = Fake({f"{ROOT}/manifests/{d}.json": {"date": d, "runs": runs}, f"{ROOT}/deltas/{d}/drill/meta.json": None, **_had("2026-10-09", "drill", "anchors")}, [d])
     assert f.daily(ANCHORS).run(d) == []
-    assert f.calls == [_chain(d, [], drill=True, anchors=True)[5], _r2(d, ["2026-10-09", d]), ("prune", d)]
+    assert f.calls == [_chain(d, [], drill=True, anchors=True)[5], _r2(d, ["2026-10-09", d]), ("prune", d), _merge()]
 
 
 def _done(d: str, *stages: str) -> dict:
@@ -432,10 +451,10 @@ def test_drill_and_anchors_are_in_flight_at_once():
 def test_an_appended_scan_missing_both_gets_them_at_once():
     d = "2026-10-09T1236"
     runs = _runs("2026-10-09", d)
-    f = Fake({f"{ROOT}/manifests/{d}.json": {"date": d, "runs": runs}}, [d], barrier=("drill", "anchors"))
+    f = Fake({f"{ROOT}/manifests/{d}.json": {"date": d, "runs": runs}, **_had("2026-10-09", "drill", "anchors")}, [d], barrier=("drill", "anchors"))
     assert f.daily(ANCHORS).run(d) == []
     chain = _chain(d, [], drill=True, anchors=True)
-    assert f.calls == [chain[4], chain[5], _r2(d, ["2026-10-09", d]), ("prune", d)]
+    assert f.calls == [chain[4], chain[5], _r2(d, ["2026-10-09", d]), ("prune", d), _merge()]
 
 
 @pytest.mark.parametrize("done, missing", [("drill", 5), ("anchors", 4)])
@@ -593,3 +612,148 @@ def test_batch_runner_stops_watching_after_its_wait(monkeypatch):
     assert (str(e.value), submitted, polls) == ("Batch job j1: still running after 0s", ["j1"], [])
     run("j2", {})
     assert (submitted, polls) == (["j1", "j2"], ["j2", "j2", "j2"])
+
+
+# ── Backfill: every listed run's drill and anchors ─────────────────────────
+
+#: cw's 2026-10-10: a catch-up by an image from before cw's `drill` (and deferred carries) appended 1801 and 0001, carried
+#: inline into the level-1 run `deltas/1801_0001` (no `drill/`); then 0601, appended by the current image, whose drill
+#: failed (its build reads the merged run's drill).
+CW_SCANS = ["2026-10-09T1801", "2026-10-10T0001", "2026-10-10T0601"]
+CW_L1 = {"key": f"deltas/{CW_SCANS[0]}_{CW_SCANS[1]}", "first": CW_SCANS[0], "last": CW_SCANS[1], "level": 1, "scans": CW_SCANS[:2]}
+
+
+def _cw_keys(*built: str, tiers: tuple[str, ...] = ("drill",)) -> dict:
+    """cw's manifests, with `built` (run keys) holding `tiers`."""
+    a, b, c = CW_SCANS
+    return {
+        f"{ROOT}/manifests/{a}.json": {"date": a, "runs": _runs(a)},
+        f"{ROOT}/manifests/{b}.json": {"date": b, "runs": [CW_L1]},
+        f"{ROOT}/manifests/{c}.json": {"date": c, "runs": [CW_L1, *_runs(c)]},
+        **{f"{ROOT}/{k}/{t}/meta.json": None for k in built for t in tiers},
+    }
+
+
+def _drill_build(d: str) -> tuple:
+    return ("drill", 2, _py("static_drill", "build", f"-g {GEN} -d {d}", "-k", "task", "-M", "90GB", "-p", "16"))
+
+
+def _tier_merge(key: str, tier: str = "drill") -> tuple:
+    return (f"{tier}-merge", 1, _py("static_merge", "tier", "-g", GEN, "-r", key, "-t", tier, "-M", "90GB", "-p", "16"))
+
+
+def test_a_merged_run_without_its_drill_is_backfilled_oldest_first_then_copied_to_r2():
+    """The rerun cw needs (`runs add 2026-10-10T0601`, already appended): 1801's drill (over the base), 0001's (over 1801's:
+    the manifest before it lists `deltas/1801`), the merged run's from those two, then 0601's (over the merged run's);
+    then the R2 job copies both listed runs, each `drill/meta.json` last; no carry is due (`[L1, L0]`)."""
+    a, b, c = CW_SCANS
+    f = Fake(_cw_keys(), CW_SCANS)
+    assert f.daily(DRILL).run(c) == []
+    assert f.calls == [_drill_build(a), _drill_build(b), _tier_merge(CW_L1["key"]), _drill_build(c), _r2(c, [f"{a}_{b}", c]), ("prune", c)]
+    assert sorted(k for k in f.keys if k.endswith("/drill/meta.json")) == [f"{ROOT}/deltas/{x}/drill/meta.json" for x in (a, f"{a}_{b}", b, c)]
+
+
+def test_the_next_scan_backfills_first_then_runs_its_chain_and_the_carry():
+    """With 1201 published, `runs add -c 2026-10-10T1201`: the backfill, then 1201's own chain (its drill over the now
+    drilled stack), its R2 job listing every run; then the carry `[L1, L0, L0]` → L2 is due."""
+    a, b, c = CW_SCANS
+    d = "2026-10-10T1201"
+    f = Fake(_cw_keys(), [*CW_SCANS, d])
+    assert f.daily(DRILL).run(d, catch_up=True) == [d]
+    assert f.calls == [_drill_build(a), _drill_build(b), _tier_merge(CW_L1["key"]), _drill_build(c),
+                       *_chain(d, [f"{a}_{b}", c, d], drill=True), _merge()]
+
+
+def test_a_partly_backfilled_stack_resumes_at_the_first_missing_drill():
+    """1801's and 0001's built (an earlier attempt), the merge not: the rerun merges, then builds 0601's."""
+    a, b, c = CW_SCANS
+    f = Fake(_cw_keys(f"deltas/{a}", f"deltas/{b}"), CW_SCANS)
+    f.daily(DRILL).run(c)
+    assert f.calls == [_tier_merge(CW_L1["key"]), _drill_build(c), _r2(c, [f"{a}_{b}", c]), ("prune", c)]
+
+
+def test_a_complete_stack_is_a_no_op():
+    a, b, c = CW_SCANS
+    f = Fake(_cw_keys(CW_L1["key"], f"deltas/{c}"), CW_SCANS)
+    assert f.daily(DRILL).run(c) == []
+    assert f.calls == [_r2(c, [f"{a}_{b}", c]), ("prune", c)]
+    # without the profile's `drill`, nothing is backfilled either
+    f, f.calls = Fake(_cw_keys(), CW_SCANS), []
+    f.daily().run(c)
+    assert f.calls == [_r2(c, [f"{a}_{b}", c]), ("prune", c)]
+
+
+@pytest.mark.parametrize("fails", ["drill", "drill-merge"])
+def test_a_failed_backfill_fails_the_run_and_a_rerun_resumes_it(fails):
+    """Fatal, as the drill stage is: nothing after it runs (no R2 copy, no prune, no carry); the rerun resumes at the failed
+    step (the steps before it kept)."""
+    a, b, c = CW_SCANS
+    f = Fake(_cw_keys(), CW_SCANS, fail=(fails,))
+    with pytest.raises(RuntimeError) as e:
+        f.daily(DRILL).run(c)
+    stage = f"{fails}-{b.lower().replace('t', '-')}" if fails == "drill-merge" else f"drill-{a.lower().replace('t', '-')}"
+    assert str(e.value) == f"Batch job sn-{stage}-123456: FAILED"
+    first = [_drill_build(a), _drill_build(b), _tier_merge(CW_L1["key"])]
+    assert f.calls == first[:3 if fails == "drill-merge" else 1]
+    f.calls, f.fail = [], ()
+    f.daily(DRILL).run(c)
+    assert f.calls == [*first[2 if fails == "drill-merge" else 0:], _drill_build(c), _r2(c, [f"{a}_{b}", c]), ("prune", c)]
+
+
+def test_a_merge_job_that_writes_no_drill_fails_the_check():
+    a, b, c = CW_SCANS
+    f = Fake(_cw_keys(f"deltas/{a}", f"deltas/{b}"), CW_SCANS, silent=("drill-merge",))
+    with pytest.raises(RuntimeError) as e:
+        f.daily(DRILL).run(c)
+    assert (str(e.value), f.calls) == (f"{ROOT}/deltas/{a}_{b}: its drill not written (the merge job succeeded)", [_tier_merge(CW_L1["key"])])
+
+
+def test_anchors_are_backfilled_beside_the_drill():
+    """With the profile's `anchors` and the base's: the anchors' chain (each scan's `anchors run`, the merged run's
+    `static_merge tier -t anchors`) beside the drill's, each oldest first."""
+    a, b, c = CW_SCANS
+    f = Fake({**_cw_keys(), f"{ROOT}/anchors/meta.json": None}, CW_SCANS)
+    f.daily(ANCHORS).run(c)
+    anchors = lambda d: ("anchors", 1, _py("static_anchors", "run", f"-g {GEN} -d {d}", "-M", "90GB", "-p", "16"))  # noqa: E731
+    fam = lambda t: [x for x in f.calls if x[0] in (t, f"{t}-merge")]  # noqa: E731
+    assert (fam("drill"), fam("anchors"), f.calls[-2:]) == (
+        [_drill_build(a), _drill_build(b), _tier_merge(CW_L1["key"]), _drill_build(c)],
+        [anchors(a), anchors(b), _tier_merge(CW_L1["key"], "anchors"), anchors(c)],
+        [_r2(c, [f"{a}_{b}", c]), ("prune", c)])
+    # no anchors on the base: none backfilled
+    f = Fake(_cw_keys(CW_L1["key"], f"deltas/{c}"), CW_SCANS)
+    f.daily(ANCHORS).run(c)
+    assert f.calls == [_r2(c, [f"{a}_{b}", c]), ("prune", c)]
+
+
+def test_runs_merge_backfills_then_copies_then_carries(monkeypatch):
+    """`runs merge`: the backfill, the R2 job for the newest manifest (its runs' drills, `meta.json` last), then the merge
+    stage (none due here); a failing backfill exits 1."""
+    from click.testing import CliRunner
+
+    a, b, c = CW_SCANS
+    f = Fake(_cw_keys(), CW_SCANS, fail=("drill-merge",))
+    monkeypatch.setattr(sd, "ready", lambda p, gen: DRILL)
+    monkeypatch.setattr(sd, "profile", lambda: DRILL)
+    monkeypatch.setattr(sd, "gcs_runner", lambda cfg, **kw: f.daily(cfg, merge_wait=kw.get("merge_wait")))
+    errs = []
+    monkeypatch.setattr(sd, "err", errs.append)
+    r = CliRunner().invoke(sd.merge_cmd, [])
+    assert (r.exit_code, errs) == (1, [f"static-names runs merge: Batch job sn-drill-merge-{b.lower().replace('t', '-')}-123456: FAILED"])
+    f.fail, f.calls = (), []
+    r = CliRunner().invoke(sd.merge_cmd, [])
+    assert (r.exit_code, f.calls) == (0, [_tier_merge(CW_L1["key"]), _drill_build(c), _r2(c, [f"{a}_{b}", c])])
+
+
+def test_a_folded_run_an_inner_scan_was_built_over_is_backfilled_before_that_scan():
+    """Four scans carried inline into one L2 by an old image: the newest manifest lists only `deltas/a_d`, but the manifest
+    before c listed `deltas/a_b`, which c's build reads as its earlier tier: a_b's drill is merged before c's is built."""
+    a, b, c, d = SCANS
+    l1 = {"key": f"deltas/{a}_{b}", "first": a, "last": b, "level": 1, "scans": [a, b]}
+    l2 = {"key": f"deltas/{a}_{d}", "first": a, "last": d, "level": 2, "scans": SCANS}
+    f = Fake({f"{ROOT}/manifests/{a}.json": {"date": a, "runs": _runs(a)}, f"{ROOT}/manifests/{b}.json": {"date": b, "runs": [l1]},
+              f"{ROOT}/manifests/{c}.json": {"date": c, "runs": [l1, *_runs(c)]}, f"{ROOT}/manifests/{d}.json": {"date": d, "runs": [l2]}}, SCANS)
+    assert f.daily(DRILL).backfill_plan("drill") == [("build", a), ("build", b), ("merge", l1["key"]), ("build", c), ("build", d), ("merge", l2["key"])]
+    f.daily(DRILL).run(d)
+    assert f.calls == [_drill_build(a), _drill_build(b), _tier_merge(l1["key"]), _drill_build(c), _drill_build(d), _tier_merge(l2["key"]),
+                       _r2(d, [f"{a}_{d}"]), ("prune", d)]
