@@ -187,6 +187,10 @@ interface BlobGroup extends Span {
   vfMax?: number
   vtMin?: number
   vtMax?: number
+  /** An interval-store group's smallest size key (`b_min`) and its segment (`seg`; groups never mix segments):
+   *  with its neighbours', what bounds a size sort's group tighter than its min/max (`sizeNeighbours`). */
+  bMin?: number
+  seg?: number
 }
 /** Cold-footer-backed: the tier's footer rows as `<tier>.groups.parquet`
  * (written beside it by `index-sync` / `index-blob`), opened when the D1
@@ -1019,8 +1023,10 @@ async function openIvFooter(env: Env, key: string, src: ByteStore): Promise<Foot
   return { ...f, full }
 }
 
-/** The columns of an interval store's footer group (bounds, time bounds, metadata). */
-const IV_FOOTER_COLS = [...FOOTER_BOUNDS, 'vf_min', 'vf_max', 'vt_min', 'vt_max', 'rg_json']
+/** The columns of an interval store's footer group (bounds, time bounds, metadata, then the size floor and segment). */
+const IV_FOOTER_COLS = [...FOOTER_BOUNDS, 'vf_min', 'vf_max', 'vt_min', 'vt_max', 'rg_json', 'b_min', 'seg']
+/** The colo copy's layout (`IV_FOOTER_COLS`): bumped when its columns change, so an older copy is never read. */
+const IV_FOOTER_DOC = 2
 /** A footer group as the colo holds it: one array per column of `IV_FOOTER_COLS`, in its rows' (`rg`) order. */
 type FooterDoc = Record<string, (number | string | null)[]>
 const docsInFlight = new Map<string, Promise<{ groups: BlobGroup[]; json: [number, string][] }>>()
@@ -1036,7 +1042,7 @@ async function ivFooterDoc(h: PqHandle, fg: FooterGroup): Promise<{ groups: Blob
   if (pending) return pending
   const p = (async () => {
     const t0 = now()
-    const ck = coloKey(h.env, h.footer.key, `fd=${fg.n}`)
+    const ck = coloKey(h.env, h.footer.key, `fd=${fg.n}&d=${IV_FOOTER_DOC}`)
     const hit = await colo().match(ck)
     let doc: FooterDoc
     if (hit) doc = await hit.json<FooterDoc>()
@@ -1050,12 +1056,13 @@ async function ivFooterDoc(h: PqHandle, fg: FooterGroup): Promise<{ groups: Blob
       doc = Object.fromEntries(IV_FOOTER_COLS.map(c => [c, rows.map(r => r[c] == null ? null : typeof r[c] === 'string' ? r[c] as string : num(r[c]))]))
       await colo().put(ck, new Response(JSON.stringify(doc), { headers: { 'content-type': 'application/json', 'cache-control': `max-age=${BLOB_CACHE_TTL}` } }))
     }
-    const col = (c: string) => doc[c]
-    const [rg, d0, d1, p0, p1, bx, u0, u1, rs, re, vf0, vf1, vt0, vt1, js] = IV_FOOTER_COLS.map(col)
+    const col = (c: string) => doc[c] ?? []
+    const [rg, d0, d1, p0, p1, bx, u0, u1, rs, re, vf0, vf1, vt0, vt1, js, bn, sg] = IV_FOOTER_COLS.map(col)
     const groups = rg.map((_, i): BlobGroup => ({
       rg: rg[i] as number, dMin: d0[i] as number, dMax: d1[i] as number, pMin: p0[i] as string, pMax: p1[i] as string, bMax: bx[i] as number,
       uMin: u0[i] as string | null, uMax: u1[i] as string | null, rowStart: rs[i] as number, rowEnd: re[i] as number, rgJson: '',
       vfMin: vf0[i] as number, vfMax: vf1[i] as number, vtMin: vt0[i] as number, vtMax: vt1[i] as number,
+      ...(bn[i] != null && sg[i] != null ? { bMin: bn[i] as number, seg: sg[i] as number } : {}),
     }))
     // Footer rows are in `rg` order from the group's first.
     const json = js.map((j, i): [number, string] => [fg.rgStart + i, j as string])
@@ -1138,7 +1145,7 @@ async function readFooterJson(h: PqHandle, fg: FooterGroup): Promise<Map<number,
  * bounds contain every row's — and `groupMatches` / `groupMatchesSize`
  * applied to the bounds is exactly that relaxation (a depth-spanning range
  * skips the path test, a mixed-user one the keyed rect). */
-async function pqGroups(h: PqHandle, pass0: (g: NonNullable<FooterGroup['bounds']>) => boolean): Promise<BlobGroup[]> {
+async function pqGroups(h: PqHandle, pass0: (g: NonNullable<FooterGroup['bounds']>) => boolean, near?: (g: BlobGroup, prev?: BlobGroup, next?: BlobGroup) => boolean): Promise<BlobGroup[]> {
   // As of a scan (an interval store): a group can answer only if one of its versions is live then.
   // A run's group can matter once a version in it opened by then, live or not (its close records end versions).
   const D = h.asOf
@@ -1148,7 +1155,15 @@ async function pqGroups(h: PqHandle, pass0: (g: NonNullable<FooterGroup['bounds'
   const sel = h.footer.groups.filter(fg => !fg.bounds || pass(fg.bounds))
   h.trace?.('fgroups', sel.length)
   const all = (await mapLimit(sel, GROUP_READS, fg => readFooterGroup(h, fg))).flat()
-  return all.filter(pass)
+  if (!near) return all.filter(pass)
+  // `all` is in `rg` order, a footer group's tier groups after the previous one's: a group's neighbours in the file
+  // are those next to it here with the adjacent `rg` (an unselected footer group's are not here, and not used).
+  return all.filter((g, i) => {
+    if (!pass(g)) return false
+    const prev = i > 0 && all[i - 1].rg === g.rg - 1 ? all[i - 1] : undefined
+    const next = i + 1 < all.length && all[i + 1].rg === g.rg + 1 ? all[i + 1] : undefined
+    return near(g, prev, next)
+  })
 }
 
 // --- shared row shaping ------------------------------------------------------
@@ -1363,12 +1378,6 @@ async function readGroupVersions(h: IndexHandle, rgJson: string, columns?: strin
   return (await readGroupRaw(h, rgJson, columns ?? h.columns ?? undefined)).map(toRow(h))
 }
 
-/** A row group's every version (an interval-store handle), unfiltered by time: what the group cache
- *  holds for it, shared by every scan the store serves. */
-async function readGroupAll(h: IndexHandle, rgJson: string, held?: FileSlice): Promise<{ raw: Record<string, unknown>[]; rows: Row[] }> {
-  const raw = await readGroupRaw(h, rgJson, h.columns ?? undefined, held)
-  return { raw, rows: raw.map(toRow(h)) }
-}
 
 // --- an interval store's decoded row groups, through the colo cache ------------------------------------
 //
@@ -1416,21 +1425,55 @@ export function groupRows(d: GroupDoc): Record<string, unknown>[] {
   return out
 }
 
+/** A read's cheap test of a row from its raw `depth`, `path` and `size`, true for every row its `keep` holds (and
+ *  maybe more): an interval store's group shapes only the rows it passes (`IvGroup.pick`). */
+export type Pre = (depth: number, path: string, size: number) => boolean
+
+/** An interval store's group as the isolate holds it, every version: its decoded columns, each row shaped only
+ *  when a read wants it. A drilled view keeps a few of a size sort's 8K rows per group, and shaping all of them
+ *  (`groupRows` + `toRow`) cost more than parsing them. `all` shapes every row once; `pick` the rows a read's
+ *  `Pre` passes, without the rest. A group whose values JSON can't hold (`groupDoc` null) is held shaped. */
+export class IvGroup {
+  private rows?: Row[]
+  constructor(private readonly h: { version: number }, private readonly doc: GroupDoc | null, rows?: Row[]) {
+    this.rows = rows
+  }
+  get length(): number {
+    return this.rows?.length ?? this.doc?.v[0]?.length ?? 0
+  }
+  all(): Row[] {
+    return (this.rows ??= groupRows(this.doc!).map(toRow(this.h)))
+  }
+  pick(pre: Pre): Row[] {
+    if (this.rows) return this.rows.filter(r => pre(r.depth, r.path, r.size))
+    const { cols, v } = this.doc!
+    const [d, p, s] = ['depth', 'path', 'size'].map(c => cols.indexOf(c))
+    if (d < 0 || p < 0 || s < 0) return this.all()
+    const shape = toRow(this.h)
+    const [dv, pv, sv] = [v[d], v[p], v[s]]
+    const out: Row[] = []
+    for (let i = 0; i < pv.length; i++) {
+      if (!pre(dv[i] as number, pv[i] as string, sv[i] as number)) continue
+      const r: Record<string, unknown> = {}
+      for (let j = 0; j < cols.length; j++) r[cols[j]] = v[j][i]
+      out.push(shape(r))
+    }
+    return out
+  }
+}
+
 /** The colo's decoded copy of an interval store's group (null: not there). */
-async function coloGroup(h: IndexHandle, rg: number): Promise<Row[] | null> {
+async function coloGroup(h: IndexHandle, rg: number): Promise<IvGroup | null> {
   const hit = await colo().match(groupColoKey(h, rg))
   if (!hit?.body) return null
   const t0 = now()
   const d = await new Response(hit.body.pipeThrough(new DecompressionStream('gzip'))).json<GroupDoc>()
-  const rows = groupRows(d).map(toRow(h))
   h.trace?.('gjson', now() - t0, h.variant)
-  return rows
+  return new IvGroup(h, d)
 }
 
 /** Put a group's decoded copy in the colo, best effort and not waited for (a read never waits on the cache). */
-function putColoGroup(h: IndexHandle, rg: number, raw: Record<string, unknown>[]): void {
-  const d = groupDoc(raw, h.columns ?? Object.keys(raw[0] ?? {}))
-  if (!d) return
+function putColoGroup(h: IndexHandle, rg: number, d: GroupDoc): void {
   const body = new Response(JSON.stringify(d)).body!.pipeThrough(new CompressionStream('gzip'))
   // Buffered: the Cache API wants a known length.
   const p: Promise<void> = new Response(body).arrayBuffer()
@@ -1537,13 +1580,16 @@ const groupKey = (h: IndexHandle, rg: number) => `${storeKey(h.env)}|${h.date}|$
  *  read of the same group waits for instead of fetching and decoding it again. One entry for both
  *  sides is what lets a root diff's ~20 groups fit the LRU (gcs `2026-10-09b`). */
 const ivGroupKey = (h: IndexHandle, rg: number) => `${storeKey(h.env)}|iv|${h.variant}|${h.gen}|${rg}`
-const groupsInFlight = new Map<string, Promise<Row[] | null>>()
+const groupsInFlight = new Map<string, Promise<IvGroup | null>>()
+
+/** An interval store's group held by the isolate (every version), or undefined. */
+const cachedIvGroup = (h: IndexHandle, rg: number): IvGroup | undefined => cacheGet<IvGroup>(ivGroupKey(h, rg))?.[0]
 
 /** A group's cached rows at the handle's scan (an interval store's entry filtered to its live versions). */
 function cachedGroup(h: IndexHandle, rg: number): Row[] | undefined {
   if (h.asOf == null) return cacheGet<Row>(groupKey(h, rg))
-  const all = cacheGet<Row>(ivGroupKey(h, rg))
-  return all && liveAt(h, all)
+  const g = cachedIvGroup(h, rg)
+  return g && liveAt(h, g.all())
 }
 
 /** Many row groups' shaped rows, each through the decoded-group cache; the
@@ -1555,20 +1601,28 @@ function cachedGroup(h: IndexHandle, rg: number): Row[] | undefined {
  *  are skipped (their slots stay empty), so abandoned work stops taking the isolate's CPU. */
 /** `versions`: an interval store's groups are handed to `f` with every version (a tiered read combines the tiers'
  *  rows before testing liveness, `combineLive`), not only those live at the handle's scan. */
-async function readGroupsCached<T>(h: IndexHandle, groups: { rg: number; json: string }[], f: (rows: Row[]) => T, stop?: () => boolean, versions = false): Promise<T[]> {
+/** `pre`: on an interval store, the read's cheap row test (`Pre`); `f` is then handed only the rows it passes. */
+async function readGroupsCached<T>(h: IndexHandle, groups: { rg: number; json: string }[], f: (rows: Row[]) => T, stop?: () => boolean, versions = false, pre?: Pre): Promise<T[]> {
   const out: T[] = new Array(groups.length)
   const miss: { i: number; rg: number; json: string; start: number; end: number }[] = []
   const waits: Promise<void>[] = []
   const iv = h.asOf != null
   // The groups this read fetches for any waiting read (`ivGroupKey` → resolve with every version).
-  const mine = new Map<string, (rows: Row[] | null) => void>()
+  const mine = new Map<string, (g: IvGroup | null) => void>()
   // A group's rows at this handle's scan (the entry holds every version: `cachedGroup`).
-  const take = (i: number, rg: number, all: Row[], put: boolean) => {
-    if (put) cachePut(ivGroupKey(h, rg), all, all.length * ROW_BYTES)
-    out[i] = f(versions ? all : liveAt(h, all))
+  const take = (i: number, rg: number, g: IvGroup, put: boolean) => {
+    if (put) cachePut(ivGroupKey(h, rg), [g], g.length * ROW_BYTES)
+    const rows = pre ? g.pick(pre) : g.all()
+    out[i] = f(versions ? rows : liveAt(h, rows))
   }
   groups.forEach((g, i) => {
-    const hit = versions && iv ? cacheGet<Row>(ivGroupKey(h, g.rg)) : cachedGroup(h, g.rg)
+    const held = iv ? cachedIvGroup(h, g.rg) : undefined
+    if (held) {
+      h.trace?.('gcache', 1)
+      take(i, g.rg, held, false)
+      return
+    }
+    const hit = iv ? undefined : cachedGroup(h, g.rg)
     if (hit) {
       h.trace?.('gcache', 1)
       out[i] = f(hit)
@@ -1579,21 +1633,21 @@ async function readGroupsCached<T>(h: IndexHandle, groups: { rg: number; json: s
       const pending = groupsInFlight.get(fk)
       if (pending) {
         h.trace?.('gshared', 1)
-        waits.push(pending.then(all => { if (all) take(i, g.rg, all, false) }))
+        waits.push(pending.then(got => { if (got) take(i, g.rg, got, false) }))
         return
       }
-      let resolve!: (rows: Row[] | null) => void
+      let resolve!: (g: IvGroup | null) => void
       groupsInFlight.set(fk, new Promise(r => { resolve = r }))
       mine.set(fk, resolve)
     }
     miss.push({ i, ...g, start: 0, end: 0 })
   })
-  const settle = (fk: string, rows: Row[] | null) => {
+  const settle = (fk: string, got: IvGroup | null) => {
     const r = mine.get(fk)
     if (!r) return
     mine.delete(fk)
     groupsInFlight.delete(fk)
-    r(rows)
+    r(got)
   }
   try {
     // An interval store's misses: first the colo's decoded copies (`coloGroup`), then the rest from the file.
@@ -1622,10 +1676,12 @@ async function readGroupsCached<T>(h: IndexHandle, groups: { rg: number; json: s
           out[g.i] = f(rows)
           continue
         }
-        const { raw, rows: all } = await readGroupAll(h, g.json, file)
+        const raw = await readGroupRaw(h, g.json, h.columns ?? undefined, file)
+        const doc = groupDoc(raw, h.columns ?? Object.keys(raw[0] ?? {}))
+        const all = new IvGroup(h, doc, doc ? undefined : raw.map(toRow(h)))
         take(g.i, g.rg, all, true)
         settle(ivGroupKey(h, g.rg), all)
-        if (h.dataKey) putColoGroup(h, g.rg, raw)
+        if (h.dataKey && doc) putColoGroup(h, g.rg, doc)
       }
     })
   } finally {
@@ -1810,8 +1866,8 @@ export async function readRects(
   const kept = plan ?? await planRects(h, rects, thrAt, lens)
   // A row passes the lens iff its usr equals the key.
   const lensOk = (r: Row) => !lens || r.usr === lens.key
-  const inRect = (r: Row) => rects.some(q => r.depth >= q.dLo && r.depth <= q.dHi && r.path >= q.pLo && r.path <= q.pHi)
-  return decodeSpans(h, kept, r => inRect(r) && lensOk(r), stop)
+  const at = (depth: number, path: string) => rects.some(q => depth >= q.dLo && depth <= q.dHi && path >= q.pLo && path <= q.pHi)
+  return decodeSpans(h, kept, r => at(r.depth, r.path) && lensOk(r), stop, at)
 }
 
 /** The row groups a `readRects` decodes — the span queries' candidates
@@ -1841,7 +1897,9 @@ export async function planRects(
  * subtree reads. Caps the group count and the rows decoded: a broad lens (a
  * big user spread across the estate) can select few-enough groups but still
  * decode millions of rows and blow the Worker CPU. Error cleanly instead. */
-async function decodeSpans(h: IndexHandle, kept: Span[], keep: (r: Row) => boolean, stop?: () => boolean): Promise<Row[]> {
+/** `pre`: a cheap superset of `keep` on a row's raw `depth`, `path` and `size` (`Pre`): an interval store's groups
+ *  shape only the rows it passes. */
+async function decodeSpans(h: IndexHandle, kept: Span[], keep: (r: Row) => boolean, stop?: () => boolean, pre?: Pre): Promise<Row[]> {
   if (kept.length > 250) throw new Error('query too wide: drill deeper or raise minArea')
   const totalRows = kept.reduce((n, s) => n + (s.rowEnd - s.rowStart), 0)
   if (totalRows > 700_000) throw new Error('query too wide: drill deeper or raise minArea')
@@ -1853,7 +1911,7 @@ async function decodeSpans(h: IndexHandle, kept: Span[], keep: (r: Row) => boole
       const mine = kept.filter(s => (s.tier ?? 0) === i)
       if (!mine.length) return []
       const jsons = await fetchGroupJson(t, mine.map(s => s.rg))
-      return (await readGroupsCached(t, mine.flatMap(s => { const json = jsons.get(s.rg); return json ? [{ rg: s.rg, json }] : [] }), rows => rows.filter(keep), stop, true)).flat()
+      return (await readGroupsCached(t, mine.flatMap(s => { const json = jsons.get(s.rg); return json ? [{ rg: s.rg, json }] : [] }), rows => rows.filter(keep), stop, true, pre)).flat()
     })))
     h.trace?.('groups', now() - t0, h.variant)
     return combineLive(h, got.flat())
@@ -1862,7 +1920,7 @@ async function decodeSpans(h: IndexHandle, kept: Span[], keep: (r: Row) => boole
   h.trace?.('rgjson', now() - t0)
   h.trace?.('ngroups', kept.length)
   t0 = now()
-  const perGroup = await readGroupsCached(h, kept.flatMap(s => { const json = jsons.get(s.rg); return json ? [{ rg: s.rg, json }] : [] }), rows => rows.filter(keep), stop)
+  const perGroup = await readGroupsCached(h, kept.flatMap(s => { const json = jsons.get(s.rg); return json ? [{ rg: s.rg, json }] : [] }), rows => rows.filter(keep), stop, false, pre)
   h.trace?.('groups', now() - t0, h.variant)
   return perGroup.flat()
 }
@@ -1996,6 +2054,46 @@ export function groupMatchesSize(g: { pMin: string; pMax: string; bMax: number; 
   return ranges.some(r => g.pMax >= r.pLo && g.pMin < r.pHi)
 }
 
+/** An interval store's sorts ordered `(⌊log2 b⌋ desc, path, …)` with `b` the group bounds' size key: `size`, or
+ *  the path's total `tot` (`slices-bytotal`). The user-first sorts lead with `usr` and are not among them. */
+const SIZE_FIRST = new Set(['bysize', 'slices-bytotal'])
+
+/** `⌊log2 b⌋` exactly (the writer's `length(bin(b)) - 1`), -1 for `b ≤ 0` (the last, NULL, bucket). */
+export function sizeBucket(b: number): number {
+  if (!(b > 0)) return -1
+  let k = Math.floor(Math.log2(b))
+  while (k > 0 && 2 ** k > b) k--
+  while (2 ** (k + 1) <= b) k++
+  return k
+}
+
+/** Whether a group of a size-first sort (`SIZE_FIRST`) can hold a row of `ranges` at or over `thrMin`, from its
+ *  bounds and its neighbours' in the same segment — tighter than `groupMatchesSize` for a group spanning size
+ *  buckets, whose min/max path is any bucket's (a group straddling a bucket boundary has the whole bucket
+ *  keyspace as its path range, so a drilled prefix selects it though its rows of either bucket lie elsewhere).
+ *  Rows are sorted by bucket descending, then path; so in a group whose buckets run from `T` (its `b_max`'s)
+ *  down to `B` (its `b_min`'s):
+ *  - its rows of bucket `T` follow the previous group's rows, and when that group is all of bucket `T` their
+ *    paths are at least its `p_max` (its last row's path);
+ *  - its rows of bucket `B` precede the next group's, at most its `p_min` when that group is all of bucket `B`;
+ *  - a bucket whose largest size (`2^(b+1) - 1`) is under `thrMin` holds no row the read keeps.
+ *  Groups without `b_min` / `seg` (an older footer) are kept. */
+type SizeGroup = Pick<BlobGroup, 'pMin' | 'pMax' | 'bMax' | 'bMin' | 'seg'>
+export function sizeNeighbours(g: SizeGroup, prev: SizeGroup | undefined, next: SizeGroup | undefined, ranges: { pLo: string; pHi: string }[], thrMin: number): boolean {
+  if (g.bMin == null || g.seg == null) return true
+  const T = sizeBucket(g.bMax)
+  const B = sizeBucket(g.bMin)
+  if (T === B) return true
+  const whole = (n: SizeGroup | undefined, b: number) => n != null && n.seg === g.seg && n.bMin != null && sizeBucket(n.bMax) === b && sizeBucket(n.bMin) === b
+  for (let b = B; b <= T; b++) {
+    if (thrMin > 0 && (b < 0 || 2 ** (b + 1) - 1 < thrMin)) continue
+    const lo = b === T && whole(prev, T) && prev!.pMax > g.pMin ? prev!.pMax : g.pMin
+    const hi = b === B && whole(next, B) && next!.pMin < g.pMax ? next!.pMin : g.pMax
+    if (ranges.some(r => hi >= r.pLo && lo < r.pHi)) return true
+  }
+  return false
+}
+
 /** Candidate row groups of the `bysize` sort for a set of path ranges at
  * one byte floor — one SQL pass per batch of ranges, no depth rect (the
  * depth test is per row, §1.3 "attenuation"). */
@@ -2006,7 +2104,11 @@ async function selectSizeSpans(h: IndexHandle, ranges: { pLo: string; pHi: strin
 async function selectSizeSpans1(h: IndexHandle, ranges: { pLo: string; pHi: string }[], thrMin: number, cap = 4000, lens?: Lens): Promise<Span[]> {
   if (h.mode !== 'd1') {
     const pass = (g: Parameters<typeof groupMatchesSize>[0]) => groupMatchesSize(g, ranges, thrMin, lens)
-    const out = h.mode === 'blob' ? h.groups.filter(pass) : await pqGroups(h, pass)
+    // An interval store's size sort, unscoped: its groups' neighbours bound the size buckets a group spans.
+    const near = h.mode === 'pq' && h.asOf != null && !lens && SIZE_FIRST.has(h.variant)
+      ? (g: BlobGroup, prev?: BlobGroup, next?: BlobGroup) => sizeNeighbours(g, prev, next, ranges, thrMin)
+      : undefined
+    const out = h.mode === 'blob' ? h.groups.filter(pass) : await pqGroups(h, pass, near)
     if (out.length > cap) throw new Error(`query too wide: >${cap} row groups (drill deeper or raise minArea)`)
     return out
   }
@@ -2111,9 +2213,9 @@ export async function readSizeRects(
   if (!rects.length) return []
   const kept = plan ?? await planSizeRects(h, rects, thrAt, lens)
   const lensOk = (r: Row) => !lens || r.usr === lens.key
-  const inRect = (r: Row) => rects.some(q => r.depth >= q.dLo && r.depth <= q.dHi && r.path >= q.pLo && r.path < q.pHi)
-  if (lens || !keyedOnTotal(h)) return decodeSpans(h, kept, r => r.size >= thrAt(r.depth) && inRect(r) && lensOk(r), stop)
-  const rows = await decodeSpans(h, kept, inRect, stop)
+  const at = (depth: number, path: string) => rects.some(q => depth >= q.dLo && depth <= q.dHi && path >= q.pLo && path < q.pHi)
+  if (lens || !keyedOnTotal(h)) return decodeSpans(h, kept, r => r.size >= thrAt(r.depth) && at(r.depth, r.path) && lensOk(r), stop, (d, p, sz) => sz >= thrAt(d) && at(d, p))
+  const rows = await decodeSpans(h, kept, r => at(r.depth, r.path), stop, at)
   const tot = new Map<string, number>()
   const key = (r: Row) => `${r.depth}\0${r.path}`
   for (const r of rows) tot.set(key(r), (tot.get(key(r)) ?? 0) + r.size)
