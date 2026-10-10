@@ -17,7 +17,7 @@ import { allMatchRoots, FILTER_VIEW_V, NotFound, pathTotals } from '../_lib/view
 import { COVER_V, coverFloor, coverSet, overCapReason } from '../_lib/cover.js'
 import { hexQuery, indexedGate, staticTag } from '../_lib/staticFilter.js'
 import { FilterRejected, indexedOnly, rejectBody, rejectQuery } from '../_lib/indexedOnly.js'
-import { cacheKeyFor, cacheMatch, cacheStore, serverTiming } from '../_lib/edgeCache.js'
+import { cacheEnvTag, cacheKeyFor, cacheMatch, cacheStore, serverTiming } from '../_lib/edgeCache.js'
 import { storeKey, withStore } from '../_lib/stores.js'
 import { isScanId } from '../../src/scanSlug.js'
 import { indexedScan, noScan, scanArg } from '../_lib/scanArg.js'
@@ -82,7 +82,7 @@ export async function onRequestGet(ctx0: Ctx): Promise<Response> {
       const r = await st.time('indexed', indexedGate(ctx.env, query.ast, path, [date]))
       if (r) return new Response(rejectBody(r), { status: 400, headers: { 'content-type': 'application/json' } })
     }
-    const cacheKey = cacheKeyFor('filter-cover', `${date}/${encodeURIComponent(path)}?qs=${qp.syntax}&q=${encodeURIComponent(qRaw)}&st=${staticTag(ctx.env, query)}&fv=${FILTER_VIEW_V}&cv=${COVER_V}`, storeKey(ctx.env))
+    const cacheKey = cacheKeyFor('filter-cover', cacheEnvTag(ctx.env, ctx.request), `${date}/${encodeURIComponent(path)}?qs=${qp.syntax}&q=${encodeURIComponent(qRaw)}&st=${staticTag(ctx.env, query)}&fv=${FILTER_VIEW_V}&cv=${COVER_V}`, storeKey(ctx.env))
     const hit = await st.time('match', cacheMatch(ctx.env, cacheKey))
     if (hit) return hit
 

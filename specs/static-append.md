@@ -227,7 +227,7 @@ There is no tombstone and no `op` column at this level: a close record is the ve
 - An indexed date's answers never change when a run lands: a later close sets a `vt` after that date. So response cache keys (`staticTag`) stay per generation.
 - A literal's hit list spans every date, so it is held and cached per manifest date (`SuffixHits`: `<key>@<date>`; the base alone keeps the bare key).
 - `MAX_ROWS` (the filter's bound) applies to the summed extent. A literal near V whose runs add close records can then go over it and fall back, which is correct but slower. Compaction resets this.
-- Heavy literals (`HitSource` `heavy`, the drilldown of `specs/architecture/static-name-search.md`) read the drill tiers below. The drill's stack stops at the first run without a live `drill/`; on a scan past it a heavy literal's fleet root is the catalog's per-bucket cells, and below the root only an exact sidecar search answers, else the view is refused (`scan-not-indexed`) — never the thresholded walk, which can't see a heavy literal's matches and read as "no matches · approximate" (cw dev, 2026-10-10, scans past the drill-less merged run `deltas/2026-10-09T1801_2026-10-10T0001`).
+- Heavy literals (`HitSource` `heavy`, the drilldown of `specs/architecture/static-name-search.md`) read the drill tiers below. The drill's stack stops at the first run without a live `drill/`; on a scan past it a heavy literal's view is refused (`scan-not-indexed`, at every depth) — never the thresholded walk, which can't see a heavy literal's matches and read as "no matches · approximate" (cw dev, 2026-10-10, scans past the drill-less merged run `deltas/2026-10-09T1801_2026-10-10T0001`).
 
 ## Drilldown runs (heavy terms)
 
