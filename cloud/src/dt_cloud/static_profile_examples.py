@@ -24,7 +24,8 @@ GCS = Profile(
 )
 
 #: CoreWeave S3 buckets: scans every 6 h (`cw-l2/<id>/index/<gen>/`), the same data and scratch buckets as gcs, its own
-#: R2 bucket; every stage, the R2 copy included, runs as cw's own job account (objectAdmin on both buckets, its R2 key).
+#: R2 bucket; every stage, the R2 copy included, runs as cw's own job account (objectAdmin on both buckets, its R2 key); each
+#: run gets the heavy-term drilldown (its base has one).
 CW = Profile(
     name="cw",
     layouts=("cw-l2/{id}/index/{gen}/path-index.parquet",),
@@ -32,7 +33,7 @@ CW = Profile(
     r2_bucket="oa-cw-s3-usage-index",
     r2_secrets={"endpoint": "cw-s3-r2-endpoint", "key_id": "cw-s3-r2-access-key-id", "secret": "cw-s3-r2-secret-access-key"},
     project=PROJECT, region="us-east1", sa=f"cw-s3-job@{PROJECT}.iam.gserviceaccount.com",
-    r2_sa=f"cw-s3-job@{PROJECT}.iam.gserviceaccount.com", hex_runs="16,8",
+    r2_sa=f"cw-s3-job@{PROJECT}.iam.gserviceaccount.com", hex_runs="16,8", drill=True,
 )
 
 EXAMPLES = {p.name: p for p in (GCS, CW)}
