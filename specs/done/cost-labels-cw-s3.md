@@ -9,3 +9,7 @@ The design, the billing export and the query are in `cloud`'s `specs/cost-labels
 5. Rebuild the job image (`job/build.sh`), so the scan VM's `dt-cloud` labels its children, then redeploy the site (its sweep executors).
 
 Commit this file and the patch's changes together, then move this file to `specs/done/`.
+
+## Status (2026-10-10): done
+
+`pulumi up -s cw-s3` applied (1 created, 9 updated, nothing replaced; verified labels on a secret and the scan cron body), `DISKY_LABELS` in the worktree `.envrc`, the `:cw` image rebuilt with it, and the site deployed with the var.
