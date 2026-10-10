@@ -157,8 +157,8 @@ Light literals (≥ 3 characters, range ≤ V) are answered statically. Catalog 
 
 1. **IAM, Ryan's call.** Two options:
    - (i) `cw-s3-job` gets `iam.serviceAccountUser` on `gcs-usage-job`, so it can submit Batch jobs that run as it. Nothing else changes, but cw's job can then act with gcs's data-bucket rights.
-   - (ii) The profile's `sa` becomes `cw-s3-job`, with `objectAdmin` on the scratch bucket and write access to `static-names/2026-10-09cw*` in the data bucket. Narrower, but two new grants.
+   - (ii) **Chosen (Ryan, 2026-10-09).** The profile's `sa` becomes `cw-s3-job`, with `objectAdmin` on the scratch bucket and write access to `static-names/2026-10-09cw*` in the data bucket. Narrower, but two new grants.
 
    (ii) is the tighter blast radius. Either way, the R2 copy already runs as `cw-s3-job` with cw's existing R2 key.
-2. The stages' code: the job image must carry this `dt_cloud` + `pyrmts` (set `STATIC_NAMES_IMAGE` to it), or `STATIC_NAMES_SRC` points at a staged tree.
+2. The stages' code: the job image must carry this `dt_cloud` + `pyrmts` (set `STATIC_NAMES_IMAGE` to it), or `STATIC_NAMES_SRC` points at a staged tree. Since cloud 68e215b7 the profiles pin no image, so `STATIC_NAMES_IMAGE=<the :cw image digest>` is required on every `runs add`, laptop or stage 4f (gcs's 2026-10-10 07:00 run failed on a stale pinned default).
 3. Each run is ~4 scans a day here, so the binary counter compacts at level 5 after 32 scans (8 days).
