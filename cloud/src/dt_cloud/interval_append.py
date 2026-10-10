@@ -15,13 +15,19 @@ Per scan `D`, under `interval-store/<gen>/deltas/<D>/` (data bucket):
    version's row with its final `vt` — `op` −1) and the next open state (`state/<D>/…`, scratch bucket); the range's
    `ranges/r####.json` (its counts and reconstruction check) is written last.
 3. `publish` (one task): cut the run's served sorts (`served/<sort>.parquet` + `.groups.parquet`, the five the
-   Worker reads), carry the binary counter (two runs of one level merge into one a level up: per range
-   `pyrmts.runs.merge_parquets` on the deltas, min-`vt`, then the merged run's own cut), then
-   `manifests/<D>.json`, written once and only after every file of every run it lists exists.
+   Worker reads), its `meta.json`, then `manifests/<D>.json`: the newest earlier manifest's runs plus D's at level 0,
+   written once and only after every file of every run it lists exists. No carries.
 4. `r2` (as the R2 account): each listed run's served files → R2, checked there, then the manifest. A second runnable
    of the publish job's one task (one provisioning, not two), unless the R2 account is another service account; its
    own job when the manifest already exists (a rerun).
 5. `prune` (local): every earlier scan's `state/` in the scratch bucket, once `D`'s is complete (parallel deletes).
+
+Then, once after the scans, the **merge stage** (`append_runner`'s deferred carries, non-fatal): the binary counter's due
+carries as one Batch job (`carry`: each merged run — per range `pyrmts.runs.merge_parquets` on its inputs' deltas, min-`vt`,
+carries that chain folded into one N-way merge — then its own cut and `meta.json`; then a revision
+`manifests/<id>.m<NNN>.json` of the newest manifest listing it), watched `-w` s; then R2 for the revision. The chain's
+machinery (order, stage skipping, Batch, carries, lease, revisions, R2, prune, exit codes) is `append_runner`'s, shared
+with the static name index; this module is the interval store's stages and merge.
 
 The base+runs reconstruction is exact, version for version, with a full rebuild through `D`
 (`test_interval_append.py`): the change keys are `build`'s, `wts` is carried as `build` and `fold` carry it (a
@@ -29,20 +35,20 @@ version opened by a read-day change alone keeps its path version's; a slice piec
 alone keeps its slice version's), and the open states carry each path's version start (`pvf`), where the
 slice pieces split.
 
-    dt-cloud interval-store append [-c] [-n] SCAN_ID   # the chain, profile-driven ($INTERVAL_STORE_PROFILE / -P)
-    python -m dt_cloud.interval_append ranges|publish|r2 …   # the Batch tasks' stages
+    dt-cloud interval-store append [-c] [-M] [-n] [-w SECS] SCAN_ID   # the chain, profile-driven ($INTERVAL_STORE_PROFILE / -P)
+    dt-cloud interval-store merge [-n] [-w SECS]                       # the merge stage alone
+    python -m dt_cloud.interval_append ranges|publish|r2|carry …       # the Batch tasks' stages
 """
 from __future__ import annotations
 
 import json
 import os
 import shutil
-import sys
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime
 from math import ceil
 from pathlib import Path
 from time import monotonic
@@ -50,9 +56,12 @@ from time import monotonic
 import pyarrow as pa
 from click import IntRange, argument, command, group, option
 
+from . import append_runner as ar
 from . import interval_store as ist
 from . import static_names as sn
-from .static_append import COMPACT_LEVEL, push_run, run_key
+from .append_runner import (  # noqa: F401 — NOT_NEXT, StateIncomplete: as this module has always offered them
+    NOT_NEXT, Carry, GcsRunStore, StateIncomplete, duckdb_args, exit_on, latest_key, plan_carries, run_key, scans_of,
+)
 from .static_names import OPEN, U64, err, q, read_json, upload_tree, write_sorted
 from .static_profile import Profile, from_mapping
 
@@ -62,8 +71,6 @@ PREFIX = ist.PREFIX
 RUN_SORTS = ("path", "bysize", "slices", "slices-bytotal", "slices-bysize-user")
 #: Cost-attribution `component` of every job the append submits (`cost_labels`).
 COMPONENT = "interval-store"
-#: Exit status: the scan is not published yet, or is not the next one to append.
-NOT_NEXT = 3
 
 PVF = pa.field("pvf", pa.int64(), nullable=False)
 OP = pa.field("op", pa.int8(), nullable=False)
@@ -256,6 +263,54 @@ def run_meta(gen: str, run: dict, stamps: dict[str, int], docs: dict) -> dict:
             "bytes": sum(d["bytes"] + d["groups_bytes"] for d in docs.values()), "sorts": docs}
 
 
+def publish_run(store: ar.RunStore, scan: str) -> dict:
+    """Add scan `scan`'s run (level 0; its served sorts and `meta.json` cut) to the newest earlier manifest's runs (a
+    scan's, or a merge's revision of it) and write `manifests/<scan>.json`, last and once (`append_runner.publish_scan`:
+    refused while a listed run lacks a reader file). No carries: those run apart (`carry`). Refuses (`SystemExit`) a
+    scan not past the generation's newest. Returns the manifest."""
+    base = store.read_json("scans.json")
+    if store.exists(f"manifests/{scan}.json"):
+        raise SystemExit(f"manifests/{scan}.json exists: manifests are never rewritten")
+    top = latest_key(store.keys("manifests/"))
+    if (have := scans_of(base, store.read_json(top)["runs"] if top else []))[-1] >= scan:
+        raise SystemExit(f"{scan} is not past the generation's newest scan {have[-1]}")
+    rk = run_key(scan, scan)
+    meta = store.read_json(f"{rk}/meta.json")
+    new = {"key": rk, "first": scan, "last": scan, "level": 0, "scans": [scan], "rows": meta["rows"], "bytes": meta["bytes"]}
+
+    def doc(m: dict, after: list[dict]) -> dict:
+        stamps = {**m.get("stamps", {}), **meta["stamps"]}
+        return manifest(store.gen, base, [{**r, "stamps": {s: stamps[s] for s in r["scans"]}} for r in after])
+    return ar.publish_scan(store, scan, new, doc, lambda runs: missing_files(runs, store.exists))
+
+
+def build_merged_run(dirs: list[Path], run: dict, outp: Path, *, gen: str, k: int, tmp: Path, threads: int = 16, mem: str = "100GB",
+                     rg_rows: int = ist.SERVED_RG, log: Callable[[str], None] = err) -> dict:
+    """The merged run `run` (`plan_carries`' output) of input run dirs `dirs` (oldest first) into `outp`: each key range's
+    deltas merged per table (`merge_range`, the `k` ranges), its served sorts cut from them (`cut_run`, `outp/served/`),
+    then `meta.json` (`run_meta`, the inputs' stamps). Returns `{rows, bytes, s}`."""
+    shutil.rmtree(outp, ignore_errors=True)
+    t0 = monotonic()
+    for i in range(k):
+        merge_range([str(d) for d in dirs], f"r{i:04d}", outp)
+    merge_s = round(monotonic() - t0, 1)
+    t1 = monotonic()
+    docs = cut_run(sn.connect(threads, mem, tmp), str(outp), outp / "served", rg_rows=rg_rows)
+    cut_s = round(monotonic() - t1, 1)
+    stamps = {sid: ts for d in dirs for sid, ts in json.loads((d / "meta.json").read_text())["stamps"].items()}
+    meta = {**run_meta(gen, run, stamps, docs), "merge_s": merge_s, "cut_s": cut_s}
+    (outp / "meta.json").write_text(json.dumps(meta, indent=1) + "\n")
+    log(f"merge {run['key']}: {len(dirs)} runs merged in {merge_s}s, cut in {cut_s}s ({meta['bytes']:,} B)")
+    return {"rows": meta["rows"], "bytes": meta["bytes"], "s": {"merge": merge_s, "cut": cut_s}}
+
+
+def carry(gen: str, k: int, *, threads: int = 16, mem: str = "100GB", rg_rows: int = ist.SERVED_RG) -> Carry:
+    """The interval store's `Carry`: merged runs by `build_merged_run`, every listed run holding `RUN_FILES`, no drills."""
+    def build(dirs, run, outp, *, drilled, tmp, log):
+        return build_merged_run(dirs, run, outp, gen=gen, k=k, tmp=tmp, threads=threads, mem=mem, rg_rows=rg_rows, log=log)
+    return Carry(build=build, missing=lambda store, runs: missing_files(runs, store.exists))
+
+
 # ── Key ranges → tasks ─────────────────────────────────────────────────────
 
 
@@ -302,10 +357,6 @@ def prev_open_counts(gcs, bucket: str, prefix: str, prev: str, k: int, *, worker
 
 
 # ── The open-version state: the newest complete scan only ─────────────────
-
-
-class StateIncomplete(Exception):
-    """`prune` refused: the scan's state is not complete (or its run not published), so nothing is deleted."""
 
 
 def prune_plan(objects: list[tuple[str, int]], prefix: str, k: int, published: bool, scan: str) -> dict:
@@ -377,129 +428,59 @@ def load_config(profile: str | None, environ: dict[str, str] | None = None) -> C
     return Config(p, ranges_gen or p.gen)
 
 
-# ── Batch ──────────────────────────────────────────────────────────────────
-
-
-def task_command(cfg: Config, stage: str, args: list[str], *, mount: bool = True) -> str:
-    """A stage task's shell command: `python -m dt_cloud.interval_append <stage> <args> -b … -g … [-m /gcs/<bucket>]`."""
-    from .static_runner import task_command as tc
-
-    p = cfg.p
-    common = ["-b", p.bucket, "-g", p.gen, "-R", cfg.ranges_gen, "-S", p.scratch]
-    return tc(p, "interval_append", [stage, *args, *common], mount=mount)
+# ── The chain ──────────────────────────────────────────────────────────────
 
 
 def job_id(stage: str, scan_id: str, now: datetime | None = None) -> str:
     """`iv-<stage>-<scan>-<hhmmss>` (Batch ids: lowercase letters, digits and hyphens)."""
-    t = (now or datetime.now(timezone.utc)).strftime("%H%M%S")
-    return f"iv-{stage}-{scan_id.lower().replace('t', '-')}-{t}"
+    return ar.job_id("iv", stage, scan_id, now)
 
 
-def job_spec(cfg: Config, name: str, tasks: int, commands: list[str], *, stage: str, r2: bool = False, machine: str | None = None,
-             ssd_gb: int | None = None) -> dict:
-    from .static_runner import job_spec as js
-
-    return js(cfg.p, name, tasks, commands, stage=stage, r2=r2, machine=machine, ssd_gb=ssd_gb, purpose="interval-store", component=COMPONENT)
-
-
-# ── The chain ──────────────────────────────────────────────────────────────
-
-
-@dataclass
-class Runner:
-    """The chain over injectable effects (tests pass fakes), as `static_runner.Runner`: `exists(key)` / `count(prefix,
-    suffix)` / `read_json(key)` / `list_keys(prefix)` on the data bucket (keys relative to it), `published(layouts,
-    start)` the scan ids under the profile's layouts, `run_job(name, spec)`, `prepare(scan_id)` and `prune(scan_id)`."""
-    cfg: Config
-    exists: Callable[[str], bool]
-    count: Callable[[str, str], int]
-    read_json: Callable[[str], dict]
-    list_keys: Callable[[str], list[str]]
-    published: Callable[[tuple[str, ...], str], list[str]]
-    run_job: Callable[[str, dict], None]
-    prepare: Callable[[str], None]
-    prune: Callable[[str], None]
-    log: Callable[[str], None] = err
-    dry_run: bool = False
-    now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
-    timings: dict = None  # type: ignore[assignment]
-
-    def __post_init__(self):
-        self.timings = {}
+@dataclass(kw_only=True)
+class Runner(ar.Runner):
+    """The interval store's chain (`append_runner.Runner`; `cfg` a `Config`): prepare → ranges → publish (+ R2) → prune
+    per scan, then the merge stage."""
+    store_prefix = PREFIX
+    job_prefix = "iv"
 
     @property
-    def root(self) -> str:
-        return f"{PREFIX}/{self.cfg.p.gen}"
+    def p(self) -> Profile:
+        return self.cfg.p
 
-    def manifests(self) -> list[str]:
-        return sorted(k for k in self.list_keys(f"{self.root}/manifests/") if k.endswith(".json"))
+    def command(self, module: str, args: list[str], *, mount: bool = True) -> str:
+        """`python -m dt_cloud.interval_append <stage> <args> -b … -g … -R … -S … [-m /gcs/<bucket>]`."""
+        p = self.p
+        return ar.task_command(p, module, [*args, "-b", p.bucket, "-g", p.gen, "-R", self.cfg.ranges_gen, "-S", p.scratch], mount=mount)
 
-    def have(self) -> list[str]:
-        """The generation's scans: the base's and the newest manifest's runs'."""
-        base = self.read_json(f"{self.root}/scans.json")
-        keys = self.manifests()
-        runs = self.read_json(keys[-1])["runs"] if keys else []
-        return [*(s["id"] for s in base["scans"]), *(s for r in runs for s in r["scans"])]
+    def spec(self, name: str, tasks: int, commands: list[str], *, stage: str, **kw) -> dict:
+        return ar.job_spec(self.p, name, tasks, commands, stage=stage, purpose="interval-store", component=COMPONENT, **kw)
 
-    def run(self, scan_id: str, catch_up: bool = False) -> list[str]:
-        """Append `scan_id` (and with `catch_up` every earlier pending scan, in order). Returns the scans appended."""
-        from .static_runner import pending_scans
-
-        have = self.have()
-        todo = pending_scans(have, self.published(self.cfg.p.layouts, have[-1]), scan_id, catch_up)
-        if not todo:
-            self.log(f"{scan_id}: already appended; the R2 copy and prune only")
-            if scan_id == have[-1]:
-                self.r2(scan_id)
-                self.stage(f"{scan_id} prune", lambda: self.prune(scan_id))
-            return []
-        if len(todo) > 1:
-            self.log(f"catching up {len(todo)} scans: {', '.join(todo)}")
-        for s in todo:
-            self.one(s)
-        return todo
-
-    def stage(self, name: str, fn: Callable[[], None]) -> None:
-        if self.dry_run:
-            self.log(f"{name}: would run")
-            return
-        t = monotonic()
-        self.log(f"{name}: start")
-        fn()
-        self.timings[name] = round(monotonic() - t, 1)
-        self.log(f"{name}: done in {self.timings[name]:.0f}s")
-
-    def job(self, stage: str, scan_id: str, tasks: int, args: list[str], **kw) -> tuple[str, dict]:
-        name = job_id(stage, scan_id, self.now())
-        cmd = task_command(self.cfg, stage, args, mount=kw.pop("mount", True))
-        return name, job_spec(self.cfg, name, tasks, [cmd], stage=stage, **kw)
+    def merge_job(self, scan: str) -> tuple[str, dict]:
+        return self.job("merge", scan, 1, "interval_append", ["carry", *duckdb_args(self.p.machine)])
 
     def one(self, d: str) -> None:
         run = f"{self.root}/deltas/{d}"
-        self.log(f"{d}: interval store {self.cfg.p.gen}")
+        self.log(f"{d}: interval store {self.p.gen}")
         # 1. prepare (local): the scan's `path` sort, pinned (checks it is the next one).
         if self.exists(f"{run}/scans.json"):
             self.log(f"{d} prepare: done")
         else:
             self.stage(f"{d} prepare", lambda: self.prepare(d))
         # 2. ranges: every key range, `append_tasks` tasks.
-        k = self.read_json(f"{self.cfg_ranges_json()}")["k"]
+        k = self.read_json(f"{PREFIX}/{self.cfg.ranges_gen}/ranges.json")["k"]
         n = self.count(f"{run}/ranges/", ".json")
         if n >= k:
             self.log(f"{d} ranges: done ({n}/{k})")
         else:
-            per = ceil(k / self.cfg.p.append_tasks)
-            # DuckDB sized to the machine (¾ of its memory, every vCPU).
-            vcpus = int(self.cfg.p.machine.rsplit("-", 1)[-1])
-            mem = ["-M", f"{vcpus * 7700 * 3 // 4 // 1024}GB", "-p", str(vcpus)]
-            name, spec = self.job("ranges", d, ceil(k / per), ["-d", d, "-n", str(per), *mem])
+            per = ceil(k / self.p.append_tasks)
+            name, spec = self.job("ranges", d, ceil(k / per), "interval_append", ["ranges", "-d", d, "-n", str(per), *duckdb_args(self.p.machine)])
             self.stage(f"{d} ranges ({n}/{k})", lambda: self.run_job(name, spec))
-        # 3. publish: the run's cut, the counter's merges, then `manifests/<d>.json` (written once); 4. R2: the runs the
-        # manifest lists, checked, then the manifest — one task's two runnables, so one provisioning.
+        # 3. publish: the run's cut, then `manifests/<d>.json` (written once; the run at level 0, carries after: `carries`);
+        # 4. R2: the runs the manifest lists, checked, then the manifest — one task's two runnables, so one provisioning.
         if self.exists(f"{self.root}/manifests/{d}.json"):
             self.log(f"{d} publish: done")
             self.r2(d)
-        elif self.cfg.p.r2_sa in (None, "", self.cfg.p.sa):
+        elif self.p.r2_sa in (None, "", self.p.sa):
             name, spec = self.publish_job(d, r2=True)
             self.stage(f"{d} publish+r2", lambda: self.run_job(name, spec))
         else:
@@ -510,38 +491,34 @@ class Runner:
         # 5. prune: only the newest complete open-version state is kept.
         self.stage(f"{d} prune", lambda: self.prune(d))
 
-    def cfg_ranges_json(self) -> str:
-        return f"{PREFIX}/{self.cfg.ranges_gen}/ranges.json"
-
     def publish_job(self, d: str, r2: bool = False) -> tuple[str, dict]:
         """The publish job; with `r2`, as the R2 account, its task's second runnable the R2 copy (Batch runs a task's
         runnables in order and stops at a failed one, so the copy only follows a written manifest). A retried task's
         publish skips a manifest it already wrote (`-s`), and the copy skips objects already on R2."""
-        vcpus = int(self.cfg.p.machine.rsplit("-", 1)[-1])
-        args = ["-d", d, "-M", f"{vcpus * 7700 * 3 // 4 // 1024}GB", "-p", str(vcpus), *(["-s"] if r2 else [])]
-        name, spec = self.job("publish", d, 1, args, r2=r2)
+        args = ["publish", "-d", d, *duckdb_args(self.p.machine), *(["-s"] if r2 else [])]
+        name, spec = self.job("publish", d, 1, "interval_append", args, r2=r2)
         if r2:
             ts = spec["taskGroups"][0]["taskSpec"]
             copy = deepcopy(ts["runnables"][0])
-            copy["container"]["commands"] = ["-c", task_command(self.cfg, "r2", ["-d", d], mount=False)]
+            copy["container"]["commands"] = ["-c", self.command("interval_append", ["r2", "-d", d], mount=False)]
             ts["runnables"].append(copy)
         return name, spec
 
-    def r2(self, d: str) -> None:
+    def r2(self, d: str, manifest: str | None = None) -> None:
+        """The R2 job for `manifests/<manifest>.json` (default `d`'s own): its runs' served files, checked, then it."""
+        stem = manifest or d
         if self.dry_run:
-            self.log(f"{d} r2: would copy the manifest's runs, check them, then the manifest")
+            self.log(f"{d} r2: would copy manifests/{stem}.json's runs, check them, then the manifest")
             return
-        name = job_id("r2", d, self.now())
-        cmd = task_command(self.cfg, "r2", ["-d", d], mount=False)
-        spec = job_spec(self.cfg, name, 1, [cmd], stage="r2", r2=True, machine="n2-highmem-4", ssd_gb=375)
-        self.stage(f"{d} r2", lambda: self.run_job(name, spec))
+        name = self.job_name("r2", d)
+        cmd = self.command("interval_append", ["r2", "-d", d, *(["-m", manifest] if manifest else [])], mount=False)
+        spec = self.spec(name, 1, [cmd], stage="r2", r2=True, machine="n2-highmem-4", ssd_gb=375)
+        self.stage(f"{d} r2" + (f" (manifests/{stem}.json)" if manifest else ""), lambda: self.run_job(name, spec))
 
 
-def gcs_runner(cfg: Config, *, dry_run: bool = False) -> Runner:
+def gcs_runner(cfg: Config, *, dry_run: bool = False, merge: bool = True, merge_wait: float | None = 0) -> Runner:
     """`Runner` over the real data bucket, Batch, and this module's `prepare` / `prune`."""
     from google.cloud import storage
-
-    from .static_runner import BatchRunner, NotNext
 
     p = cfg.p
     client = storage.Client(project=p.project)
@@ -554,7 +531,7 @@ def gcs_runner(cfg: Config, *, dry_run: bool = False) -> Runner:
         try:
             prepare_scan(p.bucket, p.gen, d, p.layouts)
         except SystemExit as e:
-            raise NotNext(str(e)) from e
+            raise ar.NotNext(str(e)) from e
 
     def prune(d):
         k = read_json(f"gs://{p.bucket}/{PREFIX}/{cfg.ranges_gen}/ranges.json")["k"]
@@ -568,11 +545,12 @@ def gcs_runner(cfg: Config, *, dry_run: bool = False) -> Runner:
         read_json=lambda key: read_json(f"gs://{p.bucket}/{key}"),
         list_keys=lambda prefix: [x.name for x in client.list_blobs(p.bucket, prefix=prefix)],
         published=published,
-        # Its jobs run a minute or a few: poll at most every 20 s (the default backoff to 120 s added ~3 min per scan).
-        run_job=BatchRunner(p, err, delay=10, max_delay=20),
+        run_job=ar.BatchRunner(p, err),
         prepare=prepare,
         prune=prune,
         dry_run=dry_run,
+        merge=merge,
+        merge_wait=merge_wait,
     )
 
 
@@ -586,10 +564,10 @@ def _gcs():
 
 
 def _latest_manifest(bucket: str, gen: str, before: str | None = None) -> dict | None:
-    keys = sorted(b.name for b in _gcs().list_blobs(bucket, prefix=f"{PREFIX}/{gen}/manifests/") if b.name.endswith(".json"))
-    if before:
-        keys = [k for k in keys if Path(k).stem < before]
-    return read_json(f"gs://{bucket}/{keys[-1]}") if keys else None
+    """The newest manifest (of a scan strictly before `before`), revisions included (`append_runner.latest_key`)."""
+    prefix = f"{PREFIX}/{gen}/"
+    key = latest_key([b.name.removeprefix(prefix) for b in _gcs().list_blobs(bucket, prefix=f"{prefix}manifests/")], before)
+    return read_json(f"gs://{bucket}/{prefix}{key}") if key else None
 
 
 def _state(bucket: str, gen: str, scan: str) -> tuple[dict, list[dict]]:
@@ -599,15 +577,11 @@ def _state(bucket: str, gen: str, scan: str) -> tuple[dict, list[dict]]:
     return base, (m["runs"] if m else [])
 
 
-def _scans_of(base: dict, runs: list[dict]) -> list[str]:
-    return [*(s["id"] for s in base["scans"]), *(s for r in runs for s in r["scans"])]
-
-
 def prepare_scan(bucket: str, gen: str, scan: str, layouts: tuple[str, ...]) -> dict:
     """Pin `scan`'s newest `path` sort (GCS generation, size, md5, crc32c, source format) as `deltas/<scan>/scans.json`,
     refusing (SystemExit) unless it is the next scan after the base and the live runs."""
     base, runs = _state(bucket, gen, scan)
-    have = _scans_of(base, runs)
+    have = scans_of(base, runs)
     found = sn.list_scans(bucket, layouts=layouts, start=have[-1])["scans"]
     nxt = [s for s in found if s["id"] > have[-1]]
     if not nxt or nxt[0]["id"] != scan:
@@ -623,33 +597,13 @@ def prepare_scan(bucket: str, gen: str, scan: str, layouts: tuple[str, ...]) -> 
     return doc
 
 
-def delete_objects(bucket, names: list[str], *, workers: int = 8) -> int:
-    """Delete `names` from `bucket` (a `google.cloud.storage.Bucket`) over `workers` threads (one request each; ≤ the
-    client's 10 pooled connections). One already gone is skipped; any other error raises. Returns the objects deleted."""
-    from google.api_core.exceptions import NotFound
-
-    def one(n: str) -> int:
-        try:
-            bucket.blob(n).delete()
-        except NotFound:
-            return 0
-        return 1
-
-    with ThreadPoolExecutor(workers) as ex:
-        return sum(ex.map(one, names))
-
-
 def prune_state(gcs, gen: str, scan: str, k: int, *, bucket: str, scratch: str, dry_run: bool = False, workers: int = 8) -> dict:
     """Delete every `state/<prev>/` (prev < `scan`) of generation `gen` in the scratch bucket (nowhere else), once
-    `scan`'s state is complete and its manifest published (`prune_plan`), `workers` deletes at a time. Idempotent."""
+    `scan`'s state is complete and its manifest published (`prune_plan`), `workers` deletes at a time
+    (`append_runner.prune_state`). Idempotent."""
     prefix = f"{PREFIX}/{gen}"
-    objects = [(b.name, int(b.size or 0)) for b in gcs.list_blobs(scratch, prefix=f"{prefix}/state/")]
-    published = gcs.bucket(bucket).blob(f"{prefix}/manifests/{scan}.json").exists()
-    plan = prune_plan(objects, prefix, k, published, scan)
-    names = plan.pop("names")
-    if not dry_run and names:
-        delete_objects(gcs.bucket(scratch), names, workers=workers)
-    return {**plan, "deleted": 0 if dry_run else len(names)}
+    return ar.prune_state(gcs, prefix, scan, lambda objects, published: prune_plan(objects, prefix, k, published, scan),
+                          bucket=bucket, scratch=scratch, dry_run=dry_run, workers=workers)
 
 
 # ── CLI ────────────────────────────────────────────────────────────────────
@@ -692,7 +646,7 @@ def ranges_cmd(bucket, gen, ranges_gen, scratch, scan, force, index, mount, mem,
     s = doc_scan["scans"][0]
     ranges = read_json(f"gs://{bucket}/{PREFIX}/{ranges_gen}/ranges.json")
     base, runs = _state(bucket, gen, scan)
-    prev = _scans_of(base, runs)[-1]
+    prev = scans_of(base, runs)[-1]
     smount = str(Path(mount).parent / scratch)
     t = sn._task(index)
     k = ranges["k"]
@@ -723,157 +677,128 @@ def ranges_cmd(bucket, gen, ranges_gen, scratch, scan, force, index, mount, mem,
         print(json.dumps(doc), flush=True)
 
 
-def _cut_and_upload(con, bucket: str, prefix: str, run: dict, stamps: dict[str, int], src_root: str, tmp: Path, gen: str) -> dict:
-    """Cut a run's served sorts from its delta files (`src_root`, a mounted dir) and upload them, then its `meta.json`."""
-    outp = tmp / "served"
-    shutil.rmtree(outp, ignore_errors=True)
-    t0 = monotonic()
-    docs = cut_run(con, src_root, outp)
-    upload_tree(outp, bucket, f"{prefix}/{run['key']}/served")
-    shutil.rmtree(outp)
-    meta = run_meta(gen, run, stamps, docs)
-    meta["cut_s"] = round(monotonic() - t0, 1)
-    _gcs().bucket(bucket).blob(f"{prefix}/{run['key']}/meta.json").upload_from_string(json.dumps(meta, indent=1) + "\n")
-    return meta
-
-
 @cli.command("publish")
 @stage_options
 @option("-d", "--scan", required=True, help="The scan")
 @option("-m", "--mount", required=True, help="Local mount of the data bucket")
 @option("-M", "--mem", default="100GB", help="DuckDB memory limit")
-@option("-n", "--dry-run", is_flag=True, help="Print the merges and manifest; write nothing")
+@option("-n", "--dry-run", is_flag=True, help="Print the manifest (and the carries it makes due); cut and write nothing")
 @option("-p", "--threads", default=16, type=int, help="DuckDB threads")
 @option("-s", "--skip-published", is_flag=True, help="Exit 0 when `manifests/<D>.json` exists (a retried publish+r2 task goes on to the copy)")
 @option("-T", "--tmp", default="/stage/tmp", help="Scratch dir")
 def publish_cmd(bucket, gen, ranges_gen, scratch, scan, mount, mem, dry_run, threads, skip_published, tmp) -> None:
-    """Cut the run's served sorts (`deltas/<D>/served/`, then its `meta.json`), carry the binary counter (each merge a
-    new run dir: its deltas, its cut, its `meta.json`), then write `manifests/<D>.json` once, after checking every
-    file of every run it lists. A level reaching `COMPACT_LEVEL` is reported: time for a new base generation."""
+    """Cut the run's served sorts (`deltas/<D>/served/`, then its `meta.json`), then write `manifests/<D>.json` once: the
+    newest earlier manifest's runs plus D's at level 0 (`publish_run`), after checking every file of every run it lists.
+    No carries: those run apart (`carry`, the merge stage)."""
     prefix = f"{PREFIX}/{gen}"
-    key = f"{prefix}/manifests/{scan}.json"
-    b = _gcs().bucket(bucket)
-    if skip_published and b.blob(key).exists():
-        err(f"{key}: published")
+    store = GcsRunStore(bucket, None, gen, prefix=PREFIX)
+    key = f"manifests/{scan}.json"
+    if skip_published and store.exists(key):
+        err(f"{prefix}/{key}: published")
         return
-    base, runs = _state(bucket, gen, scan)
-    if _scans_of(base, runs)[-1] >= scan:
-        raise SystemExit(f"{scan} is not past the generation's newest scan {_scans_of(base, runs)[-1]}")
-    if b.blob(key).exists():
-        raise SystemExit(f"{key} exists: manifests are never rewritten")
+    if store.exists(key):
+        raise SystemExit(f"{prefix}/{key} exists: manifests are never rewritten")
     k = read_json(f"gs://{bucket}/{PREFIX}/{ranges_gen}/ranges.json")["k"]
     rk = run_key(scan, scan)
-    done = sum(1 for _ in _gcs().list_blobs(bucket, prefix=f"{prefix}/{rk}/ranges/"))
+    done = len(store.keys(f"{rk}/ranges/"))
     if done < k:
         raise SystemExit(f"{prefix}/{rk}: {done} of {k} ranges appended")
-    s = read_json(f"gs://{bucket}/{prefix}/{rk}/scans.json")["scans"][0]
-    new = {"key": rk, "first": scan, "last": scan, "scans": [scan], "level": 0}
-    after, merges = push_run(runs, new)
     if dry_run:
-        print(json.dumps({"merges": [[[r["key"] for r in ins], m["key"]] for ins, m in merges], "manifest": manifest(gen, base, [*runs, {**new, "stamps": {scan: s["ts"]}}])}, indent=1))
+        prev = latest_key(store.keys("manifests/"), before=scan)
+        after = [*(store.read_json(prev)["runs"] if prev else []), {"key": rk, "first": scan, "last": scan, "level": 0, "scans": [scan]}]
+        print(json.dumps({"runs": [r["key"] for r in after], "carries_due": [[[r["key"] for r in ins], m["key"]] for ins, m in plan_carries(after)[1]]}, indent=1))
         return
-    con = sn.connect(threads, mem, tmp)
-    tmp = Path(tmp)
-    metas: dict[str, dict] = {}
-
-    def meta_of(r: dict) -> dict:
-        if r["key"] not in metas:
-            metas[r["key"]] = read_json(f"gs://{bucket}/{prefix}/{r['key']}/meta.json")
-        return metas[r["key"]]
-
-    if b.blob(f"{prefix}/{rk}/meta.json").exists():
+    if store.exists(f"{rk}/meta.json"):
         err(f"{rk}: cut")
     else:
-        metas[rk] = _cut_and_upload(con, bucket, prefix, new, {scan: s["ts"]}, f"{mount}/{prefix}/{rk}", tmp, gen)
-        err(f"{rk}: cut in {metas[rk]['cut_s']}s ({metas[rk]['bytes']:,} B)")
-    for ins, m in merges:
-        if b.blob(f"{prefix}/{m['key']}/meta.json").exists():
-            err(f"{m['key']}: merged")
-            continue
-        # A merged run is written once: an earlier attempt may have left only keys this merge writes.
-        t0 = monotonic()
-        outp = tmp / "merge" / m["key"]
+        s = store.read_json(f"{rk}/scans.json")["scans"][0]
+        outp = Path(tmp) / "served"
         shutil.rmtree(outp, ignore_errors=True)
-        roots = [f"{mount}/{prefix}/{r['key']}" for r in ins]
-        for i in range(k):
-            merge_range(roots, f"r{i:04d}", outp)
-        upload_tree(outp, bucket, f"{prefix}/{m['key']}")
-        merged_s = round(monotonic() - t0, 1)
-        stamps = {sid: ts for r in ins for sid, ts in meta_of(r)["stamps"].items()}
-        meta = _cut_and_upload(con, bucket, prefix, m, stamps, str(outp), tmp, gen)
-        meta["merge_s"] = merged_s
-        metas[m["key"]] = meta
+        t0 = monotonic()
+        docs = cut_run(sn.connect(threads, mem, tmp), f"{mount}/{prefix}/{rk}", outp)
+        upload_tree(outp, bucket, f"{prefix}/{rk}/served")
         shutil.rmtree(outp)
-        err(f"{m['key']}: merged {[r['key'] for r in ins]} in {merged_s}s, cut in {meta['cut_s']}s")
-    full = [{**r, "stamps": meta_of(r)["stamps"], "rows": meta_of(r)["rows"], "bytes": meta_of(r)["bytes"]} for r in after]
-    doc = manifest(gen, base, full)
-    if max(r["level"] for r in after) >= COMPACT_LEVEL:
-        err(f"level {COMPACT_LEVEL} reached: compact into a new base generation")
-    if missing := missing_files(after, lambda f: b.blob(f"{prefix}/{f}").exists()):
-        raise SystemExit(f"not publishing {key}: listed runs lack {missing}")
-    b.blob(key).upload_from_string(json.dumps(doc, indent=1) + "\n", if_generation_match=0)
+        new = {"key": rk, "first": scan, "last": scan, "level": 0, "scans": [scan]}
+        meta = {**run_meta(gen, new, {scan: s["ts"]}, docs), "cut_s": round(monotonic() - t0, 1)}
+        store.create(f"{rk}/meta.json", json.dumps(meta, indent=1) + "\n")
+        err(f"{rk}: cut in {meta['cut_s']}s ({meta['bytes']:,} B)")
+    print(json.dumps(publish_run(store, scan), indent=1))
+
+
+@cli.command("carry")
+@stage_options
+@option("-m", "--mount", required=True, help="Local mount of the data bucket (the merges read the runs)")
+@option("-M", "--mem", default="100GB", help="DuckDB memory limit (the merged runs' cut)")
+@option("-N", "--max-merges", type=IntRange(min=1), help="Stop after this many merged runs")
+@option("-n", "--dry-run", is_flag=True, help="Print the plan; merge and write nothing")
+@option("-p", "--threads", default=16, type=int, help="DuckDB threads")
+@option("-T", "--tmp", default="/stage/tmp", help="Scratch dir for merges")
+def carry_cmd(bucket, gen, ranges_gen, scratch, mount, mem, max_merges, dry_run, threads, tmp) -> None:
+    """Run the newest manifest's due carries (`append_runner.plan_carries`, `merge_pending`): each merged run into its own
+    dir (its deltas, its cut, its `meta.json` last), then a revision `manifests/<id>.m<NNN>.json` listing it. One merger
+    per generation (a lease in the scratch bucket); resumable."""
+    store = GcsRunStore(bucket, scratch, gen, prefix=PREFIX)
+    k = read_json(f"gs://{bucket}/{PREFIX}/{ranges_gen}/ranges.json")["k"]
+    doc = ar.merge_pending(store, carry(gen, k, threads=threads, mem=mem), Path(mount) / PREFIX / gen, tmp=Path(tmp), dry_run=dry_run,
+                           max_merges=max_merges)
     print(json.dumps(doc, indent=1))
 
 
 @cli.command("r2")
 @stage_options
 @option("-d", "--scan", required=True, help="The published scan (`manifests/<D>.json`)")
+@option("-m", "--manifest", help="The manifest to copy: `manifests/<this>.json` (default D's own; a merge's revision `<id>.mNNN`)")
 @option("-w", "--workers", default=8, type=int, help="Parallel copies")
-def r2_cmd(bucket, gen, ranges_gen, scratch, scan, workers) -> None:
-    """Copy the served files of every run `manifests/<D>.json` lists GCS → R2 (objects already there with the same size
-    and md5 skipped), check every one is there, then copy the manifest, last. R2 via `R2_ENDPOINT`, `R2_BUCKET` and
-    AWS_* (or R2_*) keys."""
-    from . import publish as pub
-
-    prefix = f"{PREFIX}/{gen}"
-    key = f"{prefix}/manifests/{scan}.json"
-    runs = read_json(f"gs://{bucket}/{key}")["runs"]
-    objs = [o for r in runs for o in pub.list_source(bucket, [f"{prefix}/{r['key']}/served/"])]
-    s3, r2 = pub.r2_client(), pub.r2_bucket()
-    t0 = monotonic()
-    with ThreadPoolExecutor(workers) as ex:
-        todo = [o for o, do in ex.map(lambda o: (o, pub.should_copy(o, pub.head_dest(s3, r2, o.key))), objs) if do]
-        for o in ex.map(lambda o: (pub.copy_one(bucket, s3, r2, o), o)[1], todo):
-            err(f"  → {o.key} ({o.size:,} B)")
-        bad = [o.key for o, do in ex.map(lambda o: (o, pub.should_copy(o, pub.head_dest(s3, r2, o.key))), objs) if do]
-    if bad:
-        raise SystemExit(f"r2 {scan}: {len(bad)} of {len(objs)} served files not on R2 after the copy (e.g. {bad[0]}): manifest not copied")
-    man = pub.list_source(bucket, [key])
-    for o in man:
-        if pub.should_copy(o, pub.head_dest(s3, r2, o.key)):
-            pub.copy_one(bucket, s3, r2, o)
-    print(json.dumps({"gen": gen, "scan": scan, "runs": [r["key"] for r in runs], "objects": len(objs), "copied": len(todo),
-                      "bytes": sum(o.size for o in todo), "s": round(monotonic() - t0, 1)}))
+def r2_cmd(bucket, gen, ranges_gen, scratch, scan, manifest, workers) -> None:
+    """Copy the served files of every run the manifest lists GCS → R2 (objects already there with the same size and md5
+    skipped), check every one is there, then copy the manifest, last (`append_runner.r2_publish`). R2 via `R2_ENDPOINT`,
+    `R2_BUCKET` and AWS_* (or R2_*) keys."""
+    doc = ar.r2_publish(bucket, f"{PREFIX}/{gen}", manifest or scan, served=("served/",), workers=workers)
+    print(json.dumps({"gen": gen, "scan": scan, **doc}))
 
 
-@command("append")
-@option("-c", "--catch-up", is_flag=True, help="Append every earlier published scan still pending first, in scan-id order")
-@option("-n", "--dry-run", is_flag=True, help="Report each stage's state and what would run; submit and write nothing")
-@option("-P", "--profile", help="Deployment profile (`interval_profiles/<name>.json` or a path; default $INTERVAL_STORE_PROFILE)")
-@argument("scan_id")
-def append_cmd(catch_up: bool, dry_run: bool, profile: str | None, scan_id: str) -> None:
-    """Append SCAN_ID to the interval store: prepare → ranges → publish → R2 → prune, each stage skipped when its output
-    exists. Exit 3 when SCAN_ID is not published yet, or an earlier published scan is pending (without -c)."""
-    from .static_runner import NotNext
-
+def ready(profile: str | None) -> Config:
+    """The profile's `Config` (`load_config`), its project defaulting to the credentials', the R2 secrets checked."""
     cfg = load_config(profile)
     if not cfg.p.project:
         from .gcp import gcp_project
 
         cfg = replace(cfg, p=replace(cfg.p, project=gcp_project()))
     cfg.p.r2_env_secrets()
-    runner = gcs_runner(cfg, dry_run=dry_run)
+    return cfg
+
+
+@command("append")
+@option("-c", "--catch-up", is_flag=True, help="Append every earlier published scan still pending first, in scan-id order")
+@option("-M", "--no-merge", is_flag=True, help="Skip the merge stage (the due carries wait for a later run, or `interval-store merge`)")
+@option("-n", "--dry-run", is_flag=True, help="Report each stage's state and what would run; submit and write nothing")
+@option("-P", "--profile", help="Deployment profile (`interval_profiles/<name>.json` or a path; default $INTERVAL_STORE_PROFILE)")
+@option("-w", "--merge-wait", default=0, type=float, help="Seconds to wait on the merge job (default 0: submit it and go; it publishes on GCS when done)")
+@argument("scan_id")
+def append_cmd(catch_up: bool, no_merge: bool, dry_run: bool, profile: str | None, merge_wait: float, scan_id: str) -> None:
+    """Append SCAN_ID to the interval store: prepare → ranges → publish → R2 → prune, each stage skipped when its output
+    exists; then the merge stage (the due carries, non-fatal). Exit 3 when SCAN_ID is not published yet, or an earlier
+    published scan is pending (without -c)."""
+    cfg = ready(profile)
+    runner = gcs_runner(cfg, dry_run=dry_run, merge=not no_merge, merge_wait=merge_wait)
     t0 = monotonic()
-    try:
-        done = runner.run(scan_id, catch_up=catch_up)
-    except NotNext as e:
-        err(f"interval-store append {scan_id}: {e}")
-        sys.exit(NOT_NEXT)
-    except RuntimeError as e:
-        err(f"interval-store append {scan_id}: {e}")
-        sys.exit(1)
+    done = exit_on(f"interval-store append {scan_id}", lambda: runner.run(scan_id, catch_up=catch_up), lambda m: err(m))
     print(json.dumps({"gen": cfg.p.gen, "scan": scan_id, "appended": done, "dry_run": dry_run, "s": round(monotonic() - t0, 1),
                       "stages": runner.timings}))
+
+
+@command("merge")
+@option("-n", "--dry-run", is_flag=True, help="Report the due carries; submit and write nothing")
+@option("-P", "--profile", help="Deployment profile (`interval_profiles/<name>.json` or a path; default $INTERVAL_STORE_PROFILE)")
+@option("-w", "--wait", type=float, help="Seconds to wait on the merge job (default: to its end, Batch's own cap)")
+def merge_cmd(dry_run: bool, profile: str | None, wait: float | None) -> None:
+    """The newest manifest's due carries, on their own: the merge job (`carry`), then R2 for the revision it publishes
+    (`append`'s merge stage, alone: for a schedule of its own, or to catch up). Exit 1 when it fails (the store stays as
+    it was)."""
+    cfg = ready(profile)
+    runner = gcs_runner(cfg, dry_run=dry_run, merge_wait=wait)
+    exit_on("interval-store merge", lambda: runner.carries(fatal=True), lambda m: err(m))
+    print(json.dumps({"gen": cfg.p.gen, "manifest": (runner.manifests() or [None])[-1], "dry_run": dry_run}))
 
 
 if __name__ == "__main__":
