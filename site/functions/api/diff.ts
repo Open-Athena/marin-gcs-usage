@@ -13,7 +13,7 @@
  * user lens, and edge-cached accordingly.
  */
 import { type Env, requireViewer } from '../_lib/auth.js'
-import { pathGens, withPathStore, storeReady, type Lens } from '../_lib/index.js'
+import { ivRetry, pathGens, withPathStore, storeReady, type Lens } from '../_lib/index.js'
 import { hasLedger, ledgerHead } from '../_lib/ledger.js'
 import { classKey, parseClasses, parseOwner, queryParam, QueryError } from '../_lib/scope.js'
 import { ATTEN_DEFAULT, buildDiff, FILTER_VIEW_V, LensUnavailable, MIN_AREA_DEFAULT, NotFound, QUANT } from '../_lib/view.js'
@@ -110,7 +110,7 @@ export const onRequestGet = async (ctx0: { request: Request; env: Env; waitUntil
     // The worker's answer: the diff's JSON and what to keep of it — `phase2Ms` (a background full run's) over
     // the viewer-facing default.
     const render = async (o: { phase2Ms?: number; trace?: typeof st.trace } = {}) => {
-      const diff = await buildDiff(ctx.env, { from, to, path, w, h, minArea, atten, top, lens, owner, query, classes, summary, depth, trace: o.trace, ...(o.phase2Ms ? { phase2Ms: o.phase2Ms } : {}) })
+      const diff = await ivRetry(() => buildDiff(ctx.env, { from, to, path, w, h, minArea, atten, top, lens, owner, query, classes, summary, depth, trace: o.trace, ...(o.phase2Ms ? { phase2Ms: o.phase2Ms } : {}) }))
       const body = JSON.stringify({
         prev: from,
         curr: to,

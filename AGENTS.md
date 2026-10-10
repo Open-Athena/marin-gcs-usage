@@ -75,6 +75,10 @@ disk-tree tiers L2        # Cut the path store's sorts (spec `path-store.md` §1
 dt-cloud index-recut SRC OUT  # Re-cut a published generation's `bysize` from its `path` sort into a NEW
                           # generation dir (never over one): `-c` checks root + depth-1 views against per-path
                           # sums over `path` (`bysize_check`); then `index-sync -v bysize -g <gen>` points at it
+dt-cloud interval-store append [-c] [-n] SCAN_ID  # Append one scan to the interval store as a run beside its
+                          # base generation (spec `interval-store.md` §2.7; profile `-P`/$INTERVAL_STORE_PROFILE):
+                          # prepare → ranges (Batch) → publish (cut, binary-counter merges, manifest) → R2 → prune,
+                          # strictly in scan-id order (exit 3: not published / not next; `-c` catches up)
 disk-tree tiers plan SIDECAR P THR  # The reader's span selection run offline over a tier's `.groups.json`
                           # (phase 0's instrument): for `path` it mirrors `readRects` exactly (depth rect
                           # `dP+1..`, path range `[P/, P0)`, `b_max ≥ thr·atten^(d−dP−1)` per group); for
