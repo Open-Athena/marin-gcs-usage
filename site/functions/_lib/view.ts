@@ -29,7 +29,7 @@
  * `f = n_children(P) − kept` — objects and dirs alike.
  */
 import type { Env } from './auth.js'
-import { folded, type IndexHandle, isStore, ivLastRead, type Lens, openIndex, pathStoreKey, perScan, planRects, slices, planSizeRects, readAsks, readRects, readRows, readSizeRects, type Rect, type Row, sizeVariant, type Span, TooWide, type Trace, withTrace } from './index.js'
+import { asOfScans, folded, type IndexHandle, isStore, ivLastRead, type Lens, openIndex, pathStoreKey, perScan, planRects, slices, planSizeRects, readAsks, readRects, readRows, readSizeRects, type Rect, type Row, sizeVariant, type Span, TooWide, type Trace, withTrace } from './index.js'
 import { type FoldedLens, ownerLens, poolLens } from './owners.js'
 import { type ClassScope, classRow, nameFilter, type NamePred, ownerKey, ownerOk, type OwnerScope } from './scope.js'
 import { filterThreshold, looseThreshold, matchRoots, pickTier, rebasedThreshold, rootRects } from './filter.js'
@@ -63,6 +63,9 @@ export const SMALL_SUBTREE_ROWS = 0
 /** On the interval store, a subtree with more rows than this (or an unknown count) reads `bysize`
  * without planning `path` (`planSubtree`). */
 export const IV_PATH_PLAN_ROWS = 1 << 18
+/** On the interval store, a depth-band read (every rect depth-bounded) takes `path` when its plan holds
+ *  at most this many rows (`planSubtree`). */
+export const IV_BAND_ROWS = 1 << 16
 /** A v1 floor-free tier is sorted `(depth, path)`, so a size threshold can't
  * prune it: the filter's no-match fallback reads every row under the path.
  * For a whole bucket that read exceeds the Worker's limits (a bucket-level
@@ -422,11 +425,19 @@ async function planSubtree(
   // `path` plan touches most of them, and `bysize` is the cheaper read there anyway, so it isn't planned.
   // A lens reads the user-first size sort, as below: the path-first one (`slices-bytotal`) mixes users
   // in every group, and a big user's root there selected most groups over the threshold.
+  // A depth band (`depth=N`, a capped diff's views) is the exception: `path` holds a depth's rows under P
+  // together, so its plan touches the few footer groups of those depths and reads a group or two per depth
+  // (per tier), where `bysize` reads a group per size bucket of every segment (gcs `marin-us-central2`
+  // at depth 1: 3 groups against 24). Taken when it holds at most `IV_BAND_ROWS`; past that (a flat
+  // directory's children) the size sort is planned too and the one holding fewer rows read.
   if (!pathOnly && pathIdx.asOf != null && (nDesc == null || nDesc > ivPlanRows)) {
+    const pp = !lens && rects.every(q => q.dHi < 1e9) ? await planRects(pathIdx, rects, thrAt) : null
+    if (pp && held(pp) <= IV_BAND_ROWS) return of(pathIdx.variant, pp, stop => readRects(pathIdx, rects, thrAt, lens, pp, stop))
     const sized = (lens ? await tryOpen(env, date, 'bysize-user') : null) ?? await tryOpen(env, date, 'bysize')
     if (sized) {
       const sh = withTrace(sized, tr)
       const sp = await planSizeRects(sh, rects, thrAt, lens)
+      if (pp && held(pp) < held(sp)) return of(pathIdx.variant, pp, stop => readRects(pathIdx, rects, thrAt, lens, pp, stop))
       return of(sized.variant, sp, stop => readSizeRects(sh, rects, thrAt, lens, sp, stop))
     }
   }
@@ -1670,7 +1681,7 @@ const rootName = (path: string, env?: Env) => (path === '' ? env?.ROOT_LABEL ?? 
 const sliced = (env: Env, o: { lens?: Lens; owner?: OwnerScope; classes?: ClassScope; by?: string }): Env => (o.lens || o.owner || o.classes || o.by ? slices(env) : env)
 
 export async function buildView(env0: Env, o: ViewOpts): Promise<View> {
-  const env = sliced(env0, o)
+  const env = sliced(asOfScans(env0, [o.date]), o)
   const { path, query } = o
   const dP = path === '' ? 0 : path.split('/').length
   const cov: Coverage = {}
@@ -1822,7 +1833,7 @@ function sumInteriors(a?: View['interiors'], b?: View['interiors']): NonNullable
  * it was added / removed. `(other)` is parent − Σ named on each side, so its
  * Δ is the sub-floor churn, truthfully. */
 export async function buildDiff(env0: Env, o: DiffOpts): Promise<Diff> {
-  const env = sliced(env0, o)
+  const env = sliced(asOfScans(env0, [o.from, o.to]), o)
   const { from, to, path, lens, owner, query } = o
   const dP = path === '' ? 0 : path.split('/').length
   const tr = o.trace

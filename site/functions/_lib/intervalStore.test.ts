@@ -1,7 +1,9 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import type { Env } from './auth'
-import { type Ask, IV_BROKEN_TTL, IV_STATE_TTL, ivRetry, openIndex, pathGens, readAsks, readRows, type Row, usMap, withPathStore } from './index'
+import { parquetMetadata, parquetReadObjects } from 'hyparquet'
+import { type Ask, groupDoc, groupRows, IV_BROKEN_TTL, ivRetry, openIndex, pathGens, planRects, readAsks, readRows, type Row, type Span, usMap, withPathStore } from './index'
 import { sqliteD1 } from './testD1'
+import { compressors } from './zstd'
 import { type D1Variant, fixture, readJson, seedGeneration } from './testStore'
 import { buildDiff, buildView, type ViewNode } from './view'
 
@@ -77,6 +79,8 @@ function flatten(t: ViewNode): Tiles {
 let env: Env
 let reads: string[]
 let cases: Case[]
+/** How the views of `expected.json` are served when every subtree is big (`ivPlanRows: 0`): view kind → sort. */
+const TIERS_AT_PLAN_ROWS_0: Record<string, number> = { 'full bysize': 42, 'band path': 42 }
 
 beforeAll(async () => {
   ;(globalThis as unknown as { caches: unknown }).caches = { default: { match: async () => undefined, put: async () => {} } }
@@ -114,6 +118,19 @@ describe('interval store', () => {
     expect([h.gen, g === g0, flatten(v.tree)['']]).toEqual(['iv:g1@2', false, c.tiles['']])
   })
 
+  it('holds a decoded group as columns, exactly, or not at all', () => {
+    const raw = [{ depth: 2n, path: 'b1/x', size: 5, us: null, mtime: undefined, wts: 1.25 }, { depth: 3n, path: 'b1/\ud800y', size: 0, us: 'alice', mtime: 7n, wts: -0.5 }]
+    const cols = ['depth', 'path', 'size', 'us', 'mtime', 'wts']
+    const d = groupDoc(raw, cols)
+    expect(d).toEqual({ cols, v: [[2, 3], ['b1/x', 'b1/\ud800y'], [5, 0], [null, 'alice'], [null, 7], [1.25, -0.5]] })
+    expect(groupRows(JSON.parse(JSON.stringify(d)))).toEqual([
+      { depth: 2, path: 'b1/x', size: 5, us: null, mtime: null, wts: 1.25 },
+      { depth: 3, path: 'b1/\ud800y', size: 0, us: 'alice', mtime: 7, wts: -0.5 },
+    ])
+    expect([groupDoc([{ a: 2n ** 53n }], ['a']), groupDoc([{ a: NaN }], ['a']), groupDoc([{ a: new Uint8Array(1) }], ['a']), groupDoc([{ a: 2n ** 53n - 1n }], ['a'])])
+      .toEqual([null, null, null, { cols: ['a'], v: [[2 ** 53 - 1]] }])
+  })
+
   it('decodes owner slices', () => {
     expect([usMap('', 5), usMap('alice', 5), usMap('[["alice",0],["bob",10]]', 10)]).toEqual([null, { alice: 5 }, { alice: 0, bob: 10 }])
   })
@@ -130,6 +147,73 @@ describe('interval store', () => {
       expect([v.index, ['bysize', 'path'].includes(v.tier)]).toEqual(['iv:g1', true])
     }
   })
+
+  it('reads a big subtree\'s depth band from `path`, its whole subtree from `bysize`: every view as the reference draws it', async () => {
+    // `ivPlanRows: 0` makes every subtree big (gcs's buckets): a full view plans `bysize` alone, a depth band (`depth=N`)
+    // plans `path` first and reads it while it holds at most `IV_BAND_ROWS`.
+    const tiers: Record<string, number> = {}
+    for (const c of cases) {
+      const v = await buildView(env, { date: c.date, path: c.path, w: c.w, h: c.h, minArea: 12, atten: 2, ivPlanRows: 0, ...(c.depth != null ? { maxDepth: c.depth } : {}) })
+      const got = flatten(v.tree)
+      const want = Object.fromEntries(Object.entries(c.tiles).map(([k, n]) => [k, n.f === null ? Object.fromEntries(Object.entries(n).filter(([f]) => f !== 'f')) : n]))
+      if (c.v === 1) for (const n of Object.values(got)) delete n.f
+      expect({ case: [c.date, c.path, c.w, c.h, c.depth], tiles: got }).toEqual({ case: [c.date, c.path, c.w, c.h, c.depth], tiles: want })
+      const k = `${c.depth == null ? 'full' : 'band'} ${v.tier}`
+      tiers[k] = (tiers[k] ?? 0) + 1
+    }
+    expect(tiers).toEqual(TIERS_AT_PLAN_ROWS_0)
+  })
+
+  for (const gen of ['g1', 'g3']) {
+    it(`serves a new isolate from the colo: state, footers, footer groups and row groups decoded once per colo, every view and diff the same (${gen})`, async () => {
+      // Two isolates (fresh module graphs) over one colo cache: the second reads nothing from R2.
+      const dates = [...new Set(cases.map(c => c.date))].sort()
+      const pairs = dates.slice(1).map((d, i) => [dates[i], d])
+      const diffOf = async (b: typeof buildDiff, e: Env, [from, to]: string[]) => {
+        const d = await b(e, { from, to, path: '', w: 8, h: 6, minArea: 12, atten: 2, top: 100 })
+        return { rows: d.rows, totals: [d.total_a, d.total_b, d.objects_a, d.objects_b] }
+      }
+      const diffs = await Promise.all(pairs.map(p => diffOf(buildDiff, env, p)))
+      const m = new Map<string, Response>()
+      const colo = { match: async (r: Request) => m.get(r.url)?.clone(), put: async (r: Request, v: Response) => { m.set(r.url, v.clone()) } }
+      const was = (globalThis as unknown as { caches: unknown }).caches
+      ;(globalThis as unknown as { caches: unknown }).caches = { default: colo }
+      const views = cases.filter(x => x.w === 30)
+      try {
+        const isolate = async () => {
+          vi.resetModules()
+          const view = await import('./view')
+          const got: string[] = []
+          const e = { ...env, INTERVAL_STORE_GEN: gen, INTERVAL_STORE_REV: 'colo', INDEX_R2: r2(got) } as Env
+          const trees = []
+          for (const c of views) {
+            const t = flatten((await view.buildView(e, { date: c.date, path: c.path, w: c.w, h: c.h, minArea: 12, atten: 2, ...(c.depth != null ? { maxDepth: c.depth } : {}) })).tree)
+            if (c.v === 1) for (const n of Object.values(t)) delete n.f
+            trees.push(t)
+          }
+          const ds = []
+          for (const p of pairs) ds.push(await diffOf(view.buildDiff, e, p))
+          await (await import('./index')).coloPutsSettled()
+          return { trees, ds, files: [...new Set(got)].map(k => k.replace(`interval-store/${gen}/`, '')).sort() }
+        }
+        const a = await isolate()
+        const b = await isolate()
+        expect(a.trees).toEqual(views.map(c => Object.fromEntries(Object.entries(c.tiles).map(([k, n]) => [k, n.f === null ? Object.fromEntries(Object.entries(n).filter(([f]) => f !== 'f')) : n]))))
+        expect(b.trees).toEqual(a.trees)
+        expect([a.ds, b.ds]).toEqual([diffs, diffs])
+        // g3's 08-05 run's `bysize` data is read by nothing here: only 08-05's reads open that run, and they plan `path`
+        // (a small subtree reads the sort holding fewer rows).
+        const data = (d: string) => [...(d === 'deltas/2026-08-05/' ? [] : [`${d}served/bysize.parquet`]), `${d}served/path.parquet`]
+        const dirs = ['', ...(gen === 'g3' ? ['deltas/2026-08-04/', 'deltas/2026-08-05/'] : [])]
+        expect([a.files, b.files]).toEqual([
+          [...(gen === 'g3' ? ['manifests/2026-08-05.json'] : []), 'scans.json', ...dirs.flatMap(d => [`${d}served/bysize.groups.parquet`, `${d}served/path.groups.parquet`, ...data(d)])].sort(),
+          [],
+        ])
+      } finally {
+        ;(globalThis as unknown as { caches: unknown }).caches = was
+      }
+    })
+  }
 
   it('reads only the interval store, read days from the path versions themselves', async () => {
     expect([...new Set(reads)].sort()).toEqual([
@@ -255,6 +339,26 @@ describe('interval store: base + runs', () => {
     })
   }
 
+  it('plans from footer groups decoded exactly: every tier group\'s bounds, time bounds and rows, as its `.groups.parquet` holds them', async () => {
+    // g4's merged run is the fixture whose groups' `vf` / `vt` ranges are wider than a point.
+    const nodeFs = async () => (await import(/* @vite-ignore */ 'node:fs' as string)) as { readFileSync(p: string): Uint8Array }
+    const truth = async (dir: string) => {
+      const b = (await nodeFs()).readFileSync(fixture(`iv/interval-store/g4/${dir}served/path.groups.parquet`))
+      const ab = b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer
+      const rows = await parquetReadObjects({ file: ab, metadata: parquetMetadata(ab), compressors }) as Record<string, unknown>[]
+      const n = (v: unknown) => Number(v)
+      return new Map(rows.map(r => [n(r.rg), [n(r.d_min), n(r.d_max), r.p_min, r.p_max, n(r.b_max), n(r.vf_min), n(r.vf_max), n(r.vt_min), n(r.vt_max), n(r.row_start), n(r.row_end)]]))
+    }
+    const want = [await truth(''), await truth('deltas/2026-08-04_2026-08-05/')]
+    const h = await openIndex(at('g4', [], undefined, { rev: 'groups' }), '2026-08-05', 'path')
+    const spans = await planRects(h, [{ dLo: 0, dHi: 99, pLo: '', pHi: '\uffff' }]) as (Span & { vfMin: number; vfMax: number; vtMin: number; vtMax: number })[]
+    const got = spans.map(g => [g.tier ?? 0, g.rg, [g.dMin, g.dMax, g.pMin, g.pMax, g.bMax, g.vfMin, g.vfMax, g.vtMin, g.vtMax, g.rowStart, g.rowEnd]])
+    expect(got).toEqual(spans.map(g => [g.tier ?? 0, g.rg, want[g.tier ?? 0].get(g.rg)]))
+    // Every run group (a close record matters at any scan after its version opened), and the base's live at 08-05.
+    expect([spans.filter(g => g.tier === 1).length, want[1].size]).toEqual([want[1].size, want[1].size])
+    expect(spans.filter(g => !g.tier).map(g => g.rg)).toEqual([...want[0]].filter(([, w]) => (w[5] as number) <= h.asOf! && h.asOf! < (w[8] as number)).map(([rg]) => rg))
+  })
+
   it('point lookups find each scan\'s rows, bounded or not, as g1 does', async () => {
     const dates = [...new Set(cases.map(c => c.date))].sort()
     const rows = (rs: Row[]) => rs.map(r => [r.depth, r.path, r.size, r.n_files, r.kind, r.last_read]).sort((x, y) => (`${x[0]}${x[1]}` < `${y[0]}${y[1]}` ? -1 : 1))
@@ -266,18 +370,29 @@ describe('interval store: base + runs', () => {
     }
   })
 
-  it('reads the base and the runs, nothing else', async () => {
-    const reads: string[] = []
-    const e = at('g3', reads, undefined, { rev: 'reads' })
-    for (const c of cases.filter(x => x.w === 30 && x.depth == null)) await buildView(e, { date: c.date, path: c.path, w: c.w, h: c.h, minArea: 12, atten: 2 })
-    const files = (d: string) => ['bysize', 'path'].flatMap(x => [`${d}${x}.groups.parquet`, `${d}${x}.parquet`])
-    expect([...new Set(reads)].sort()).toEqual([
-      ...files('interval-store/g3/deltas/2026-08-04/served/'),
-      ...files('interval-store/g3/deltas/2026-08-05/served/'),
-      'interval-store/g3/manifests/2026-08-05.json',
-      'interval-store/g3/scans.json',
-      ...files('interval-store/g3/served/'),
-    ].sort())
+  it('reads the base and the runs, nothing else: a view of a scan reads the runs begun by then', async () => {
+    const got: Record<string, string[]> = {}
+    for (const date of [...new Set(cases.map(c => c.date))].sort()) {
+      const reads: string[] = []
+      // A revision per scan: each scan's reads start from empty isolate caches.
+      const e = at('g3', reads, undefined, { rev: `reads-${date}` })
+      for (const c of cases.filter(x => x.date === date && x.w === 30 && x.depth == null)) await buildView(e, { date: c.date, path: c.path, w: c.w, h: c.h, minArea: 12, atten: 2 })
+      got[date] = [...new Set(reads)].map(k => k.replace('interval-store/g3/', '')).sort()
+    }
+    // Every view reads the state and the base's footers. The base's scans read no run; 08-04 reads its own run, 08-05
+    // both (where a small subtree's plan picks `path`, a sort's data file is left unread).
+    const state = ['manifests/2026-08-05.json', 'scans.json']
+    const sort = (d: string, x: string, data = true) => [`${d}served/${x}.groups.parquet`, ...(data ? [`${d}served/${x}.parquet`] : [])]
+    const base = (bysize = true) => [...state, ...sort('', 'bysize', bysize), ...sort('', 'path')]
+    const run = (d: string, bysize = true) => [...sort(`deltas/${d}/`, 'bysize', bysize), ...sort(`deltas/${d}/`, 'path')]
+    expect(got).toEqual({
+      '2026-07-30': base().sort(),
+      '2026-07-31': base().sort(),
+      '2026-08-02': base().sort(),
+      '2026-08-03': base(false).sort(),
+      '2026-08-04': [...base(), ...run('2026-08-04')].sort(),
+      '2026-08-05': [...base(false), ...run('2026-08-04', false), ...run('2026-08-05', false)].sort(),
+    })
   })
 
   it('cuts the stack at a run whose files are missing: its scans leave the store, the ones before it answer as before', async () => {
@@ -292,27 +407,31 @@ describe('interval store: base + runs', () => {
   })
 
   it('cuts a run a read finds broken, and the retry reads around it: never a failed request', async () => {
-    // A run's data file gone with its footer still there, on a binding without `head`: only a read finds it.
+    // A run's data file gone with its footer still there, on a binding without `head`: only a read finds it. A
+    // view or diff reads only the runs begun by its scans (`asOfScans`), so the read here is one of every tier as
+    // of a base scan (as `openIndex` alone opens it): the run's close records are read, and its versions tested.
     let gone = true
-    const hide = (k: string) => gone && k === 'interval-store/g4/deltas/2026-08-04_2026-08-05/served/bysize.parquet'
+    const hide = (k: string) => gone && k === 'interval-store/g4/deltas/2026-08-04_2026-08-05/served/path.parquet'
     const at4 = (rev: string) => at('g4', [], hide, { head: false, rev })
-    const o = { date: '2026-08-03', path: '', w: 30, h: 30, minArea: 12, atten: 2 }
-    const want = (await buildView(env, o)).tree
+    const date = '2026-08-03'
+    const rowsAt = async (e: Env) => (await readRows(await openIndex(e, date, 'path'), 1, 99, '', '\uffff')).map(r => [r.depth, r.path, r.size, r.n_files]).sort((x, y) => (`${x[0]}${x[1]}` < `${y[0]}${y[1]}` ? -1 : 1))
+    const want = await rowsAt(env)
+    expect(want.length).toBeGreaterThan(0)
     // As a request reads it (`ivRetry`): the first try finds the run broken and cuts it, the retry reads the base.
-    expect((await ivRetry(() => buildView(at4('a'), o))).tree).toEqual(want)
+    expect(await ivRetry(() => rowsAt(at4('a')))).toEqual(want)
     // The same read without the retry fails once, then the stack is cut: the run's scans read per-scan (none here:
     // "not synced"), the base's from the base alone.
-    await expect(buildView(at4('b'), o)).rejects.toThrow('interval store run deltas/2026-08-04_2026-08-05 is broken')
+    await expect(rowsAt(at4('b'))).rejects.toThrow('interval store run deltas/2026-08-04_2026-08-05 is broken')
     await expect(openIndex(at4('b'), '2026-08-05', 'path')).rejects.toThrow("index variant 'path' not synced for 2026-08-05")
-    expect((await openIndex(at4('b'), '2026-08-03', 'path')).runs).toBeUndefined()
-    expect((await buildView(at4('b'), o)).tree).toEqual(want)
+    expect((await openIndex(at4('b'), date, 'path')).runs).toBeUndefined()
+    expect(await rowsAt(at4('b'))).toEqual(want)
     // Healed (the file is there again) once the cut expires.
     gone = false
     const t0 = Date.now()
     const now = vi.spyOn(Date, 'now').mockReturnValue(t0 + IV_BROKEN_TTL)
     try {
       expect(((await openIndex(at4('b'), '2026-08-05', 'path')).runs ?? []).map(r => r.run)).toEqual(['deltas/2026-08-04_2026-08-05'])
-      expect((await buildView(at4('b'), o)).tree).toEqual(want)
+      expect(await rowsAt(at4('b'))).toEqual(want)
     } finally {
       now.mockRestore()
     }
