@@ -527,9 +527,9 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
             </>
           ) : dateRange ? (
             <span className="li gradli">
-              {epochDaysToMonth(dateRange.min)}
+              {epochDaysToDate(dateRange.min)}
               <span className="gradbar" style={{ background: dateGradientCss() }} />
-              {epochDaysToMonth(dateRange.max)}
+              {epochDaysToDate(dateRange.max)}
             </span>
           ) : null}
         </>
