@@ -20,7 +20,9 @@
  *
  *  Dates: an answer carries the scans it covers (`Found.scans`; absent = every scan of the store). The light
  *  index spans the base generation and its runs (one per scan); the drilldown the base and the runs whose
- *  `drill/` is live, so a heavy literal on a newer scan declines (`covers`) and that view reads as before. */
+ *  `drill/` is live, up to the first run without one, so a heavy literal on a later scan is not covered (`covers`):
+ *  its fleet root then comes from the catalog's buckets, and below it only an exact search answers, else the view
+ *  is refused (`scan-not-indexed`, `heavyUncovered`) — never the thresholded walk's "no matches". */
 import type { QueryAst } from './queryAst.js'
 import { shared } from './shared.js'
 import { StaticCatalog } from './staticCatalog.js'
@@ -60,8 +62,22 @@ export type Found =
   | { rollup: Rollup; hits?: undefined; io: Record<string, unknown>; scans?: string[] }
 
 /** Whether `found` answers every one of `dates`: the explicit rule that keeps a heavy literal off the scans
- *  its drilldown does not cover (past the last run whose `drill/` is live), which then read as before. */
+ *  its drilldown does not cover (past the first run whose `drill/` is not live: `heavyUncovered`). */
 export const covers = (found: Found, dates: string[]): boolean => !found.scans || dates.every(d => found.scans!.includes(d))
+
+/** Whether `found` is the drilldown's (`DrillSource`): a heavy literal's answer, exact on the drill's live tiers only. */
+export const fromDrill = (found: Found | null): boolean => found?.io.from === 'drill'
+
+/** A heavy literal's view under `root` on `dates` its drilldown doesn't cover (a run with no live `drill/` cuts the
+ *  drill's stack there: its scans and every later one's are uncovered, until the run's drill is built): at the fleet
+ *  root the catalog's per-bucket cells (`catalogRoot`) when its stack covers `dates`; else null — the caller refuses
+ *  (or takes only an exact search), never the thresholded walk, which can't see a heavy literal's matches and reads
+ *  as "no matches". */
+export async function heavyUncovered(s: StaticFilterStore, key: string, root: string, dates: string[]): Promise<Found | null> {
+  if (root !== '' || !s.catalog) return null
+  const f = await catalogRoot(s.catalog, key)
+  return f && covers(f, dates) ? f : null
+}
 
 /** A literal's match roots under a path, any date: what the filter needs from an index. `null` = this
  *  source can't answer the literal (the caller falls back). `under` = `''` (everything) or a path, whose
@@ -78,12 +94,16 @@ export interface HitSource {
   /** Whether a heavy literal (short, or past the suffix bound) has a source (`FILTER_STATIC_HEAVY`'s
    *  drilldown): without one, `hits` declines it on every scan — the term, not the scan, is the reason. */
   readonly heavy?: boolean
+  /** Whether `hits` last declined `key` as a heavy literal its heavy source declined too (a member the drill's
+   *  newest live tier doesn't know yet, its stack cut at a run with no drill): no light answer either. */
+  heavyDeclined?(key: string): boolean
 }
 
 /** The generation's scans (ids). `dirOnly`: those of them indexed from a dir-only (v1) source — held, but blind
  *  to every file name, so a literal's total there is not the scan's (`/api/series` leaves them as gaps). `hexRuns`:
  *  its hex-run rule (`hexRuns.ts`; absent or null = the full index). */
-export interface StaticFilterStore { source: HitSource; scans: () => Promise<string[]>; dirOnly?: () => Promise<string[]>; gen: string; hexRuns?: () => Promise<HexRule | null> }
+/** `catalog`: the tiers' catalog (the fleet root of a heavy literal its drilldown doesn't cover, `heavyUncovered`). */
+export interface StaticFilterStore { source: HitSource; scans: () => Promise<string[]>; dirOnly?: () => Promise<string[]>; gen: string; hexRuns?: () => Promise<HexRule | null>; catalog?: CatalogLookup | null }
 
 /** A suffix range read whole above this many rows (row-group granular) is declined: V = 100K (the
  *  catalog's membership bound, so every non-member fits) plus two 8K-row groups of slack. */
@@ -149,11 +169,20 @@ export class SuffixHits implements HitSource {
 
   get heavy(): boolean { return !!this.opts.heavy }
 
+  private declinedHeavy = new Set<string>()
+  heavyDeclined(key: string): boolean { return this.declinedHeavy.has(key) }
+
   /** A literal the light reader declines: the heavy source's; without one, the catalog's buckets at the fleet
    *  root (`catalogRoot`), and nothing below it (`declined`: `term-too-common`). */
-  private heavyHits(key: string, root: string): Promise<Found | null> {
-    if (this.opts.heavy) return this.opts.heavy.hits(key, root)
-    return root === '' && this.opts.catalog ? catalogRoot(this.opts.catalog, key) : Promise.resolve(null)
+  private async heavyHits(key: string, root: string): Promise<Found | null> {
+    if (!this.opts.heavy) return root === '' && this.opts.catalog ? catalogRoot(this.opts.catalog, key) : null
+    const got = await this.opts.heavy.hits(key, root)
+    if (got) this.declinedHeavy.delete(key)
+    else {
+      this.declinedHeavy.add(key)
+      if (this.declinedHeavy.size > 1024) this.declinedHeavy.delete(this.declinedHeavy.values().next().value!)
+    }
+    return got
   }
 
   async hits(key: string, root: string, opts?: HitOpts): Promise<Found | null> {
@@ -254,7 +283,7 @@ export function staticFilterStore(env: StaticFilterEnv): StaticFilterStore | nul
         top: dir => cacheIndexes(caches.default, sub(dir, 'anchors'), 'top-v1'),
       },
     })
-    held = { r2: env.INDEX_R2, gen, store: { source: new SuffixHits(t.names, { cache: cacheHits(caches.default, pre), heavy, catalog: heavy ? null : t.catalog, anchored }), scans: t.scans, dirOnly: t.dirOnly, gen: `${gen}${heavy ? '+drill' : ''}`, hexRuns: () => t.names.hexRuns() } }
+    held = { r2: env.INDEX_R2, gen, store: { source: new SuffixHits(t.names, { cache: cacheHits(caches.default, pre), heavy, catalog: heavy ? null : t.catalog, anchored }), scans: t.scans, dirOnly: t.dirOnly, gen: `${gen}${heavy ? '+drill' : ''}`, hexRuns: () => t.names.hexRuns(), catalog: t.catalog } }
   }
   return held.store
 }
@@ -310,8 +339,10 @@ export function liveTotal(hits: Hit[], date: string, keep: (usr: string | null) 
  *  12: a dir-only scan's answer flagged `dirsOnly`, a diff across a dir-only and a full scan `scan-dirs-only`;
  *  13: the hex-run rule — `hexRuns` on hex-affected literals, `occurs` in the fallback and the anchored reader;
  *  14: an anchored term on a generation with no anchors build is `anchor-not-indexed`, never the approximate walk;
- *  15: `\^`, `\$`, `\\` escapes — `q\$` and `\^q` were anchored or `\`-holding literals before). */
-const RESPONSE_V = 15
+ *  15: `\^`, `\$`, `\\` escapes — `q\$` and `\^q` were anchored or `\`-holding literals before;
+ *  16: a heavy literal on a scan its drilldown doesn't cover — past a run with no live `drill/` — is the catalog's
+ *  buckets at the fleet root, an exact search or `scan-not-indexed` below it, never the walk's "no matches"). */
+const RESPONSE_V = 16
 
 /** The query's substring matchers (positive and negative): the literals the hex-run rule applies to. */
 const subMatchers = (ast: QueryAst | undefined): Extract<Matcher, { kind: 'sub' }>[] =>
@@ -374,6 +405,8 @@ export async function indexedGate(env: StaticFilterEnv, ast: QueryAst | undefine
   if (!skey) return declined(s, null, null)
   const split = await dirsOnlySplit(s, ast, path, dates)
   if (split) return split
-  const found = await s!.source.hits(key, path, opts)
+  let found = await s!.source.hits(key, path, opts)
+  // A heavy literal its drilldown doesn't cover on `dates`: the catalog's buckets at the fleet root, else refused.
+  if (found && fromDrill(found) && !covers(found, dates)) found = await heavyUncovered(s!, key, path, dates)
   return found && covers(found, dates) ? null : declined(s, skey, found)
 }
