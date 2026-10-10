@@ -428,7 +428,7 @@ fi
 if [ "${INTERVAL_STORE_APPEND:-1}" = "1" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
   if R2_ENDPOINT=${R2_ENDPOINT:-https://$CLOUDFLARE_ACCOUNT_ID.r2.cloudflarestorage.com} INTERVAL_STORE_PROFILE=gcs \
       INTERVAL_STORE_IMAGE=${INTERVAL_STORE_IMAGE:-$JOB_IMAGE} DISKY_LABELS=${DISKY_LABELS:-app=disky,deployment=gcs} \
-      timeout "${INTERVAL_STORE_TIMEOUT:-60m}" dt-cloud interval-store append -c "$SNAP_ID"; then
+      timeout "${INTERVAL_STORE_TIMEOUT:-60m}" dt-cloud interval-store append -c -w "${INTERVAL_STORE_MERGE_WAIT:-1800}" "$SNAP_ID"; then
     phase interval-store
   else
     rc=$?
