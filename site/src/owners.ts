@@ -11,7 +11,7 @@ import { useMemo } from 'react'
 export { foldLatest, newer, ownerIndex } from './ownerIndex'
 export type { Owner, OwnerIndex, OwnerRow } from './ownerIndex'
 import { ownerIndex, type OwnerIndex, type OwnerRow } from './ownerIndex'
-import type { ItemKind } from './batches'
+import { HttpError, type ItemKind, type OwnerPost } from './batches'
 
 // 30s poll: several people assign concurrently, and the map should reflect
 // their assignments without a reload.
@@ -28,21 +28,7 @@ export function useOwners(enabled: boolean) {
   })
 }
 
-/** One POSTable assignment; `owner: null` clears, `'@me'` = the server
- * resolves the actor's canonical user id. */
-export interface OwnerPost {
-  pattern: string
-  /** What `pattern` names: a folder (`'prefix'`, the default) or one exact object key. */
-  kind?: ItemKind
-  owner: string | null
-  memo?: string
-  scan?: string
-}
-
-/** The action for one item: `kind` rides along only for an exact object, so a folder's POST is what it
- *  always was. */
-export const ownerPost = (i: { key: string; kind: ItemKind }, owner: string | null, memo?: string): OwnerPost =>
-  ({ pattern: i.key, ...(i.kind === 'object' ? { kind: 'object' as const } : {}), owner, ...(memo ? { memo } : {}) })
+export { type OwnerPost, ownerPost } from './batches'
 
 // The scan id the viewer is looking at, stamped onto posted actions. Set by
 // App (module-level: mutations fire from deep components that don't
@@ -63,7 +49,12 @@ export function useOwnerMutations() {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(items.length === 1 ? items[0] : items),
       })
-      if (!r.ok) throw new Error(((await r.json()) as { error?: string }).error ?? `${r.status}`)
+      if (!r.ok) {
+        const text = await r.text()
+        let msg = `${r.status}`
+        try { msg = (JSON.parse(text) as { error?: string }).error ?? msg } catch { msg = `${r.status} ${text.slice(0, 200)}` }
+        throw new HttpError(msg, r.status)
+      }
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['actions'] })

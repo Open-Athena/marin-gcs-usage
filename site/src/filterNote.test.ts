@@ -20,6 +20,8 @@ describe('the filter note: errors and completeness, spelled out', () => {
       '<span class="fnote">40 B matched<span class="tt-ref" tabindex="0"><span class="fflag fhex" role="note" aria-label="Matches inside long hex IDs (16+ hex digits) aren&#x27;t indexed.">ⓘ</span></span></span>'],
         ['a parse error, inline, instead of searching', { error: 'type at least 3 characters (“gr”)', matched: null },
       '<span class="fnote ferr" role="alert">type at least 3 characters (“gr”)</span>'],
+    ['a heavy literal\'s fleet root from the catalog alone', { matched: '1 MiB matched fleet-wide', coverage: { bucketsOnly: true } },
+      '<span class="fnote">1 MiB matched fleet-wide<span class="fflag">per-bucket totals only: searching inside a bucket for this term needs the full search index</span></span>'],
     ['nothing yet', { matched: null }, ''],
   ])('%s', (_, props, want) => {
     expect(render(props)).toBe(want)

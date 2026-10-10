@@ -62,7 +62,8 @@ class Fake:
         words = self.calls[-1][2].split()
         d = words[words.index("-d") + 1] if "-d" in words else None
         out = {"append": [f"{ROOT}/deltas/{d}/dhist/r{i:04d}.parquet" for i in range(8)], "shards": [f"{ROOT}/deltas/{d}/sidecar.parquet"],
-               "catalog": [f"{ROOT}/deltas/{d}/catalog/meta.json"], "drill": [f"{ROOT}/deltas/{d}/drill/meta.json"]}.get(stage, [])
+               "catalog": [f"{ROOT}/deltas/{d}/catalog/meta.json"], "drill": [f"{ROOT}/deltas/{d}/drill/meta.json"],
+               "anchors": [f"{ROOT}/deltas/{d}/anchors/meta.json", *([f"{ROOT}/deltas/{d}/anchors/start/meta.json"] if f"{ROOT}/anchors/start/meta.json" in self.keys else [])]}.get(stage, [])
         for key in out:
             self.keys[key] = None
         if stage == "publish":
@@ -83,17 +84,21 @@ def _py(module: str, *args: str, mount: bool = True) -> str:
 
 
 def _r2(d: str, runs: list[str]) -> tuple:
-    """The R2 job: each run's served files but its `drill/meta.json`, then that; a check of them all; the manifests last."""
+    """The R2 job: each run's served files but its `drill/meta.json` and `anchors/meta.json`, then those; a check of them all;
+    the manifests last."""
     cmds = []
     for r in runs:
-        cmds.append(_py("static_names", "r2-copy", "-g", f"{GEN}/deltas/{r}", "-x", "drill/meta.json", mount=False))
+        cmds.append(_py("static_names", "r2-copy", "-g", f"{GEN}/deltas/{r}", "-x", "drill/meta.json", "-x", "anchors/meta.json",
+                        "-x", "anchors/start/meta.json", mount=False))
         cmds.append(_py("static_names", "r2-copy", "-g", f"{GEN}/deltas/{r}", "-o", "drill/meta.json", mount=False))
+        cmds.append(_py("static_names", "r2-copy", "-g", f"{GEN}/deltas/{r}", "-o", "anchors/start/meta.json", mount=False))
+        cmds.append(_py("static_names", "r2-copy", "-g", f"{GEN}/deltas/{r}", "-o", "anchors/meta.json", mount=False))
     cmds.append(_py("static_names", "r2-verify", "-g", GEN, "-m", d, mount=False))
     cmds.append(_py("static_names", "r2-copy", "-g", GEN, "-o", "manifests/", mount=False))
     return ("r2", 1, " && ".join(f"( {c} )" for c in cmds))
 
 
-def _chain(d: str, runs: list[str], drill: bool = False) -> list[tuple]:
+def _chain(d: str, runs: list[str], drill: bool = False, anchors: bool = False) -> list[tuple]:
     g = f"-g {GEN} -d {d}"
     return [
         ("prepare", d),
@@ -101,6 +106,7 @@ def _chain(d: str, runs: list[str], drill: bool = False) -> list[tuple]:
         ("shards", 1, _py("static_append", "shards", g)),
         ("catalog", 1, _py("static_append", "catalog", g)),
         *([("drill", 2, _py("static_drill", "build", g, "-k", "task", "-M", "90GB", "-p", "16"))] if drill else []),
+        *([("anchors", 1, _py("static_anchors", "run", g, "-M", "90GB", "-p", "16"))] if anchors else []),
         ("publish", 1, _py("static_append", "publish", g)),
         _r2(d, runs),
         ("prune", d),
@@ -273,3 +279,37 @@ def test_runs_follow_the_base_rule_and_log_a_differing_profile():
     g = Fake({f"{ROOT}/scans.json": {"scans": [{"id": "2026-10-08T1801"}], "hex_runs": {"min": 16, "tail": 8}}}, ["2026-10-09T0001"])
     g.daily(Profile(**{**CFG.__dict__, "hex_runs": "16,8"}), log=logs.append).run("2026-10-09T0001")
     assert [m for m in logs if "hex_runs" in m] == []
+
+
+ANCHORS = Profile(**{**DRILL.__dict__, "anchors": True})
+
+
+def test_the_anchors_stage_follows_the_drill_and_its_meta_is_copied_last():
+    d = "2026-10-09T0001"
+    f = Fake({}, [d])
+    f.daily(ANCHORS).run(d)
+    assert f.calls == _chain(d, [d], drill=True, anchors=True)
+
+
+def test_a_run_without_the_starts_with_catalog_gets_its_anchors_stage_again():
+    """With the base's `anchors/start/` there, a run whose `anchors/meta.json` is there but not its `anchors/start/meta.json`
+    reruns the stage (`anchors run` builds what's missing); once both are there it's done."""
+    d = "2026-10-09T1236"
+    runs = [{"key": "deltas/2026-10-09", "scans": ["2026-10-09"]}, {"key": f"deltas/{d}", "scans": [d]}]
+    keys = {f"{ROOT}/manifests/{d}.json": {"runs": runs}, f"{ROOT}/deltas/{d}/drill/meta.json": None, f"{ROOT}/deltas/{d}/anchors/meta.json": None,
+            f"{ROOT}/anchors/start/meta.json": None}
+    f = Fake(keys, [d])
+    assert f.daily(ANCHORS).run(d) == []
+    assert f.calls == [_chain(d, [], drill=True, anchors=True)[5], _r2(d, ["2026-10-09", d]), ("prune", d)]
+    assert f"{ROOT}/deltas/{d}/anchors/start/meta.json" in f.keys
+    f.calls = []
+    f.daily(ANCHORS).run(d)
+    assert f.calls == [_r2(d, ["2026-10-09", d]), ("prune", d)]
+
+
+def test_an_appended_scan_without_its_anchors_gets_them_then_the_r2_copy():
+    d = "2026-10-09T1236"
+    runs = [{"key": "deltas/2026-10-09", "scans": ["2026-10-09"]}, {"key": f"deltas/{d}", "scans": [d]}]
+    f = Fake({f"{ROOT}/manifests/{d}.json": {"runs": runs}, f"{ROOT}/deltas/{d}/drill/meta.json": None}, [d])
+    assert f.daily(ANCHORS).run(d) == []
+    assert f.calls == [_chain(d, [], drill=True, anchors=True)[5], _r2(d, ["2026-10-09", d]), ("prune", d)]

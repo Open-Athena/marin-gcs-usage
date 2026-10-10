@@ -8,7 +8,7 @@
  */
 import type { Matcher, QueryAst, QuerySyntax } from './queryAst.js'
 import { DEFAULT_SYNTAX, parseAst } from './querySyntax.js'
-import { type HexRule, occurs } from './hexRuns.js'
+import { type HexRule, occurs, segmentOccurs } from './hexRuns.js'
 
 /** A path predicate (`pos ∧ ¬neg` on the full path) carrying its AST and its
  * two halves — the positive part (monotone for substring / glob matchers:
@@ -25,19 +25,32 @@ export type NamePred = ((path: string) => boolean) & {
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 /** Compile options: `hexRuns`, the deployment's static name index generation's hex-run rule (`hexRuns.ts`): a
- *  substring then matches only where it `occurs` under the rule, as the static index answers it (the server's
- *  fallback reads; the client compiles without one). */
+ *  substring then matches only where it `occurs` under the rule (an anchored one per segment, `segmentOccurs`), as
+ *  the static index answers it (the server's fallback reads; the client compiles without one). */
 export interface CompileOpts { hexRuns?: HexRule | null }
+
+/** `body` with a matcher's anchors: `start` — at the path's start or right
+ * after a `/` (a segment starts there), `end` — at its end or right before a
+ * `/` (a segment ends there). */
+const anchored = (body: string, m: { start?: true; end?: true }): RegExp =>
+  new RegExp(`${m.start ? '(?:^|/)' : ''}${body}${m.end ? '(?=/|$)' : ''}`)
 
 /** A matcher's test, given the path and its lowercase. */
 export function matcherTest(m: Matcher, opts: CompileOpts = {}): (path: string, lower: string) => boolean {
   switch (m.kind) {
     case 'sub': {
       const s = m.text, rule = opts.hexRuns ?? null
-      return rule ? (_, l) => occurs(s, l, rule) : (_, l) => l.includes(s)
+      if (!m.start && !m.end) return rule ? (_, l) => occurs(s, l, rule) : (_, l) => l.includes(s)
+      if (rule) {
+        // Per segment, as anchored search reads it (`segmentOccurs`): only `q$` can lose an occurrence to the rule.
+        const mode = m.start && m.end ? 'exact' : m.start ? 'start' : 'end'
+        return (_, l) => l.split('/').some(seg => segmentOccurs(seg, s, mode, rule))
+      }
+      const re = anchored(esc(s), m)
+      return (_, l) => re.test(l)
     }
     case 'glob': {
-      const re = new RegExp(m.pieces.map(esc).join('[^/]*'))
+      const re = anchored(m.pieces.map(esc).join('[^/]*'), m)
       return (_, l) => re.test(l)
     }
     case 'regex': {

@@ -194,13 +194,70 @@ export function groupIndex(footer: Uint8Array, size: number): GroupIndex {
   return idx
 }
 
-/** The groups `[a, b)` whose `s` range can hold suffixes starting with `key` (`Reader.rows`' bisects). */
-export function selectGroups(idx: GroupIndex, key: string): [number, number] {
+/** The groups `[a, b)` whose `s` range can hold suffixes starting with `key` (`Reader.rows`' bisects); `exact`:
+ *  only `s == key` (`b` = the first group whose `s_min` is past it). */
+export function selectGroups(idx: GroupIndex, key: string, exact = false): [number, number] {
   const n = idx.sMin.length, top = key + '\u{10FFFF}'
   const a = bisect(n, i => cmp(idx.sMax[i], key) >= 0)
-  const b = bisect(n, i => cmp(idx.sMin[i], top) >= 0)
+  const b = exact ? bisect(n, i => cmp(idx.sMin[i], key) > 0) : bisect(n, i => cmp(idx.sMin[i], top) >= 0)
   return [a, Math.max(a, b)]
 }
+
+/** A shard's per-group `path` bounds (specs/search-extensions.md §2, "path keys"): the `path` column chunk's
+ *  min/max statistics (untruncated: the writer's, as `s`'s), `null` where a group has none. Within a group the
+ *  rows of one `s` are sorted by `path`, so the rows of `s == q` in group `g` lie in `[pMin[g], pMax[g]]`: with
+ *  `selectGroups(…, exact)` they bound `(q, path)` key ranges by whole groups, the suffix shards and the name
+ *  index read as roots files (`q$`, `^q$` under a view path) with no file of keys built. */
+export interface PathKeys { pMin: (string | null)[]; pMax: (string | null)[] }
+
+/** Cut a shard's `PathKeys` from its footer (as `groupIndex`, the `path` column's statistics). */
+export function pathKeys(footer: Uint8Array): PathKeys {
+  const r = new Compact(footer)
+  const keys: PathKeys = { pMin: [], pMax: [] }
+  r.struct((fid, type) => {
+    if (fid !== 4 || type !== 9) return false
+    r.list(() => {
+      r.struct((rf, rt) => {
+        if (rf !== 1 || rt !== 9) return false
+        r.list((_, c) => {
+          let min: string | null = null, max: string | null = null
+          r.struct((cf, ct) => {
+            if (cf !== 3 || ct !== 12) return false
+            r.struct((mf) => {
+              if (mf !== 12 || c !== PATH_COL) return false
+              r.struct((sf, st) => {
+                if (sf === 5 && st === 8) { max = utf8.decode(r.binary()); return true }
+                if (sf === 6 && st === 8) { min = utf8.decode(r.binary()); return true }
+                return false
+              })
+              return true
+            })
+            return true
+          })
+          if (c === PATH_COL) { keys.pMin.push(min); keys.pMax.push(max) }
+        })
+        return true
+      })
+    })
+    return true
+  })
+  return keys
+}
+const PATH_COL = SX_COLUMNS.indexOf('path')
+
+/** Groups of `[a, b)` that can hold a row with `path` in `[lo, hi)` (by `keys`; a group without bounds is kept). */
+export function groupsUnder(keys: PathKeys, a: number, b: number, lo: string, hi: string): number[] {
+  const out: number[] = []
+  for (let g = a; g < b; g++) {
+    const mn = keys.pMin[g], mx = keys.pMax[g]
+    if (mn != null && mx != null && (cmp(mx, lo) < 0 || cmp(mn, hi) >= 0)) continue
+    out.push(g)
+  }
+  return out
+}
+
+/** The key range `[lo, hi)` of the paths strictly under `P` (`''`: every path). */
+export const underRange = (P: string): [string, string] => P === '' ? ['', '\u{10FFFF}'] : [P + '/', P + '0']
 
 /** The byte span `[start, end)` of groups `[a, b)` (their column chunks are contiguous). */
 export function groupSpan(idx: GroupIndex, a: number, b: number): [number, number] {
@@ -333,10 +390,17 @@ export interface Io { shard: number | null; groups: number; bytes: number; rows_
 
 export interface IndexCache<T = GroupIndex> { get(file: string): Promise<T | null>; put(file: string, idx: T): Promise<void> }
 
+/** How `StaticNames.read` selects and folds a key's rows: `exact` — the rows with `s == key` (else every `s`
+ *  starting with it); `under` — only the groups whose path keys meet the paths under it (rows outside are dropped by
+ *  `fold`); `fold` — the first-hit rule (default `FirstHits`, the contains literal's). */
+export interface ReadOpts { exact?: boolean; under?: string; fold?: (key: string) => FirstHits; rule?: HexRule | null }
+
 export class StaticNames {
   private shards?: Promise<Shard[]>
   private indexes = new Map<string, Promise<GroupIndex>>()
-  constructor(readonly blobs: Blobs, readonly cache?: IndexCache, readonly clock: () => Promise<number> = async () => Date.now(), readonly maxIndexes = 8) {}
+  private pathKeyMap = new Map<string, Promise<PathKeys>>()
+  constructor(readonly blobs: Blobs, readonly cache?: IndexCache, readonly clock: () => Promise<number> = async () => Date.now(), readonly maxIndexes = 8,
+    readonly keysCache?: IndexCache<PathKeys>) {}
 
   plan(): Promise<Shard[]> {
     this.shards ??= this.blobs.json<{ shards: Shard[] }>('shards.json').then(d => d.shards).catch(e => { this.shards = undefined; throw e })
@@ -353,13 +417,8 @@ export class StaticNames {
       const cached = await this.cache?.get(file)
       if (cached) { io.index = 'cache'; return cached }
       io.index = 'footer'
-      const groups = Math.ceil(shard.rows / 8192)
-      let { buf, size } = await this.blobs.suffix(file, Math.min(groups * 1600 + (64 << 10), 64 << 20))
-      const tail = new DataView(buf, buf.byteLength - 8)
-      const flen = tail.getUint32(0, true)
-      if (flen + 8 > buf.byteLength) buf = (await this.blobs.suffix(file, flen + 8)).buf
-      io.footer_bytes = flen
-      const idx = groupIndex(new Uint8Array(buf, buf.byteLength - 8 - flen, flen), size)
+      const { footer, size } = await this.footer(shard, io)
+      const idx = groupIndex(footer, size)
       await this.cache?.put(file, idx)
       return idx
     })()
@@ -367,6 +426,53 @@ export class StaticNames {
     p.catch(() => this.indexes.delete(file))
     while (this.indexes.size > this.maxIndexes) this.indexes.delete(this.indexes.keys().next().value!)
     return p
+  }
+
+  /** A shard's footer (the FileMetaData thrift): one suffix GET sized from its row count, a second only if the footer
+   *  is bigger than guessed. */
+  private async footer(shard: Shard, io: Io): Promise<{ footer: Uint8Array; size: number }> {
+    const file = shardFile(shard.i)
+    const groups = Math.ceil(shard.rows / 8192)
+    let { buf, size } = await this.blobs.suffix(file, Math.min(groups * 1600 + (64 << 10), 64 << 20))
+    const flen = new DataView(buf, buf.byteLength - 8).getUint32(0, true)
+    if (flen + 8 > buf.byteLength) buf = (await this.blobs.suffix(file, flen + 8)).buf
+    io.footer_bytes = (io.footer_bytes ?? 0) + flen
+    return { footer: new Uint8Array(buf, buf.byteLength - 8 - flen, flen), size }
+  }
+
+  /** A shard's path keys (`pathKeys`): the isolate's, else the colo cache's, else cut from the footer. Only the
+   *  anchored readers' scoped reads need them, so they are kept apart from the group index. */
+  private async keys(shard: Shard, io: Io): Promise<PathKeys> {
+    const file = shardFile(shard.i)
+    const held = this.pathKeyMap.get(file)
+    if (held) { this.pathKeyMap.delete(file); this.pathKeyMap.set(file, held); return held }
+    const p = (async () => {
+      const cached = await this.keysCache?.get(file)
+      if (cached) return cached
+      const keys = pathKeys((await this.footer(shard, io)).footer)
+      await this.keysCache?.put(file, keys)
+      return keys
+    })()
+    this.pathKeyMap.set(file, p)
+    p.catch(() => this.pathKeyMap.delete(file))
+    while (this.pathKeyMap.size > this.maxIndexes) this.pathKeyMap.delete(this.pathKeyMap.keys().next().value!)
+    return p
+  }
+
+  /** The groups a read of `key` touches (`ReadOpts`: `exact`, `under`) and the rows they hold — an upper bound on the
+   *  matching rows, before any data is read. */
+  async select(key: string, io: Io, opts: ReadOpts = {}): Promise<{ shard: Shard; idx: GroupIndex; groups: number[]; rows: number } | null> {
+    const shard = shardFor(await this.plan(), key)
+    io.shard = shard?.i ?? null
+    if (!shard) return null
+    const idx = await this.index(shard, io)
+    const [a, b] = selectGroups(idx, key, opts.exact)
+    let groups: number[]
+    if (opts.under == null || opts.under === '' || a === b) groups = Array.from({ length: b - a }, (_, k) => a + k)
+    else groups = groupsUnder(await this.keys(shard, io), a, b, ...underRange(opts.under))
+    let rows = 0
+    for (const g of groups) rows += idx.rows[g]
+    return { shard, idx, groups, rows }
   }
 
   /** How many suffix rows (row-group granular, an upper bound on the matching rows) `key`'s range holds:
@@ -383,26 +489,32 @@ export class StaticNames {
   }
 
   /** `key`'s first hits (lowercased, ≥ 3 characters): its range read once and folded; `maxRows` refuses
-   *  (null) a range above it before any data is fetched. */
-  async read(key: string, maxRows = Infinity, rule: HexRule | null = null): Promise<{ io: Io; fold: FirstHits | null }> {
+   *  (null) a range above it before any data is fetched. `opts`: the anchored readers' selection and fold, and
+   *  the generation's hex-run rule (`rule`, the default fold's). */
+  async read(key: string, maxRows = Infinity, opts: ReadOpts = {}): Promise<{ io: Io; fold: FirstHits | null }> {
     const io: Io = { shard: null, groups: 0, bytes: 0, rows_read: 0, rows_matching: 0, index: 'none', ms: {} }
     let t = await this.clock()
     const lap = async (name: string) => { const now = await this.clock(); io.ms[name] = now - t; t = now }
-    const ext = await this.extent(key, io)
+    const sel = await this.select(key, io, opts)
     await lap('index')
-    const fold = new FirstHits(key, rule)
-    if (!ext || ext.a === ext.b) return { io, fold }
-    io.groups = ext.b - ext.a
-    if (ext.rows > maxRows) { io.rows_read = ext.rows; return { io, fold: null } }
-    const [start, end] = groupSpan(ext.idx, ext.a, ext.b)
-    const buf = await this.blobs.range(shardFile(ext.shard.i), start, end - start)
-    io.bytes = buf.byteLength
+    const fold = opts.fold ? opts.fold(key) : new FirstHits(key, opts.rule ?? null)
+    if (!sel || !sel.groups.length) return { io, fold }
+    io.groups = sel.groups.length
+    if (sel.rows > maxRows) { io.rows_read = sel.rows; return { io, fold: null } }
+    // Contiguous runs of the selected groups, one ranged GET each (a contains range is one run).
+    const runs: [number, number][] = []
+    for (const g of sel.groups) { const last = runs[runs.length - 1]; if (last && last[1] === g) last[1] = g + 1; else runs.push([g, g + 1]) }
+    const bufs = await Promise.all(runs.map(async ([a, b]) => {
+      const [start, end] = groupSpan(sel.idx, a, b)
+      return { a, b, start, buf: await this.blobs.range(shardFile(sel.shard.i), start, end - start) }
+    }))
+    io.bytes = bufs.reduce((n, x) => n + x.buf.byteLength, 0)
     await lap('fetch')
     // One group at a time: peak memory is one group's columns plus the first hits, not the whole range.
     let decode = 0
-    for (let g = ext.a; g < ext.b; g++) {
+    for (const { a, b, start, buf } of bufs) for (let g = a; g < b; g++) {
       const t1 = await this.clock()
-      const cols = await decodeGroup(ext.idx, g, buf, start)
+      const cols = await decodeGroup(sel.idx, g, buf, start)
       const t2 = await this.clock()
       decode += t2 - t1
       fold.add(cols)
@@ -418,7 +530,7 @@ export class StaticNames {
   /** Answer `key` (lowercased, ≥ 3 characters) on each date; `maxRows` refuses (null) a range above it
    *  before any data is fetched. */
   async answer(key: string, dates: string[], maxRows = Infinity, rule: HexRule | null = null): Promise<{ io: Io; answer: Answer | null }> {
-    const { io, fold } = await this.read(key, maxRows, rule)
+    const { io, fold } = await this.read(key, maxRows, { rule })
     if (!fold) return { io, answer: null }
     const t = await this.clock()
     const answer = fold.answer(dates)

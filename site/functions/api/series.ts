@@ -15,7 +15,7 @@
  */
 import { type Ctx, json, requireScope, requireViewer } from '../_lib/auth.js'
 import { snapshotsPrefix } from '../_lib/shared.js'
-import { type Lens, makeStore, pathGens, pathScans, storeReady } from '../_lib/index.js'
+import { type Lens, makeStore, pathGens, withPathStore, pathScans, storeReady } from '../_lib/index.js'
 import { hasLedger, ledgerHead } from '../_lib/ledger.js'
 import { classKey, ownerKey, ownerOk, parseClasses, parseOwner, QueryError, queryParam } from '../_lib/scope.js'
 import { hexNote, hexQuery, liveTotal, rollupTotal, staticFilterStore, staticLiteral, staticTag } from '../_lib/staticFilter.js'
@@ -70,8 +70,9 @@ async function metaPoint(env: Ctx['env'], date: string): Promise<{ date: string;
 
 export const onRequestGet = async (ctx0: Ctx & { waitUntil?: (p: Promise<unknown>) => void }): Promise<Response> => {
   // `store=<key>`: a secondary store's env overlay (none = the primary, as is).
-  const ctx = withStore(ctx0)
-  if (ctx instanceof Response) return ctx
+  const ctx1 = withStore(ctx0)
+  if (ctx1 instanceof Response) return ctx1
+  const ctx = withPathStore(ctx1)
   const { env, request } = ctx
   if (!env.DB) return json({ error: 'index backend not configured (DB)' }, 503)
   if (!storeReady(env)) return json({ error: 'index reader not configured' }, 503)

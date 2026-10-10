@@ -17,7 +17,7 @@ GCS = Profile(
     layouts=("listing/{id}/path-index.parquet", "listing/{id}/index/{gen}/path-index.parquet"),
     bucket="oa-gcs-usage-dvx", scratch="oa-gcs-usage-scratch", gen="2026-10-08c",
     r2_bucket="oa-gcs-usage-index", r2_secrets={"key_id": "gcs-static-index-r2-key-id", "secret": "gcs-static-index-r2-secret"},
-    project=PROJECT, region="us-east1", image=IMAGE, sa=f"gcs-usage-job@{PROJECT}.iam.gserviceaccount.com", drill=True,
+    project=PROJECT, region="us-east1", image=IMAGE, sa=f"gcs-usage-job@{PROJECT}.iam.gserviceaccount.com", drill=True, anchors=True,
     # New generations (the next compaction) are built with the rule; `2026-10-08c` (built before it) and its runs keep
     # the full index, as their `scans.json` records no `hex_runs`.
     hex_runs="16,8",

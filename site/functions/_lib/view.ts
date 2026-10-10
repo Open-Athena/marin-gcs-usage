@@ -29,7 +29,7 @@
  * `f = n_children(P) − kept` — objects and dirs alike.
  */
 import type { Env } from './auth.js'
-import { type IndexHandle, isStore, type Lens, openIndex, planRects, planSizeRects, readAsks, readRects, readRows, readSizeRects, type Rect, type Row, sizeVariant, type Span, TooWide, type Trace, withTrace } from './index.js'
+import { type IndexHandle, isStore, ivLastRead, type Lens, openIndex, perScan, planRects, planSizeRects, readAsks, readRects, readRows, readSizeRects, type Rect, type Row, sizeVariant, type Span, TooWide, type Trace, withTrace } from './index.js'
 import { type FoldedLens, ownerLens, poolLens } from './owners.js'
 import { type ClassScope, classRow, nameFilter, type NamePred, ownerKey, ownerOk, type OwnerScope } from './scope.js'
 import { filterThreshold, looseThreshold, matchRoots, pickTier, rebasedThreshold, rootRects } from './filter.js'
@@ -43,7 +43,7 @@ import { extrasFor } from './extras.js'
 import { loadRegistry } from './identity.js'
 import { covers, declined, type Hit, type Rollup, rollupAt, staticFilterStore, staticKey } from './staticFilter.js'
 import { scanAt } from './staticNames.js'
-import { FilterRejected, indexedOnly } from './indexedOnly.js'
+import { FilterRejected, indexedOnly, reject } from './indexedOnly.js'
 
 export const MIN_AREA_DEFAULT = 12 // px² of the smallest legible cell (~3×4)
 // Each nesting level below the query root loses canvas to chrome (title bars,
@@ -60,6 +60,9 @@ const COARSE_EXPS = [16, 20, 24]
  * is cheaper (gcs's 32K-row groups: a 2K-row dir 20 levels deep decoded
  * ~1.3M rows from `path`). The two span queries cost ~20 ms. */
 export const SMALL_SUBTREE_ROWS = 0
+/** On the interval store, a subtree with more rows than this (or an unknown count) reads `bysize`
+ * without planning `path` (`planSubtree`). */
+export const IV_PATH_PLAN_ROWS = 1 << 18
 /** A v1 floor-free tier is sorted `(depth, path)`, so a size threshold can't
  * prune it: the filter's no-match fallback reads every row under the path.
  * For a whole bucket that read exceeds the Worker's limits (a bucket-level
@@ -168,8 +171,11 @@ export interface View {
    * drill re-dispatches); `matched` lists only the kept children that are match roots themselves, so
    * `matchesCapped` is set, and `matchCount.n` is `rows`, the root rows under P over every scan (an upper
    * bound on this scan's; at the fleet root a long literal's alias entry, a 1–2 character one's counted from
-   * the roots index). */
-  rollup?: { children: number; kept: number; rows: number | null }
+   * the roots index). `bucketsOnly`: the fleet root from the catalog with no drilldown (`FILTER_STATIC_HEAVY`
+   * off) — bucket tiles, exact bytes and objects, `rows` null (so `matchCount.n` counts only the matched
+   * buckets); a bucket's view is refused (`term-too-common`) — unless `scopedBelow` (`^q`'s starts-with catalog), where
+   * a view below answers when the term's rows there are few enough. */
+  rollup?: { children: number; kept: number; rows: number | null; bucketsOnly?: true; scopedBelow?: true }
   /** With `query`: read from the coarsest tier for the first paint. */
   firstPaint?: boolean
   /** With `query`: phase 2 left `skipped` of the roots big enough to subdivide undivided — drawn as one
@@ -251,6 +257,7 @@ function merge(a: Agg, r: Row): void {
   if (r.cls3) a.cb['3'] = (a.cb['3'] ?? 0) + r.cls3
   if (r.cls4) a.cb['4'] = (a.cb['4'] ?? 0) + r.cls4
   if (r.usr) a.ub[r.usr] = (a.ub[r.usr] ?? 0) + r.size
+  if (r.us) for (const u in r.us) a.ub[u] = (a.ub[u] ?? 0) + r.us[u]
   a.kind = r.kind
   if (r.n_children != null) a.nc = r.n_children
   if (r.n_desc != null) a.nd = r.n_desc
@@ -392,6 +399,16 @@ async function planSubtree(
   // `n_desc` alone, and with large row groups the wrong pick decodes 4×
   // more (gcs at 32K-row groups: small drills over the 700K-row cap).
   // `smallRows`: below it the `path` read is taken without planning `bysize`.
+  // The interval store plans from footer groups it must fetch and decode (no D1): a big subtree's
+  // `path` plan touches most of them, and `bysize` is the cheaper read there anyway, so it isn't planned.
+  if (!pathOnly && pathIdx.asOf != null && (nDesc == null || nDesc > IV_PATH_PLAN_ROWS)) {
+    const sized = await tryOpen(env, date, 'bysize')
+    if (sized) {
+      const sh = withTrace(sized, tr)
+      const sp = await planSizeRects(sh, rects, thrAt, lens)
+      return of(sized.variant, sp, stop => readSizeRects(sh, rects, thrAt, lens, sp, stop))
+    }
+  }
   if (!pathOnly && isStore(pathIdx) && (nDesc == null || nDesc > smallRows)) {
     // A lens prefers the user-first size sort where the scan has one (gcs
     // writes only `bysize-user`): a user's root reads their own groups.
@@ -444,7 +461,8 @@ export async function readRootRows(env: Env, date: string): Promise<{ path: stri
   return [...by.values()]
 }
 
-export async function readRootAgg(env: Env, o: { date: string; path: string; lens?: Lens; owner?: OwnerScope; by?: string; classes?: ClassScope }): Promise<{ b: number; o: number } | null> {
+export async function readRootAgg(env0: Env, o: { date: string; path: string; lens?: Lens; owner?: OwnerScope; by?: string; classes?: ClassScope }): Promise<{ b: number; o: number } | null> {
+  const env = sliced(env0, o)
   const { date, path, lens, owner, classes } = o
   const dP = path === '' ? 0 : path.split('/').length
   const readRoot = (idx: IndexHandle, l?: Lens) =>
@@ -576,7 +594,7 @@ interface Read {
   matched?: { path: string; b: number; o: number }[]
   /** A rollup read: the match count (a bound) and the rollup's shape (`View.rollup`). */
   matchCount?: { n: number; b: number; o: number }
-  rollup?: { children: number; kept: number; rows: number | null }
+  rollup?: { children: number; kept: number; rows: number | null; bucketsOnly?: true; scopedBelow?: true }
   /** A rollup read: every child's exact matched total on this scan (absent = zero), drawn or not — a diff
    * takes a name one side didn't draw from here instead of a point lookup. */
   exact?: Map<string, Agg>
@@ -787,6 +805,8 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     // sort's); a lens without assignments keeps the old read.
     const pathIdx = !tiers.length && !lens ? (sort === 'path' && fine ? fine : withTrace(await openFine(env, date, 'path'), tr)) : null
     const store = !!pathIdx && isStore(pathIdx)
+    // The search sidecars sit beside the scan's own path sort: an interval-store handle searches there.
+    const searchIdx = pathIdx && pathIdx.asOf != null ? withTrace(await openFine(perScan(env), date, 'path'), tr) : pathIdx
     const pq = query.ast
     const traceSearch = (what: string, f: SearchFound) => tr?.('search', performance.now() - t0, `${what} ${f.stats.mode} c${f.stats.candidates} ${f.stats.layout === 2 ? `r${f.stats.rowsRgs}` : `n${f.stats.namesRgs} g${f.stats.pathRgs}`}${f.truncated ? ' cut' : ''}`)
     if (rootHit) {
@@ -799,14 +819,18 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       // generation, exact, from one cached suffix-range read — no search sidecars, no thresholded walk.
       const sfs = !lens && !classes ? staticFilterStore(env) : null
       const skey = sfs ? await staticKey(sfs, pq, [date]) : null
-      const raw = skey ? await sfs!.source.hits(skey, path) : null
+      const raw = skey ? await sfs!.source.hits(skey, path, { firstPaint: o.firstPaint }) : null
       let shits = raw
       // A heavy literal's drilldown answers its base generation's scans only, and its rollups know no
       // owners: past either, the view reads as before.
       const off = shits && !covers(shits, [date]) ? 'after the drill base' : shits?.rollup && owner ? 'rollup: no owners' : null
       if (off) shits = null
-      // An indexed-only deployment never walks the path store for a filter (`indexedOnly.ts`).
-      if (!shits && indexedOnly(env)) throw new FilterRejected(declined(sfs, skey, raw))
+      // An indexed-only deployment never walks the path store for a filter (`indexedOnly.ts`); nor does a heavy
+      // literal with no drilldown (`FILTER_STATIC_HEAVY` off), whose thresholded walk would read as "no
+      // matches": below the fleet root it is `term-too-common`, and the root's catalog buckets know no owners.
+      const noDrill = !!sfs && !!skey && sfs.source.heavy === false
+      const why = shits ? null : (noDrill || raw?.rollup?.scopedBelow) && raw?.rollup?.bucketsOnly && owner && covers(raw, [date]) ? reject('unsupported-scope') : declined(sfs, skey, raw)
+      if (why && (indexedOnly(env) || (noDrill && why.code !== 'scan-not-indexed'))) throw new FilterRejected(why)
       tr?.('static', performance.now() - t0, shits ? `${skey} ${shits.rollup ? `rollup ${shits.rollup.cells.length}` : shits.hits.length}` : skey ? `declined${off ? ` (${off})` : ''}` : undefined)
       if (shits?.rollup) {
         const h = pathIdx ?? fine ?? withTrace(await openFine(env, date, 'path'), tr)
@@ -832,7 +856,7 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
         staticRoots = true
       }
       const plan = !shits && store && pq ? planPositive(pq) : null
-      const searched = plan ? await searchRoots(env, pathIdx!, query, plan, path, o.searchLimits, `pos:${JSON.stringify(pq)}`) : null
+      const searched = plan ? await searchRoots(perScan(env), searchIdx!, query, plan, path, o.searchLimits, `pos:${JSON.stringify(pq)}`) : null
       if (searched) traceSearch('pos', searched)
       // A search cut before it found anything (its heaviest name alone is
       // over budget) says nothing: the thresholded read below answers instead.
@@ -908,7 +932,7 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     if (negP && pq) {
       t0 = performance.now()
       const nplan = store ? planNegative(pq) : null
-      const ns = nplan ? await searchRoots(env, pathIdx!, negP, nplan, path, o.searchLimits, `neg:${JSON.stringify(pq)}`) : null
+      const ns = nplan ? await searchRoots(perScan(env), searchIdx!, negP, nplan, path, o.searchLimits, `neg:${JSON.stringify(pq)}`) : null
       if (ns) {
         traceSearch('neg', ns)
         if (ns.truncated) searchCut = true
@@ -1329,6 +1353,18 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     }
   }
   }
+  // The interval store keeps read days in their own sort (specs/interval-store.md §2.2): the tiles' and
+  // the root's, looked up as of the scan.
+  if (plain && idx.asOf != null && !idx.schema.some(l => l.name === 'last_read')) {
+    t0 = performance.now()
+    const rootPaths = path === '' ? [...new Set(rootRows.map(r => r.path))] : [path]
+    const lr = await ivLastRead(env, date, [...aggs.keys(), ...rootPaths])
+    for (const [p, a] of aggs) { const d = lr.get(p); if (d != null) a.a = d }
+    let ra: number | null = null
+    for (const p of rootPaths) { const d = lr.get(p); if (d != null) ra = ra == null ? d : Math.max(ra, d) }
+    rootAgg.a = ra
+    tr?.('reads', performance.now() - t0, `${lr.size}`)
+  }
   let matches: string[] | undefined
   if (query) {
     // Only a claims fold filters a partial read; a view root the query matches is matched whole.
@@ -1433,7 +1469,7 @@ async function rollupRead(env: Env, o: ViewOpts, rollup: Rollup, x: { dP: number
     threshold: T, thrAt, tier: 'rollup', idx: x.idx, truncated: false,
     matches: matched.map(m => m.path).sort(), matched: matched.map(m => ({ path: m.path, b: Math.round(m.b), o: Math.round(m.o) })),
     matchCount: { n: rollup.rows ?? matched.length, b: Math.round(total.b), o: Math.round(total.o) },
-    rollup: { children: rollup.children, kept: rollup.kept, rows: rollup.rows },
+    rollup: { children: rollup.children, kept: rollup.kept, rows: rollup.rows, ...(rollup.bucketsOnly ? { bucketsOnly: true as const } : {}), ...(rollup.scopedBelow ? { scopedBelow: true as const } : {}) },
     exact, ...(o.firstPaint ? { firstPaint: true } : {}), ownerLens: null, scoped: (_p, _all, mine) => mine!,
   }
 }
@@ -1595,7 +1631,11 @@ function kidsIndex(kept: Map<string, Agg>, path: string): Map<string, string[]> 
 /** The store root's crumb label: `ROOT_LABEL` (wrangler var) per deployment. */
 const rootName = (path: string, env?: Env) => (path === '' ? env?.ROOT_LABEL ?? 'all buckets' : path.split('/').pop()!)
 
-export async function buildView(env: Env, o: ViewOpts): Promise<View> {
+/** A read scoped by owner or class needs owner-slice rows: per-scan stores (`perScan`). */
+const sliced = (env: Env, o: { lens?: Lens; owner?: OwnerScope; classes?: ClassScope; by?: string }): Env => (o.lens || o.owner || o.classes || o.by ? perScan(env) : env)
+
+export async function buildView(env0: Env, o: ViewOpts): Promise<View> {
+  const env = sliced(env0, o)
   const { path, query } = o
   const dP = path === '' ? 0 : path.split('/').length
   const cov: Coverage = {}
@@ -1643,7 +1683,7 @@ export async function buildView(env: Env, o: ViewOpts): Promise<View> {
     return node
   }
   const tree = build(path, v.rootAgg)
-  return { tree, tier: v.tier, index: v.idx.mode, threshold: v.threshold, nodes: kept.size, truncated: v.truncated, ...(v.matched ? { ...matchLists(v.matched, kept), ...(v.matchCount ? { matchCount: v.matchCount, matchesCapped: true as const } : {}) } : v.matches ? { matches: v.matches } : {}), ...(v.rollup ? { rollup: v.rollup } : {}), ...(v.excluded ? { excluded: v.excluded } : {}), ...(v.firstPaint ? { firstPaint: true } : {}), ...(v.interiors ? { interiors: v.interiors } : {}), ...(query ? coverageFields(cov) : {}) }
+  return { tree, tier: v.tier, index: v.idx.asOf != null ? `iv:${env.INTERVAL_STORE_GEN}` : v.idx.mode, threshold: v.threshold, nodes: kept.size, truncated: v.truncated, ...(v.matched ? { ...matchLists(v.matched, kept), ...(v.matchCount ? { matchCount: v.matchCount, matchesCapped: true as const } : {}) } : v.matches ? { matches: v.matches } : {}), ...(v.rollup ? { rollup: v.rollup } : {}), ...(v.excluded ? { excluded: v.excluded } : {}), ...(v.firstPaint ? { firstPaint: true } : {}), ...(v.interiors ? { interiors: v.interiors } : {}), ...(query ? coverageFields(cov) : {}) }
 }
 
 /** The most match roots a response lists (`matches` / `matched`) beyond those the tree draws. */
@@ -1744,7 +1784,8 @@ function sumInteriors(a?: View['interiors'], b?: View['interiors']): NonNullable
  * it exists there it shows with its real size (it crossed the floor), else
  * it was added / removed. `(other)` is parent − Σ named on each side, so its
  * Δ is the sub-floor churn, truthfully. */
-export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
+export async function buildDiff(env0: Env, o: DiffOpts): Promise<Diff> {
+  const env = sliced(env0, o)
   const { from, to, path, lens, owner, query } = o
   const dP = path === '' ? 0 : path.split('/').length
   const tr = o.trace
@@ -1771,8 +1812,9 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
   let floor: number | undefined
   // A diff draws its roots' kinds only (no ages, no classes): the lookups that land by phase 2's end are
   // taken, none waited for (with a deployment's finite `FILTER_DETAILS_MS`; unset waits, as views do).
-  // Its phase 2 runs both sides at once, then the walk's lookups (`FILTER_WALK_MS`): a smaller share each.
-  const wait = { ...(Number(env.FILTER_DETAILS_MS) ? { detailsWait: 0 } : {}), phase2Ms: Math.min(Number(env.FILTER_PHASE2_MS) || FILTER_PHASE2_MS, FILTER_DIFF_PHASE2_MS) }
+  // Its phase 2 runs both sides at once, then the walk's lookups (`FILTER_WALK_MS`): a smaller share each
+  // (`o.phase2Ms`, a background full run's, overrides).
+  const wait = { ...(Number(env.FILTER_DETAILS_MS) ? { detailsWait: 0 } : {}), phase2Ms: o.phase2Ms ?? Math.min(Number(env.FILTER_PHASE2_MS) || FILTER_PHASE2_MS, FILTER_DIFF_PHASE2_MS) }
   // Every read of this diff shares one phase-2 gate: a side whose round read nothing in time stops the
   // re-read at the shared floor from paying its budget again.
   const gate: Phase2Gate = o.phase2Gate ?? { dead: false }

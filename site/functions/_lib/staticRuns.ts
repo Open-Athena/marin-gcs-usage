@@ -245,7 +245,7 @@ export class TieredNames {
       const ext = await this.extent(key, probe)
       if (ext && ext.rows > maxRows) { const { version, scans } = await this.tiers.state(); return { io: { ...probe, rows_read: ext.rows }, fold: null, version, scans } }
     }
-    const { state, got } = await this.tiers.each((t, st) => t.names.read(key, Infinity, st.hexRuns))
+    const { state, got } = await this.tiers.each((t, st) => t.names.read(key, Infinity, { rule: st.hexRuns }))
     const io = got.length ? sumIo(got.map(g => g.io)) : { ...noIo(), tiers: 0 }
     return { io, fold: combineFolds(key, got.map(g => g.fold!), state.hexRuns), version: state.version, scans: state.scans }
   }

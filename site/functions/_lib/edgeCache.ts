@@ -125,6 +125,61 @@ export async function cacheStore(env: CacheEnv, key: Request, body: string, head
   return res
 }
 
+/** A background full run's phase-2 time budget, ms (`upgradePartial`): what the viewer-facing 1.5 s (0.9 s a
+ *  diff side) cut short gets ~7× more, after the response is sent. A Pages Function's `waitUntil` may run
+ *  30 s past the response, and phase 2 stops decoding at its budget, so a diff (both sides at once, then its
+ *  walk) stays well inside. */
+export const UPGRADE_PHASE2_MS = 10_000
+
+/** Per isolate: keys with a background full run in flight (one each: concurrent partial hits don't
+ *  stampede), and keys whose run was cut short too — not retried until the partial they'd replace expires
+ *  (`PARTIAL_TTL`), so a heavy key doesn't re-run every hit. */
+const upgrading = new Set<string>()
+const gaveUp = new Map<string, number>()
+
+/** What `upgradePartial` did: `scheduled`, or why not. */
+export type Upgrade = 'scheduled' | 'no-waituntil' | 'in-flight' | 'gave-up'
+
+/** After serving a partial answer (budget-cut: the miss that produced it, or a partial hit), compute the full
+ *  one in the background (`waitUntil`) with `compute` (the endpoint's build at `UPGRADE_PHASE2_MS`). A whole
+ *  answer replaces the colo entry, at the normal TTL (and goes to KV, as any whole answer does); one cut
+ *  short again leaves the partial as it is. `done` (tests) settles with the run. */
+export function upgradePartial(
+  env: CacheEnv,
+  key: Request,
+  compute: () => Promise<{ body: string; keep: Keep }>,
+  waitUntil: ((p: Promise<unknown>) => void) | undefined,
+  now = Date.now(),
+): Upgrade {
+  if (!waitUntil) return 'no-waituntil'
+  const k = key.url
+  if (upgrading.has(k)) return 'in-flight'
+  const until = gaveUp.get(k)
+  if (until != null) {
+    if (now < until) return 'gave-up'
+    gaveUp.delete(k)
+  }
+  upgrading.add(k)
+  waitUntil((async () => {
+    try {
+      const { body, keep } = await compute()
+      if (keep === true) await cacheStore(env, key, body)
+      else gaveUp.set(k, now + PARTIAL_TTL * 1000)
+    } catch {
+      gaveUp.set(k, now + PARTIAL_TTL * 1000)
+    } finally {
+      upgrading.delete(k)
+    }
+  })())
+  return 'scheduled'
+}
+
+/** Tests: forget the isolate's upgrade state. */
+export const resetUpgrades = (): void => { upgrading.clear(); gaveUp.clear() }
+
+/** Whether a cached response is a partial answer (`x-cache-partial`). */
+export const isPartial = (r: Response): boolean => r.headers.has('x-cache-partial')
+
 /** A `Trace` sink plus its `Server-Timing` rendering (`fetch;dur=812,…`;
  * counts ride as `dur` too — DevTools shows them the same way). */
 export function serverTiming(): { trace: (name: string, ms: number, desc?: string) => void; time: <T>(name: string, p: Promise<T>) => Promise<T>; header: () => string } {

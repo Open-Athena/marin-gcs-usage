@@ -77,3 +77,20 @@ export function ruleOf(x: unknown): HexRule | null {
 }
 
 export const sameRule = (a: HexRule | null, b: HexRule | null): boolean => a === b || (!!a && !!b && a.min === b.min && a.tail === b.tail)
+
+/** An anchored literal's mode (`^q` start, `q$` end, `^q$` exact; null: a plain contains literal). */
+export type AnchorMode = 'start' | 'end' | 'exact'
+
+/** Whether a lowercase segment holds `q` in `mode` under the rule: anchored search's per-segment test. An occurrence
+ *  at a segment's start has no hex digit before it, so it is never dropped: `^q` and `^q$` are `startsWith` and `===`
+ *  under any rule. `q$`'s one candidate occurrence ends the segment and is tested by `dropped` like any other: e.g. a
+ *  proper suffix of a trailing 16+ hex-digit run is dropped (it can't extend past the run), and so is a `q` with more
+ *  than `tail` leading hex digits starting inside a run. So only `hexAffected` literals can lose `q$` matches. */
+export function segmentOccurs(seg: string, q: string, mode: AnchorMode | null, rule: HexRule | null): boolean {
+  switch (mode) {
+    case 'start': return seg.startsWith(q)
+    case 'exact': return seg === q
+    case 'end': return seg.endsWith(q) && !dropped(seg, seg.length - q.length, q.length, rule)
+    default: return occurs(q, seg, rule)
+  }
+}

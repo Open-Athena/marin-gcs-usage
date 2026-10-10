@@ -2,7 +2,7 @@ import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/rea
 import { getCurrentScan } from './owners'
 import { DEFAULT_STORE } from './stores'
 import { type DeletionRun, EXEC_CAPS, type ExecCaps, type ExecJob } from './runs'
-import { type PlanItem, stageMany as stageManyVia } from './batches'
+import { HttpError, type PlanItem, stageMany as stageManyVia } from './batches'
 
 export type { DeletionRun, ExecJob } from './runs'
 export { LIVE_STATES } from './runs'
@@ -67,7 +67,8 @@ export const EXEC_API = `/api/${DEFAULT_STORE.executor}`
  *  run files): the console keys every control on these, never on a name. */
 export const CAPS: ExecCaps = EXEC_CAPS[DEFAULT_STORE.executor]
 
-async function call<T>(url: string, method = 'GET', body?: unknown): Promise<T> {
+/** One plan-API call: JSON in and out; a non-2xx throws an `HttpError` with its status. */
+export async function call<T>(url: string, method = 'GET', body?: unknown): Promise<T> {
   const r = await fetch(url, {
     method,
     credentials: 'include',
@@ -80,7 +81,7 @@ async function call<T>(url: string, method = 'GET', body?: unknown): Promise<T> 
   try { data = JSON.parse(text) } catch { data = null }
   if (!r.ok) {
     const msg = data && typeof data === 'object' && 'error' in data ? String((data as { error: unknown }).error) : `${r.status} ${text.slice(0, 200)}`
-    throw new Error(msg)
+    throw new HttpError(msg, r.status)
   }
   return data as T
 }

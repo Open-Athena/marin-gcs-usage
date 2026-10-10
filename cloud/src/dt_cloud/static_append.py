@@ -30,7 +30,7 @@ import pyarrow.parquet as pq
 from click import IntRange, group, option
 
 from . import static_catalog as sc
-from .hex_runs import HexRule, occurs, occurs_sql, rule_json
+from .hex_runs import HexRule, occurs, occurs_sql, rule_from_json, rule_json
 from .static_profile import data_bucket, layouts as profile_layouts, scratch_bucket
 from .static_names import (
     ANSWER_COLS, CINTERVAL_SCHEMA, CODEC, INTERVAL_RG, KEY_COLS, OPEN, PREFIX, SX_RG,
@@ -699,6 +699,14 @@ def publish_cmd(bucket, date, gen, mount, dry_run, tmp) -> None:
             merge_catalogs([d / "catalog" for d in dirs], outp / "catalog", membership, gen_rule_at(bucket, gen))
             if all(r["key"] in drilled for r in ins):
                 merge_drills(dirs, outp / "drill", m, tmp)
+            # anchored search's tiers (`static_anchors`): merged when every input carries them (else the merged run has
+            # none, and the anchored stack is cut there)
+            if all((d / "anchors" / "meta.json").exists() for d in dirs):
+                from .static_anchors import Tier as ATier, merge_run_local
+
+                meta_a = json.loads((dirs[-1] / "anchors" / "meta.json").read_text())
+                merge_run_local(connect(16, "100GB", tmp), [ATier(d) for d in dirs], ATier(outp), meta_a["R"], meta_a["K"], m["scans"],
+                                rule=rule_from_json(meta_a.get("hex_runs")))
             (outp / "meta.json").write_text(json.dumps({**m, **doc}, indent=1) + "\n")
             # a merged run is written once: an earlier attempt may have left only the same keys (overwritten here)
             ours = {f"{prefix}/{m['key']}/{f.relative_to(outp).as_posix()}" for f in outp.rglob("*") if f.is_file()}

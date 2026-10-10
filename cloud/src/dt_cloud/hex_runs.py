@@ -188,3 +188,29 @@ def grams_sql(l: str, rule: HexRule | None) -> str:
     return (f"(CASE WHEN NOT {has_run_sql(l, rule)} THEN {grams_sql(l, None)} ELSE list_distinct("
             f"list_transform(list_filter(range(1, length({l}) + 1), lambda p: NOT {dropped_sql(l, 'p', '1', rule)}), lambda p: substring({l}, p, 1))"
             f" || list_transform(list_filter(range(1, length({l})), lambda p: NOT {dropped_sql(l, 'p', '2', rule)}), lambda p: substring({l}, p, 2))) END)")
+
+
+# ── Anchored terms (`^q`, `q$`, `^q$`; `static_anchors`) ─────────────────────
+
+
+def segment_occurs(seg: str, q: str, mode: str | None, rule: HexRule | None) -> bool:
+    """Whether a lowercase segment holds `q` in `mode` (`start` | `end` | `exact`; None: contains) under the rule
+    (`hexRuns.ts` `segmentOccurs`). An occurrence at a segment's start has no hex digit before it, so it is never
+    dropped: `^q` and `^q$` are `startswith` and `==` under any rule. `q$`'s one candidate occurrence ends the segment
+    and is tested by `dropped` like any other (a proper suffix of a trailing run is dropped, as is a `q` with more than
+    `tail` leading hex digits starting inside a run), so only `hex_affected` literals can lose `q$` matches."""
+    if mode == "start":
+        return seg.startswith(q)
+    if mode == "exact":
+        return seg == q
+    if mode == "end":
+        return seg.endswith(q) and not dropped(seg, len(seg) - len(q), len(q), rule)
+    return occurs(q, seg, rule)
+
+
+def end_dropped_sql(l: str, k: str, rule: HexRule | None) -> str:
+    """SQL: the occurrence of `k` that ends `l` (given `ends_with(l, k)`) is dropped (`segment_occurs`' `end` test). An
+    occurrence starting at a non-hex character is never dropped, so that is checked first."""
+    if rule is None:
+        return "false"
+    return f"(contains({_HEXS}, left({k}, 1)) AND {dropped_sql(l, f'length({l}) - length({k}) + 1', f'length({k})', rule)})"

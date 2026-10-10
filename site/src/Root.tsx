@@ -1,5 +1,5 @@
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
-import { useEffect } from 'react'
+import { lazy, Suspense, useEffect } from 'react'
 import { HotkeysProvider } from 'use-kbd'
 import { HelpCard, HelpProvider } from './Help'
 import { AdminDbPage } from './AdminDbPage'
@@ -21,6 +21,10 @@ import { StoreProvider } from './store'
 import { DEFAULT_STORE, STORES } from './stores'
 import { useLoadIdentities } from './identities'
 import { PerfOverlay } from './dev/PerfOverlay'
+
+// The session log's viewer (admin-only): its own chunk, so the main bundle carries none of it.
+const SessionsPage = lazy(() => import('./SessionsPage').then(m => ({ default: m.SessionsPage })))
+const sessions = <AuthGate><Suspense fallback={<p className="loading">Loading…</p>}><SessionsPage /></Suspense></AuthGate>
 
 // `?perf=1` at load: the time-to-render panel (specs/render-bench.md). The
 // marks themselves are always on (`perf.ts`); only the panel is opt-in.
@@ -61,6 +65,8 @@ export default function Root() {
       <Route path="/admin" element={<AuthGate><AdminPage /></AuthGate>} />
       <Route path="/admin/db" element={<AuthGate><AdminDbPage /></AuthGate>} />
       <Route path="/admin/db/:table" element={<AuthGate><AdminDbPage /></AuthGate>} />
+      <Route path="/admin/sessions" element={sessions} />
+      <Route path="/admin/sessions/:sid" element={sessions} />
       <Route path="/files/*" element={<AuthGate><FilesRedirect /></AuthGate>} />
       {/* `/meta` served by another deployment (`Store.metaTree`): go there, keeping the subpath + query. */}
       {DEFAULT_STORE.metaTree && !STORES.some(s => s.path.replace(/\/$/, '') === '/meta') && (

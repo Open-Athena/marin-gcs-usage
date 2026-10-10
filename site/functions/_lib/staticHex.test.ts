@@ -5,8 +5,9 @@ import { type HexRule } from './hexRuns.js'
 import { answerKey, staticSummary, type Store } from './nameSummaryStatic.js'
 import { compileQuery } from './pathQuery.js'
 import type { QueryAst } from './queryAst.js'
-import { hexNote, hexQuery, injectedStores, type StaticFilterStore } from './staticFilter.js'
-import type { Blobs } from './staticNames.js'
+import { type Found, hexNote, hexQuery, injectedStores, type StaticFilterStore } from './staticFilter.js'
+import { type Blobs, scanAt } from './staticNames.js'
+import { AnchoredSource, termKey } from './staticAnchors.js'
 import { Drill } from './staticDrill.js'
 import { tiers } from './staticRuns.js'
 import { fixture } from './testStore.js'
@@ -173,5 +174,70 @@ describe('the drilldown\'s plain view under the rule', () => {
     const st = { version: 'base', scans: [], tiers: [{ dir: null, aliases: async () => { throw new Error('no drill files') } }] } as never
     await expect(drill(R).view('cafe', HASHED, st)).rejects.toThrow('no drill files')
     expect(await drill(null).view('cafe', HASHED)).toEqual({ source: 'plain' })
+  })
+})
+
+describe('anchored search on a generation with the rule', () => {
+  /** `q$` literals: proper hex suffixes of trailing runs (dropped), a whole run (kept), and plain endings. */
+  const ENDS = ['2b3c', 'a2b3c', '6677', 'e0011223344556677', 'deadbeef00cafe0011223344556677', '.json', '.txt', 'cafe.txt', '1234.bin', 'abc.bin']
+  const endAst = (text: string, start = false): QueryAst => ({ alts: [[{ kind: 'sub', text, end: true, ...(start ? { start: true } : {}) }]], neg: [] })
+  /** The base generation's fixture as `Blobs`, listing what it holds (no `anchors/meta.json` unless `anchors` is given). */
+  const listed = (anchors?: Record<string, unknown>): Blobs => {
+    const b = files()
+    return {
+      ...b,
+      async json(key) { if (key === 'anchors/meta.json' && anchors) return anchors; return b.json(key) },
+      async list(prefix) { return [...KEYS, ...(anchors ? ['anchors/meta.json'] : [])].filter(k => k.startsWith(prefix)) },
+    }
+  }
+  const sums = (found: Found | null, date: string): Record<string, [number, number]> => {
+    const D = scanAt(date), out: Record<string, [number, number]> = {}
+    for (const h of found!.hits!) {
+      if (!(h.vf <= D && D < h.vt)) continue
+      const t = (out[h.path.split('/')[0]] ??= [0, 0])
+      t[0] += Number(h.size); t[1] += Number(h.n)
+    }
+    return Object.fromEntries(Object.entries(out).sort(([x], [y]) => x < y ? -1 : 1))
+  }
+
+  it('`q$` reads the light index under the rule: equal to the rule-aware fallback (brute force over the versions), on every date', async () => {
+    const t = tiers(listed())
+    const src = new AnchoredSource(t.tiers, listed())
+    const got: unknown[] = [], want: unknown[] = []
+    for (const text of ENDS) {
+      const f = await src.hits(termKey({ text, start: false, end: true }), '')
+      for (const d of DATES) {
+        got.push([text, d, sums(f, d)])
+        want.push([text, d, fallback(compileQuery(endAst(text), { hexRuns: R }), d)])
+      }
+    }
+    expect(got).toEqual(want)
+    // The rule changes exactly the proper hex suffixes of a 16+ digit trailing run (the hash, the hashed directory).
+    const differs = ENDS.filter(text => DATES.some(d => JSON.stringify(fallback(compileQuery(endAst(text), { hexRuns: R }), d)) !== JSON.stringify(fallback(compileQuery(endAst(text)), d))))
+    expect(differs).toEqual(['2b3c', 'a2b3c', '6677', 'e0011223344556677'])
+  })
+
+  it('`^q`, `^q$` and a heavy `q$` decline cleanly without an anchors build (cw), and with one built under another rule', async () => {
+    const meta = { R: 3, K: 2, rg: 5, idx_rg: 3 }
+    for (const anchors of [undefined, meta, { ...meta, hex_runs: { min: 16, tail: 0 } }]) {
+      const t = tiers(listed(anchors))
+      const src = new AnchoredSource(t.tiers, listed(anchors), { maxRows: 0 })
+      expect(await Promise.all([
+        src.hits(termKey({ text: 'cafe', start: true, end: false }), ''),
+        src.hits(termKey({ text: 'cafe.txt', start: true, end: true }), 'bkt-c'),
+        src.hits(termKey({ text: '.txt', start: false, end: true }), 'bkt-b'),
+      ])).toEqual([null, null, null])
+    }
+  })
+
+  it('the fallback reads `^q` / `^q$` as without the rule (a segment\'s start is never inside a run), `q$` by `segmentOccurs`', () => {
+    const live = (ast: QueryAst, rule: HexRule | null) => DATES.map(d => fallback(compileQuery(ast, { hexRuns: rule }), d))
+    for (const text of ['dead', 'deadbeef00cafe0011223344556677', '0123', 'cafe']) {
+      expect(live(endAst(text, true), R)).toEqual(live(endAst(text, true), null))
+      expect(live({ alts: [[{ kind: 'sub', text, start: true }]], neg: [] }, R)).toEqual(live({ alts: [[{ kind: 'sub', text, start: true }]], neg: [] }, null))
+    }
+    // `^q` never notes the rule; `q$` does when hex-affected.
+    expect([hexNote(R, { alts: [[{ kind: 'sub', text: 'cafe', start: true }]], neg: [] }), hexNote(R, endAst('cafe')), hexNote(R, endAst('.txt'))])
+      .toEqual([{}, { hexRuns: R }, {}])
   })
 })
