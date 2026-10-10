@@ -32,6 +32,7 @@
 import { S3Store } from '@rdub/file-tree/stores/s3'
 import { type FileMetaData, parquetMetadata, parquetMetadataAsync, parquetRead, parquetReadObjects, type RowGroup } from 'hyparquet'
 import type { Env } from './auth.js'
+import { newestManifest } from './manifests.js'
 import { inFlight, join, JOIN, type Join, reqOf, shared, STALLED, track } from './shared.js'
 import { d1Variant, isPrimary, PRIMARY_STORE, storeKey } from './stores.js'
 import { compressors } from './zstd.js'
@@ -571,24 +572,25 @@ export async function ivRetry<T>(f: () => Promise<T>): Promise<T> {
   }
 }
 
-/** The newest `manifests/<scan id>.json`, or null (none, or a bucket without `list`). */
+/** The newest manifest (`manifests.ts`: a scan's `manifests/<scan id>.json`, or a merge's revision of it
+ *  `<scan id>.mNNN.json`), or null (none, or a bucket without `list`). */
 async function ivManifest(env: Env): Promise<IvManifest | null> {
   const r2 = env.INDEX_R2! as R2Bucket & { list?: R2Bucket['list'] }
   if (typeof r2.list !== 'function') return null
   const prefix = `${IV_PREFIX}/${env.INTERVAL_STORE_GEN}/manifests/`
-  const keys: string[] = []
+  const names: string[] = []
   let cursor: string | undefined
   do {
     const page = await r2.list({ prefix, ...(cursor ? { cursor } : {}) })
-    for (const o of page.objects) if (/^[^/]+\.json$/.test(o.key.slice(prefix.length))) keys.push(o.key)
+    for (const o of page.objects) names.push(o.key.slice(prefix.length))
     cursor = page.truncated ? page.cursor : undefined
   } while (cursor)
-  if (!keys.length) return null
-  keys.sort()
-  const o = await env.INDEX_R2!.get(keys[keys.length - 1])
+  const name = newestManifest(names)
+  if (name === null) return null
+  const o = await env.INDEX_R2!.get(`${prefix}${name}`)
   if (!o) return null
   const m = await o.json<IvManifest>()
-  if (!Array.isArray(m.runs) || !Array.isArray(m.scans) || typeof m.stamps !== 'object') throw new Error(`interval store: bad ${keys[keys.length - 1]}`)
+  if (!Array.isArray(m.runs) || !Array.isArray(m.scans) || typeof m.stamps !== 'object') throw new Error(`interval store: bad ${prefix}${name}`)
   return m
 }
 

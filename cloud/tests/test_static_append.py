@@ -393,6 +393,13 @@ class _Blob:
     def exists(self) -> bool:
         return (self.bucket, self.name) in self.store
 
+    def delete(self) -> None:
+        from google.api_core.exceptions import NotFound
+
+        if (self.bucket, self.name) not in self.store:
+            raise NotFound(self.name)
+        del self.store[(self.bucket, self.name)]
+
 
 class _Bucket:
     def __init__(self, store: dict, name: str):
@@ -400,14 +407,6 @@ class _Bucket:
 
     def blob(self, name: str) -> _Blob:
         return _Blob(self.store, self.name, name)
-
-    def delete_blobs(self, blobs: list[_Blob], on_error=None) -> None:
-        for b in blobs:
-            assert b.bucket == self.name
-            if (b.bucket, b.name) in self.store:
-                del self.store[(b.bucket, b.name)]
-            else:
-                on_error(b)
 
 
 class _GCS:

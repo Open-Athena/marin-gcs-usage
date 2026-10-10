@@ -487,7 +487,7 @@ Extract it as one library with both stores as clients. Everything fleet-specific
 | When | Step |
 |---|---|
 | Now (no rebuild) | Delete `slices-bysize`, superseded generations, dead writers and code, stale `GATE` references, one-way flags. Fix stale docs. Decide `FILTER_INDEXED_ONLY` for cw (recommend on, matching gcs). Set cw D1 retention (`-r`). Stop gcs preview writing prod KV (own namespace or `CACHE_V` prefix). |
-| Before ~10-17 (iv L3 carry) | One runner; the interval store gets deferred N-way carries, the manifest filter and an interval-gen GC. |
+| Before ~10-17 (iv L3 carry) | ~~One runner; the interval store gets deferred N-way carries, the manifest filter~~ (done 2026-10-10, `append_runner`; live once gcs's job image is rebuilt) and an interval-gen GC (open). |
 | On Ryan's go | Execute `ch-store-retirement.md`: VM, tunnel, timer, then the code deletion. |
 | Before the gcs compaction | Move scan existence / scan lists (`indexedScan`, `pathScans`) to the store's `scans.json`. Write the capability manifest format. Land `static_compact` on `cloud` with `names/` folded into `sx/` and anchors as drill kinds (§4). Build interval-store compaction in the shared runner (adds the L4 floor, `interval-store.md:182`). |
 | **gcs compaction (~2026-11-08, L5 of `2026-10-08c`)** | New static gen: hex rule on, `kind` bit (`search-extensions.md:261`, ~$15 marginal), split `path` (`static-append.md:417-421`), sentinel rows interleaved, unified catalog and drill. Readers switch via `STATIC_GEN`; the old gen stays until Ryan deletes it. Interval-store compaction the same week. |
@@ -497,7 +497,7 @@ Extract it as one library with both stores as clients. Everything fleet-specific
 
 ### 6.5 Top recommendations
 
-1. **One runner for both append pipelines, before the interval store's L3 carry (~10-17).** It removes ~250–350 LOC of duplication and the 2^level inline-carry risk inside a 60-min timeout.
+1. ~~**One runner for both append pipelines, before the interval store's L3 carry (~10-17).**~~ **Done 2026-10-10** (`append_runner.py`; specs/static-append.md "One runner for both stores", specs/interval-store.md §2.7). The interval store has deferred N-way carries (a separate non-fatal `carry` job, revision manifests, the lease, resumable merges), the manifest name filter (Python and TS, one `newestManifest`), threaded prune shared; outputs byte-identical to the pairwise path on fixtures. Not done here: `rebuild-state` for the interval store, the static pipeline's balanced ranges and publish + R2 in one VM, an interval-generation GC.
 2. **Fold anchored search into the base index at the ~11-08 compaction.**
    - `/`+name sentinel rows go into `sx/` (+6% rows, free at compaction).
    - `end`/`exact`/`start` become drill kinds and catalog rows.
