@@ -30,7 +30,7 @@ const KV_TTL = 30 * 86400
 const PRIVATE = 'private, max-age=300'
 const JSON_HDR = { 'content-type': 'application/json; charset=utf-8' }
 
-export interface CacheEnv { CACHE_KV?: KVNamespace }
+export interface CacheEnv { CACHE_KV?: KVNamespace; CACHE_NS?: string; PROD_HOST?: string }
 
 // Bumped whenever a cached endpoint's answer for the same inputs changes
 // (a reader rule, a diff walk rule): a stale entry lives a day in the colo
@@ -41,13 +41,28 @@ export interface CacheEnv { CACHE_KV?: KVNamespace }
 // object counts exact from the manifest's per-user objects (`uo`).
 export const CACHE_V = '4'
 
-/** The cache key for `parts` under namespace `ns`. A secondary store's keys
- * gain an `@<store>/` segment (specs/multi-store.md), so the same path in two
- * stores can't collide; the primary's (`store` omitted or `'primary'`) are
- * exactly what they were before stores existed — no one-time cache miss. */
-export function cacheKeyFor(ns: string, parts: string, store?: string): Request {
+/** The deployment environment a response-cache key belongs to: `''` is prod's (keys exactly as before the
+ * tag existed — no one-time flush), anything else a separate keyspace. A Pages preview (the dev stack)
+ * binds the same `CACHE_KV` namespace as its prod and shares its zone's colo cache, so without the tag an
+ * answer computed by dev's reader (new code, dev-only flags, a dev-only query box) was served on prod for up
+ * to 30 days. `CACHE_NS`, when set, is the tag (`""` = prod's keys); else the request host, except
+ * `PROD_HOST` itself — prod declares `PROD_HOST`, its preview env doesn't inherit `[vars]`, and a request to
+ * the dev host (or a `*.pages.dev` alias) is never at the prod host. */
+export function cacheEnvTag(env: CacheEnv, request: Request): string {
+  if (env.CACHE_NS != null) return env.CACHE_NS
+  const host = new URL(request.url).host
+  return host === env.PROD_HOST ? '' : host
+}
+
+/** The cache key for `parts` of endpoint `kind`, in deployment environment `tag` (`cacheEnvTag`). A
+ * non-prod tag adds a `~<tag>/` segment, which the KV key (a hash of the URL) inherits. A secondary store's
+ * keys gain an `@<store>/` segment (specs/multi-store.md), so the same path in two stores can't collide;
+ * the primary's (`store` omitted or `'primary'`) are exactly what they were before stores existed — no
+ * one-time cache miss. */
+export function cacheKeyFor(kind: string, tag: string, parts: string, store?: string): Request {
+  const e = tag ? `~${encodeURIComponent(tag)}/` : ''
   const s = store && store !== PRIMARY_STORE ? `@${store}/` : ''
-  return new Request(`https://${ns}.cache/v${CACHE_V}/${s}${parts}`)
+  return new Request(`https://${kind}.cache/v${CACHE_V}/${e}${s}${parts}`)
 }
 
 const colo = () => (caches as unknown as { default: Cache }).default

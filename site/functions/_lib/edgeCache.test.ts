@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { cacheKeyFor, cacheMatch, cacheStore, keepFor, PARTIAL_TTL, resetUpgrades, upgradePartial } from './edgeCache'
+import { CACHE_V, cacheEnvTag, cacheKeyFor, cacheMatch, cacheStore, keepFor, PARTIAL_TTL, resetUpgrades, upgradePartial } from './edgeCache'
 
 // `cacheStore` keeps an answer in the colo cache and KV; a budget-cut answer (a filter view whose phase 2 its
 // time budget cut short) in the colo cache only, for `PARTIAL_TTL` seconds; `false`: served, not kept.
@@ -11,7 +11,7 @@ describe('cacheStore', () => {
     const env = { CACHE_KV: { put: async (k: string) => { kv.push(k) } } as unknown as KVNamespace }
     return { colo, kv, env }
   }
-  const key = cacheKeyFor('subtree', 'd/p?q=x')
+  const key = cacheKeyFor('subtree', '', 'd/p?q=x')
   // The awaited put's duration varies: `awaited;dur=<ms>`.
   const seen = async (r: Response) => [r.headers.get('x-cache'), r.headers.get('x-cache-store')?.replace(/dur=\d+/, 'dur=<ms>'), r.headers.get('server-timing'), await r.text()]
 
@@ -56,7 +56,7 @@ describe('cacheStore', () => {
 
 // `upgradePartial`: after a partial answer is served, the full one computed in the background replaces it.
 describe('upgradePartial', () => {
-  const key = cacheKeyFor('subtree', 'd/p?q=heavy')
+  const key = cacheKeyFor('subtree', '', 'd/p?q=heavy')
   const setup = () => {
     const held = new Map<string, Response>()
     ;(globalThis as unknown as { caches: unknown }).caches = { default: {
@@ -101,7 +101,7 @@ describe('upgradePartial', () => {
     let runs = 0
     const compute = async () => { runs++; await gate; return { body: FULL, keep: true as const } }
     const first = [upgradePartial(env, key, compute, waitUntil), upgradePartial(env, key, compute, waitUntil), upgradePartial(env, key, compute, waitUntil)]
-    const other = upgradePartial(env, cacheKeyFor('subtree', 'd/p?q=other'), async () => ({ body: FULL, keep: true }), waitUntil)
+    const other = upgradePartial(env, cacheKeyFor('subtree', '', 'd/p?q=other'), async () => ({ body: FULL, keep: true }), waitUntil)
     release()
     await Promise.all(bg)
     const after = upgradePartial(env, key, compute, waitUntil)
@@ -139,5 +139,64 @@ describe('upgradePartial', () => {
     const { env } = setup()
     let runs = 0
     expect([upgradePartial(env, key, async () => { runs++; return { body: FULL, keep: true } }, undefined), runs]).toEqual(['no-waituntil', 0])
+  })
+})
+
+// A Pages preview (the dev stack) binds its prod's `CACHE_KV` and shares its zone's colo cache: its keys carry
+// a `~<env>/` tag, prod's are exactly what they were (no flush).
+describe('the deployment-environment tag', () => {
+  const PROD = { PROD_HOST: 'gcs.oa.dev' }
+  const req = (host: string) => new Request(`https://${host}/api/subtree?date=d&path=p`)
+  const sha = async (s: string) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)))].map(b => b.toString(16).padStart(2, '0')).join('')
+
+  it('`cacheEnvTag`: prod\'s host is `\'\'`; any other host (the dev host, a `*.pages.dev` alias, a preview env without `PROD_HOST`) is itself; `CACHE_NS` wins', () => {
+    expect([
+      cacheEnvTag(PROD, req('gcs.oa.dev')),
+      cacheEnvTag(PROD, req('dev.gcs.oa.dev')),
+      cacheEnvTag(PROD, req('oa-gcs-usage.pages.dev')),
+      cacheEnvTag({}, req('dev.gcs.oa.dev')),
+      cacheEnvTag({}, req('gcs.oa.dev')),
+      cacheEnvTag({ CACHE_NS: '' }, req('r2.rbw.sh')),
+      cacheEnvTag({ ...PROD, CACHE_NS: 'staging' }, req('gcs.oa.dev')),
+    ]).toEqual(['', 'dev.gcs.oa.dev', 'oa-gcs-usage.pages.dev', 'dev.gcs.oa.dev', 'gcs.oa.dev', '', 'staging'])
+  })
+
+  it('prod\'s keys (colo URL and KV hash) are unchanged; a preview\'s get a `~<tag>/` segment, before a store\'s', () => {
+    const prod = cacheKeyFor('subtree', cacheEnvTag(PROD, req('gcs.oa.dev')), 'd/p?w=1')
+    const dev = cacheKeyFor('subtree', cacheEnvTag({}, req('dev.gcs.oa.dev')), 'd/p?w=1')
+    expect([
+      prod.url,
+      dev.url,
+      cacheKeyFor('subtree', 'dev.gcs.oa.dev', 'd/p?w=1', 'meta').url,
+      cacheKeyFor('subtree', 'a/b', 'd/p?w=1').url,
+    ]).toEqual([
+      `https://subtree.cache/v${CACHE_V}/d/p?w=1`,
+      `https://subtree.cache/v${CACHE_V}/~dev.gcs.oa.dev/d/p?w=1`,
+      `https://subtree.cache/v${CACHE_V}/~dev.gcs.oa.dev/@meta/d/p?w=1`,
+      `https://subtree.cache/v${CACHE_V}/~a%2Fb/d/p?w=1`,
+    ])
+  })
+
+  it('an answer stored on the dev host is a miss on prod (colo and KV), and vice versa', async () => {
+    const colo = new Map<string, Response>()
+    const kv = new Map<string, string>()
+    ;(globalThis as unknown as { caches: unknown }).caches = { default: {
+      match: async (k: Request) => colo.get(k.url)?.clone(),
+      put: async (k: Request, r: Response) => { colo.set(k.url, r) },
+    } }
+    const env = { ...PROD, CACHE_KV: { get: async (k: string) => kv.get(k) ?? null, put: async (k: string, v: string) => { kv.set(k, v) } } as unknown as KVNamespace }
+    const key = (host: string) => cacheKeyFor('diff', cacheEnvTag(env, req(host)), 'a/b/p?w=1')
+    await cacheStore(env, key('dev.gcs.oa.dev'), '{"dev":1}')
+    const prodMiss = await cacheMatch(env, key('gcs.oa.dev'))
+    colo.clear()
+    const prodKvMiss = await cacheMatch(env, key('gcs.oa.dev'))
+    await cacheStore(env, key('gcs.oa.dev'), '{"prod":1}')
+    colo.clear()
+    const devHit = await cacheMatch(env, key('dev.gcs.oa.dev'))
+    const prodHit = await cacheMatch(env, key('gcs.oa.dev'))
+    expect([prodMiss, prodKvMiss, await devHit!.text(), await prodHit!.text(), [...kv.keys()].sort()]).toEqual([
+      null, null, '{"dev":1}', '{"prod":1}',
+      [await sha(`https://diff.cache/v${CACHE_V}/~dev.gcs.oa.dev/a/b/p?w=1`), await sha(`https://diff.cache/v${CACHE_V}/a/b/p?w=1`)].sort(),
+    ])
   })
 })
