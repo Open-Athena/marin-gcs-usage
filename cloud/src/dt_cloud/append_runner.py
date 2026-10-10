@@ -18,7 +18,9 @@ listed by immutable manifests:
   run into its own dir and publishes a **revision** `manifests/<id>.m<NNN>.json` of the newest manifest
   (`publish_revision`), rebased onto a scan's manifest that lands
   meanwhile; one merger per generation (a lease in the scratch bucket); an interrupted merge leaves the newest manifest
-  as it was and resumes (a whole merged dir is reused). Nothing is deleted.
+  as it was and resumes (a whole merged dir is reused). Nothing is deleted. The lease's holder mirrors it to R2 beside
+  the store (`<prefix>/<gen>/merging.json`, `MergeStatus`; best-effort, never failing the merge) so `/health` can show
+  a merge in progress, or stuck.
 - **R2**: each manifest's runs (their liveness markers last), checked there, then the manifest, last (`r2_publish`).
 - **Prune**: the scratch bucket's earlier open-version states, once the scan's is complete and published (`prune_state`).
 
@@ -34,6 +36,7 @@ import shlex
 import shutil
 import socket
 import sys
+import threading
 import time
 from collections.abc import Callable, Collection
 from concurrent.futures import ThreadPoolExecutor
@@ -80,6 +83,14 @@ MANIFEST = re.compile(rf"(?P<scan>[^/]+?)(?:\.m(?P<rev>\d{{{REV_DIGITS}}}))?\.js
 LEASE_S = 4 * 3600
 #: A Batch task's longest run (`job_spec`).
 MAX_RUN_S = 4 * 3600
+#: The merge status record's name under the generation (`<prefix>/<gen>/merging.json` on R2): `/health` reads it by key.
+#: No reader lists the generation's root (manifests are found under `manifests/`, by name), so it never reads as data.
+MERGE_STATUS = "merging.json"
+#: How often a merge holding the lease refreshes its status record (`updated_ts`): `/health` calls a record stuck after
+#: ~6 missed beats (`STUCK_S` there, 30 min) or once it outlives `LEASE_S`.
+HEARTBEAT_S = 300
+#: The merge job's env var naming its Batch job (`Runner.carries`): the status record's `holder`.
+JOB_NAME_VAR = "DT_JOB_NAME"
 
 
 class NotNext(Exception):
@@ -380,6 +391,143 @@ def publish_scan(store: RunStore, scan: str, new: dict, doc: Callable[[dict, lis
     return out
 
 
+# ── Merge status: the lease, mirrored where the site reads ─────────────────
+
+
+class MergeStatus(Protocol):
+    """Where a merge mirrors its status record (`merging.json`): `put` replaces it, `delete` removes it (absent is fine)."""
+
+    def put(self, doc: dict) -> None: ...
+    def delete(self) -> None: ...
+
+
+class LocalMergeStatus:
+    """`MergeStatus` as a local file (tests, a local run)."""
+
+    def __init__(self, path: Path):
+        self.path = Path(path)
+
+    def put(self, doc: dict) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps(doc, indent=1) + "\n")
+
+    def delete(self) -> None:
+        self.path.unlink(missing_ok=True)
+
+
+class R2MergeStatus:
+    """`MergeStatus` on R2 at `key` (`<prefix>/<gen>/merging.json`, beside the store /health reads)."""
+
+    def __init__(self, client, bucket: str, key: str):
+        self.client, self.bucket, self.key = client, bucket, key
+
+    def put(self, doc: dict) -> None:
+        self.client.put_object(Bucket=self.bucket, Key=self.key, Body=(json.dumps(doc, indent=1) + "\n").encode(),
+                               ContentType="application/json", CacheControl="no-store")
+
+    def delete(self) -> None:
+        self.client.delete_object(Bucket=self.bucket, Key=self.key)
+
+
+def r2_merge_status(root: str, *, env: dict | None = None, log: Callable[[str], None] = err) -> R2MergeStatus | None:
+    """The R2 status sink for the store at `root` (`<prefix>/<gen>`), from the R2 copy's env (`R2_ENDPOINT`, `R2_BUCKET`,
+    `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY`, else the AWS defaults), or None (logged) when the job has none: the merge
+    runs the same, /health just doesn't see it. Short timeouts and few retries: a status write never holds a merge up."""
+    env = os.environ if env is None else env
+    if missing := [k for k in ("R2_ENDPOINT", "R2_BUCKET") if not env.get(k)]:
+        log(f"merge status: no {', '.join(missing)} in the env; /health won't show this merge")
+        return None
+    import boto3
+    from botocore.config import Config
+
+    client = boto3.client(
+        "s3", endpoint_url=env["R2_ENDPOINT"], region_name="auto",
+        aws_access_key_id=env.get("R2_ACCESS_KEY_ID"), aws_secret_access_key=env.get("R2_SECRET_ACCESS_KEY"),
+        config=Config(s3={"addressing_style": "path"}, connect_timeout=5, read_timeout=10, retries={"max_attempts": 2, "mode": "standard"}),
+    )
+    return R2MergeStatus(client, env["R2_BUCKET"], f"{root}/{MERGE_STATUS}")
+
+
+def epoch(t: datetime) -> int:
+    return int(t.timestamp())
+
+
+class StatusMirror:
+    """A merge's status record, mirrored best-effort to `sink` (None: nowhere): every write's failure is logged, never
+    raised; while `beat` runs, a daemon thread refreshes `updated_ts` every `heartbeat_s`. The record:
+
+    `{holder, owner, state: merging | failed, started_ts, updated_ts, heartbeat_s, lease_s, manifest, merges, done[, error]}`
+    — `holder` the merge's Batch job (`$DT_JOB_NAME`, else the lease owner), `merges` the carries still planned
+    (`{inputs, output, level, first, last, scans}`, the first being built), `done` the merged runs published so far
+    (`{output, manifest}`), times in epoch s."""
+
+    def __init__(self, sink: MergeStatus | None, owner: str, now: Callable[[], datetime], log: Callable[[str], None], heartbeat_s: float | None = HEARTBEAT_S):
+        self.sink, self.now, self.log, self.heartbeat_s = sink, now, log, heartbeat_s
+        self.doc: dict | None = None
+        self.owner = owner
+        self.lock = threading.Lock()
+        self.stop_ = threading.Event()
+        self.thread: threading.Thread | None = None
+
+    def _put(self) -> None:
+        try:
+            self.sink.put(dict(self.doc))
+        except Exception as e:  # best-effort: the merge never waits on, or fails for, its status
+            self.log(f"merge status: write failed, not fatal: {e}")
+
+    def write(self, manifest: str, merges: list[tuple[list[dict], dict]], done: list[dict]) -> None:
+        if self.sink is None:
+            return
+        with self.lock:
+            t = epoch(self.now())
+            self.doc = {
+                "holder": os.environ.get(JOB_NAME_VAR) or self.owner, "owner": self.owner, "state": "merging",
+                "started_ts": self.doc["started_ts"] if self.doc else t, "updated_ts": t,
+                "heartbeat_s": self.heartbeat_s, "lease_s": LEASE_S, "manifest": manifest,
+                "merges": [{"inputs": [r["key"] for r in ins], "output": out["key"], "level": out["level"], "first": out["first"], "last": out["last"],
+                            "scans": len(out["scans"])} for ins, out in merges],
+                "done": [{"output": d["output"], "manifest": d["manifest"]} for d in done],
+            }
+            self._put()
+        if self.heartbeat_s and self.thread is None:
+            self.thread = threading.Thread(target=self._beat, name="merge-status", daemon=True)
+            self.thread.start()
+
+    def _beat(self) -> None:
+        while not self.stop_.wait(self.heartbeat_s):
+            with self.lock:
+                if self.doc is None or self.doc["state"] != "merging":
+                    return
+                self.doc["updated_ts"] = epoch(self.now())
+                self._put()
+
+    def _stop(self) -> None:
+        self.stop_.set()
+        if self.thread is not None:
+            self.thread.join(timeout=1)
+
+    def failed(self, e: BaseException) -> None:
+        """The merge raised (the lease is released after): the record stays, `state: failed` with the error, until the
+        next merge takes the lease."""
+        self._stop()
+        if self.sink is None or self.doc is None:
+            return
+        with self.lock:
+            self.doc = {**self.doc, "state": "failed", "updated_ts": epoch(self.now()), "error": f"{type(e).__name__}: {e}"}
+            self._put()
+
+    def clear(self) -> None:
+        """The merge ended (nothing more due, or `max_merges`): the record is removed — a stale or failed one an earlier
+        holder left included."""
+        self._stop()
+        if self.sink is None:
+            return
+        try:
+            self.sink.delete()
+        except Exception as e:
+            self.log(f"merge status: delete failed, not fatal: {e}")
+
+
 # ── Carries: merged runs and revisions ─────────────────────────────────────
 
 
@@ -448,13 +596,15 @@ def publish_revision(store: RunStore, carry: Carry, inputs: list[str], out: dict
 
 def merge_pending(store: RunStore, carry: Carry, mount: Path, *, tmp: Path, owner: str | None = None, dry_run: bool = False,
                   max_merges: int | None = None, max_level: int | None = COMPACT_LEVEL, now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
-                  log: Callable[[str], None] = err) -> dict:
+                  status: MergeStatus | None = None, heartbeat_s: float | None = HEARTBEAT_S, log: Callable[[str], None] = err) -> dict:
     """Run the newest manifest's due carries (`plan_carries`), one merged run at a time (`carry.build`), each published as
     a revision (`publish_revision`) before the next is planned, until none is due (or `max_merges`). `mount`: the
     generation's dir on a mount of the data bucket (the inputs are read from it). Holds the merge lease throughout
     (returns `{"held": …}` without merging when another holder has it). A failure leaves the newest manifest as it was
     (every run it lists whole), and a rerun resumes: a merged dir already whole is reused. `max_level`: the compaction
-    level, which no carry reaches (`plan_carries`; None: unbounded)."""
+    level, which no carry reaches (`plan_carries`; None: unbounded). `status`: where the lease is mirrored for /health
+    (`StatusMirror`: written as each carry starts, refreshed every `heartbeat_s`, removed on a clean end, marked failed on
+    a raise; best-effort throughout)."""
     owner = owner or f"{os.environ.get('BATCH_JOB_UID') or socket.gethostname()}:{os.getpid()}"
     cur = newest(store)
     if cur is None:
@@ -466,13 +616,15 @@ def merge_pending(store: RunStore, carry: Carry, mount: Path, *, tmp: Path, owne
         log(f"merge: the lease is held ({held}); not merging")
         return {"held": held, "merged": [], "manifest": cur[0]}
     done: list[dict] = []
+    mirror = StatusMirror(status, owner, now, log, heartbeat_s)
     try:
         while max_merges is None or len(done) < max_merges:
-            _, m = newest(store)
+            key, m = newest(store)
             drilled = carry.drilled(store, m["runs"])
             _, merges = plan_carries(m["runs"], drilled, max_level)
             if not merges:
                 break
+            mirror.write(key, merges, done)
             ins, out = merges[0]
             t0 = monotonic()
             if complete(store, carry, out):
@@ -494,6 +646,11 @@ def merge_pending(store: RunStore, carry: Carry, mount: Path, *, tmp: Path, owne
             done.append({"inputs": [r["key"] for r in ins], "output": out["key"], "level": out["level"], "scans": len(out["scans"]),
                          "rows": out.get("rows"), "manifest": pub.key if pub else None, "tiers_s": doc["s"], "s": round(monotonic() - t0, 1)})
             log(f"merge {out['key']} ({len(ins)} runs, {len(out['scans'])} scans): {pub.key if pub else 'already listed'} in {done[-1]['s']:.0f}s")
+    except BaseException as e:
+        mirror.failed(e)
+        raise
+    else:
+        mirror.clear()
     finally:
         store.release(owner)
     return {"merged": done, "manifest": newest(store)[0]}
@@ -886,8 +1043,14 @@ class Runner:
             self.r2(parse_manifest(f"{stem}.json")[0], stem)
 
     def merge_job(self, scan: str) -> tuple[str, dict]:
-        """The merge job (one task: the due carries, each a revision)."""
+        """The merge job (one task: the due carries, each a revision), with the R2 credentials when `merge_r2`."""
         raise NotImplementedError
+
+    def merge_r2(self) -> bool:
+        """Whether the merge job gets the R2 copy's credentials, for its status record on R2 (`r2_merge_status`): when the
+        R2 account is the stages' own (a job runs as one account, and the merge's writes the data bucket). Otherwise the
+        merge runs without, and /health doesn't see it."""
+        return self.p.r2_sa in (None, "", self.p.sa)
 
     def r2(self, d: str, manifest: str | None = None) -> None:
         """The R2 job for `manifests/<manifest>.json` (default `d`'s own): its runs, checked there, then it, last."""
@@ -915,6 +1078,8 @@ class Runner:
             if merges:
                 desc = "; ".join(f"{len(ins)} runs → {out['key']} (level {out['level']})" for ins, out in merges)
                 name, spec = self.merge_job(m["date"])
+                # its status record's holder (`StatusMirror`)
+                spec["taskGroups"][0]["taskSpec"]["environment"]["variables"][JOB_NAME_VAR] = name
                 try:
                     self.stage(f"merge: {desc}", lambda: self.run_job(name, spec, wait=self.merge_wait))
                 except StillRunning as e:

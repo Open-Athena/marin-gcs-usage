@@ -3,7 +3,7 @@
 // per-scan path store (`index_schema`) and scan jobs (`scan_runs`), assembled by `src/healthModel.ts`. A store the
 // deployment doesn't configure (`INTERVAL_STORE_GEN`, `STATIC_GEN`, the `INDEX_R2` binding) is left out.
 import type { D1Database } from '@cloudflare/workers-types'
-import { COMPACT_LEVEL, type HealthDoc, healthDoc, type HealthRun, type StackRun, type StaticTiers, type StoreRead } from '../../src/healthModel.js'
+import { COMPACT_LEVEL, type HealthDoc, healthDoc, type HealthRun, type MergeRecord, type StackRun, type StaticTiers, type StoreRead } from '../../src/healthModel.js'
 import { newestManifest } from './manifests.js'
 import { loadScanRuns } from './scanRuns.js'
 import { staticGen, staticPrefix } from './staticNames.js'
@@ -42,10 +42,29 @@ async function getJson<T>(r2: R2, key: string): Promise<T> {
   return o.json<T>()
 }
 
+/** The store's merge status record (`<root>/merging.json`, `append_runner.StatusMirror`), null when there's none or it
+ *  doesn't parse as one: a merge's status never breaks the store's read. Read by key: no reader lists `<root>/`. */
+export async function readMerging(r2: R2, root: string): Promise<MergeRecord | null> {
+  try {
+    const o = await r2.get(`${root}/merging.json`)
+    if (!o) return null
+    const m = await o.json<MergeRecord>()
+    return m && typeof m.holder === 'string' && typeof m.started_ts === 'number' && typeof m.updated_ts === 'number' && Array.isArray(m.merges) ? m : null
+  } catch {
+    return null
+  }
+}
+
 interface ManifestDoc { scans: string[]; runs: StackRun[]; rev?: number; revises?: string; compact_level?: number }
 
-/** A store's base and newest manifest; `run` checks one listed run on R2. */
+/** A store's base and newest manifest (`run` checks one listed run on R2), and its merge status record. */
 async function readStack(r2: R2, kind: StoreRead['kind'], gen: string, root: string, run: (r: StackRun) => Promise<Omit<HealthRun, keyof StackRun>>,
+  baseTiers?: () => Promise<StaticTiers>): Promise<StoreRead> {
+  const [read, merging] = await Promise.all([readRuns(r2, kind, gen, root, run, baseTiers), readMerging(r2, root)])
+  return { ...read, merging }
+}
+
+async function readRuns(r2: R2, kind: StoreRead['kind'], gen: string, root: string, run: (r: StackRun) => Promise<Omit<HealthRun, keyof StackRun>>,
   baseTiers?: () => Promise<StaticTiers>): Promise<StoreRead> {
   const empty: StoreRead = { kind, gen, manifest: null, rev: 0, revises: null, manifest_ts: null, compact_level: COMPACT_LEVEL, base: [], runs: [] }
   try {

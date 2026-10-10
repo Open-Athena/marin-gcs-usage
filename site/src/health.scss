@@ -28,6 +28,7 @@
       i { display: block; height: 100%; background: var(--s1); } }
   }
   .hl-carries { font-size: 13px; margin: 8px 0 0; display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+  .hl-merge { font-size: 13px; margin: 8px 0 0; code { overflow-wrap: anywhere; } }
   .hl-lastrun { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
   .hl-gaps { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; font-size: 13px; margin: 4px 0 8px; }
   .hl-gapcount { color: var(--danger); font-variant-numeric: tabular-nums; }

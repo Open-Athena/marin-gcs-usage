@@ -12,7 +12,7 @@ import { SiteNav } from './SiteNav'
 import { SiteKbd } from './SiteKbd'
 import { Tooltip } from './Tooltip'
 import {
-  type Cell, type Column, COLUMN_LABELS, coverageTiers, type HealthDoc, liveColumns, stackTiers, type StoreHealth,
+  type Cell, type Column, COLUMN_LABELS, coverageTiers, type HealthDoc, liveColumns, type MergeState, mergeLine, stackTiers, type StoreHealth,
 } from './healthModel'
 import { phaseOrder } from './scanRunsModel'
 import { scanTime } from './scanSlug'
@@ -91,9 +91,32 @@ function Timeline({ tiers, genesis, now }: { tiers: PyramidTierCoverStatus[]; ge
 
 const cellMark: Record<Cell, string> = { present: '●', missing: '✕', pending: '◐', na: '·' }
 
+const MERGE_CHIP: Record<MergeState['status'], string> = { merging: 'running', stuck: 'warn', failed: 'failed' }
+const MERGE_TIP: Record<MergeState['status'], string> = {
+  merging: 'A merge job holds the lease and is building these merged runs; each is published as a revision of the newest manifest when done.',
+  stuck: "The merge's status record stopped refreshing (its job was likely killed or preempted mid-merge), or it has outlived its lease. The next merge job takes the lease over once it's stale, and resumes.",
+  failed: "The merge job raised (its lease is released): the store is as it was, servable. The next append's merge job plans the carries again.",
+}
+
+function MergeLine({ m, now }: { m: MergeState; now: number }) {
+  return (
+    <p className="hl-merge">
+      <Tooltip content={MERGE_TIP[m.status]}><span className={`sr-status ${MERGE_CHIP[m.status]}`}>{m.status}</span></Tooltip>{' '}
+      <span>{mergeLine(m, now)}</span>
+      {m.why && <span className={m.status === 'failed' ? 'hl-err' : 'dim'}> — {m.why}</span>}
+      <span className="dim"> · <code>{m.holder}</code>{m.done?.length ? <> · {m.done.length} merged so far</> : null}</span>
+    </p>
+  )
+}
+
 function StoreSection({ s, doc, genesis, now }: { s: StoreHealth; doc: HealthDoc; genesis: number; now: number }) {
   const tiers = useMemo(() => stackTiers(s, doc.scans, now), [s, doc.scans, now])
   const c = s.compaction
+  // a carry a live (or stuck) merge has planned shows on its line, not as due
+  const due = useMemo(() => {
+    const planned = new Set(s.merge && s.merge.status !== 'failed' ? s.merge.merges.map(x => x.output) : [])
+    return s.carries.filter(x => !planned.has(x.output))
+  }, [s])
   const pct = Math.min(100, (c.run_scans / c.capacity) * 100)
   return (
     <section className="hl-store">
@@ -112,11 +135,12 @@ function StoreSection({ s, doc, genesis, now }: { s: StoreHealth; doc: HealthDoc
           <span>compaction: {c.run_scans}/{c.capacity} scans in runs · highest run level {c.max_level < 0 ? '—' : c.max_level} of {c.level - 1}</span>
           {c.due && <span className="sr-status failed">compaction due</span>}
         </div>
-        {s.carries.length > 0 && (
+        {s.merge && <MergeLine m={s.merge} now={doc.now} />}
+        {due.length > 0 && (
           <p className="hl-carries">
-            <span className="sr-status running">{s.carries.length} carr{s.carries.length === 1 ? 'y' : 'ies'} due</span>{' '}
-            {s.carries.map(x => <span key={x.output}><code>{x.output}</code> (level {x.level}, {x.inputs.length} runs)</span>)}
-            <span className="dim"> — the next append's merge job builds {s.carries.length === 1 ? 'it' : 'them'}.</span>
+            <span className="sr-status running">{due.length} carr{due.length === 1 ? 'y' : 'ies'} due</span>{' '}
+            {due.map(x => <span key={x.output}><code>{x.output}</code> (level {x.level}, {x.inputs.length} runs)</span>)}
+            <span className="dim"> — the next append's merge job builds {due.length === 1 ? 'it' : 'them'}.</span>
           </p>
         )}
         {(['light', 'drill', 'anchors'] as const).map(t => s.cut[t] && (
@@ -225,7 +249,7 @@ export function HealthPage() {
           )}
           <p className="sr-legend"><span><b className="hl-present">●</b> served</span><span><b className="hl-missing">✕</b> gap</span><span><b className="hl-pending">◐</b> pending (its job is running)</span><span><b className="hl-na">·</b> not expected</span></p>
         </section>
-        <p className="dim hl-note">Computed {age(Math.max(0, Date.now() / 1000 - doc.now))} ago from <code>INDEX_R2</code> (each store's <code>scans.json</code>, newest manifest and run files) and D1 (<code>index_schema</code>, <code>scan_runs</code>). A merge's lease lives in the job's scratch bucket, which the site doesn't read: a due carry shows until its revision lands on R2.</p>
+        <p className="dim hl-note">Computed {age(Math.max(0, Date.now() / 1000 - doc.now))} ago from <code>INDEX_R2</code> (each store's <code>scans.json</code>, newest manifest and run files) and D1 (<code>index_schema</code>, <code>scan_runs</code>). A merge in progress is its job's status record beside each store (<code>merging.json</code>, refreshed every 5 min); one not refreshed for 30 min, or held past its 4 h lease, is stuck.</p>
       </>)}
       <SiteKbd />
     </main>

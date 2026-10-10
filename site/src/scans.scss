@@ -8,6 +8,7 @@
     &.succeeded { color: var(--grew); background: color-mix(in srgb, var(--grew) 10%, var(--surface)); }
     &.failed { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, var(--surface)); }
     &.running { color: var(--s1); background: color-mix(in srgb, var(--s1) 10%, var(--surface)); }
+    &.warn { color: color-mix(in srgb, var(--s4) 75%, var(--ink)); background: color-mix(in srgb, var(--s4) 14%, var(--surface)); }
   }
   .grew { color: var(--grew); }
   .shrank { color: var(--shrank); }
