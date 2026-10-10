@@ -172,9 +172,9 @@ def job_id(stage: str, scan_id: str, now: datetime | None = None) -> str:
 class BatchRunner:
     """Submit a Batch job and wait for it (REST over ADC, `batch.submit_job` / `gcp.batch_job`)."""
 
-    def __init__(self, cfg: Profile, log: Callable[[str], None], *, delay: int = 20, max_delay: int = 120):
-        """Polls every `delay` s, doubling up to `max_delay` (a short chain of short jobs wants a low cap: its stages
-        finish within a poll)."""
+    def __init__(self, cfg: Profile, log: Callable[[str], None], *, delay: int = 20, max_delay: int = 30):
+        """Polls every `delay` s, doubling up to `max_delay`: each stage's end is noticed up to one poll late, so the cap
+        stays low (at 120 s, 10-10's chain lost minutes between stages)."""
         self.cfg, self.log, self.delay, self.max_delay = cfg, log, delay, max_delay
 
     def __call__(self, name: str, spec: dict) -> None:
