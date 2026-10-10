@@ -68,6 +68,7 @@ STORE_BUCKET = "my-index-bucket"            # required: the bucket holding the i
 # STORE_PREFIXES = "listing/,snapshots/"      # comma-separated key prefixes the proxies may read; unset = the default set
 # SNAPSHOTS_SUBDIR = "my"                     # this store's snapshots dir: `snapshots/<sub>/`; unset = `snapshots/`
 ROOT_LABEL = "my buckets"                   # the store root's crumb label
+# ROOT_TITLE = "the buckets this deployment scans"   # optional: the root crumb's tooltip (default: the store's scope word)
 # QUERY_SYNTAX = "simple"                     # the path filter's default syntax (`simple` | `regex`); unset = `simple`
 # OBJECT_BUCKETS = "my-bucket"                # comma-separated scanned buckets `/v1/objects` serves to members
 # STORES_JSON = '{"meta": {"scope": "meta"}}'  # secondary stores: `{"<key>": {"scope": …, "vars": {…}, "secrets": {…}}}`
