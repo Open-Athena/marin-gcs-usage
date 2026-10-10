@@ -1726,15 +1726,15 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
     // Created = three columns (swatch · month · year) under one header, so
     // every part aligns down the page; the year column is omitted when no
     // listed row needs one.
-    // The header and the swatch start the group at the column's left edge, so
-    // "created" sits over the swatch · month it labels (a right-aligned header
-    // over left-aligned months read as misaligned).
-    th.created { text-align: left; }
+    // Right-aligned like the numbers beside it: the group ends at the column's
+    // right edge with "created" over it, and the months (all three letters)
+    // still line up down the page.
+    th.created { text-align: right; }
     td.created {
       white-space: nowrap;
-      &.sw { width: 1px; padding-right: 5px; text-align: left; }
-      &.mon { padding-left: 0; padding-right: 0; text-align: left; }
-      &.yr { padding-left: 4px; text-align: left; color: var(--ink-3); font-size: 11px; }
+      &.sw { padding-right: 5px; text-align: right; }
+      &.mon { width: 1px; padding-left: 0; text-align: right; }
+      &.yr { width: 1px; padding-left: 4px; text-align: right; color: var(--ink-3); font-size: 11px; }
       // A contrast ring so the pale (new) and dark (old) ends of the viridis
       // ramp both read against the row — the swatch was invisible at each end.
       i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 35%, transparent); }
