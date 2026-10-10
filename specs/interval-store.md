@@ -53,7 +53,12 @@ The **per-scan append** is already solved (`specs/static-daily-append.md`, `stat
 
 **Row identity is `(depth, path)`, one row per path.** A path's owner slices fold into the row (`us`, below). A path that is both an object and a prefix is one row whose `kind` is `dir`. Today's store keeps one row per `(path, usr)` slice. Folding the slices changes two things:
 - **Thresholds are exact.** Today's `bysize` read thresholds *per slice* (`readSizeRects` tests `size ≥ thrAt(depth)` on each row). So a drawn directory counts only its slices over the threshold, and a directory whose slices are each under it goes missing. This is a live prod bug, measured in §7.
-- **The user lens needs slices.** A lens reads U's slice of each path with every value. So the store has a second interval table, the owner slices (`build -S`, `sv/`): one row per `(depth, path, usr)` — the per-scan store's own rows, a v1 index's duplicates summed — with every value and `last_read` in the key, `usr` NULL where no owner is named. It is served in the per-scan store's three sorts as `slices` `(depth, path, usr, vf)`, `slices-bysize` `(⌊log2 size⌋ desc, path, usr, vf)` and `slices-bysize-user` `(usr, ⌊log2 size⌋ desc, path, vf)`, with `u_min`/`u_max` in their group indexes. A slice sort *is* the per-scan sort as intervals, so the per-scan reader's owner logic (lens rects, `ownerOk`, owner totals) runs on it unchanged.
+- **The user lens needs slices.** A lens reads U's slice of each path with every value. So the store has a second interval table, the owner slices (`build -S`, `sv/`): one row per `(depth, path, usr)` — the per-scan store's own rows, a v1 index's duplicates summed — with every value and `last_read` in the key, `usr` NULL where no owner is named. It is served in the per-scan store's three sorts:
+  - `slices` `(depth, path, usr, vf)`;
+  - `slices-bytotal` `(⌊log2 tot⌋ desc, path, usr, vf)`: keyed on the path's total, as the per-scan `bysize` is since `bysize-path-total.md`. `fold -S` splits each slice version where its path's total changes (`svt/`, the pieces checked to tile the slices);
+  - `slices-bysize-user` `(usr, ⌊log2 size⌋ desc, path, vf)`.
+  
+  Their group indexes carry `u_min`/`u_max`. A slice sort *is* the per-scan sort as intervals, so the per-scan reader's owner logic (lens rects, `ownerOk`, owner totals) runs on it unchanged.
 - **Slices barely add versions.** Most paths are one slice: 1,156,339,350 slice versions against 1,156,324,516 folded path versions (609.2M open in both).
 
 ### 2.2 Version key
@@ -122,7 +127,8 @@ Every read is today's `index.ts` plan, with one more conjunct on each group (`vf
 - **Series:** P's versions *are* its history, so one `path` point read can replace one read per scan. Not wired in.
 - **Filtered views:** phase 1 searches the scan's own search sidecars; phase 2 reads the interval store.
 - **Lenses:** age (`d`) and read recency (`a`) come from the row.
-- **User lens, owner pools, owner totals, owner prefixes, class scopes:** the slice sorts (`slices(env)` maps `path`/`bysize`/`bysize-user` to `slices`/`slices-bysize`/`slices-bysize-user`). A held date's v1 `user` and coarse sorts are refused, so an owner read of a held date never mixes in per-scan rows. A generation without slice sorts still falls back to per-scan stores.
+- **User lens, owner pools, owner totals, owner prefixes, class scopes:** the slice sorts (`slices(env)` maps `path`/`bysize`/`bysize-user` to `slices`/`slices-bytotal`/`slices-bysize-user`).
+  - A lens view's assigned regions take their totals from the folded `bysize` (one exact row per path). A path-first read of the slices selects a run per depth per dyadic segment, and a big user's root regions went past `decodeSpans`' cap. A held date's v1 `user` and coarse sorts are refused, so an owner read of a held date never mixes in per-scan rows. A generation without slice sorts still falls back to per-scan stores.
   - `intervalSlices.test.ts`: over three scans built from the per-scan fixtures (`v2-slices`, `v2-lens`, `v2-slices`), every lens view, owner pool, root total and lens or pool diff equals the per-scan reader's, with no per-scan read. One deliberate difference: a path that is both an object and a prefix is `dir` (the per-scan reader takes whichever row it merged last).
 
 ### 2.7 Per-scan append and compaction (`static_append`'s tiering)
@@ -245,11 +251,13 @@ Sample: 20 scans; per scan, the root, a depth-1 band, two buckets, and dirs at d
 | `path` | 1,156,324,516 | 19.24 GB | 141,227 |
 | `bysize` | 1,156,324,516 | 16.75 GB | 141,227 |
 | `slices` | 1,156,339,350 | 19.24 GB | — |
-| `slices-bysize` | 1,156,339,350 | 16.74 GB | — |
+| `slices-bysize` (per slice; superseded by `slices-bytotal`, unread) | 1,156,339,350 | 16.74 GB | — |
+| `slices-bytotal` | 1,156,356,048 | 18.34 GB | 141,230 |
 | `slices-bysize-user` | 1,156,339,350 | 16.74 GB | — |
 
 - **Slice build** (`build -S`, 32 spot n2-highmem-16 tasks, 18.5 task-hours): 256/256 ranges and **18,176/18,176 (range, scan) pairs reconstruct exactly**.
-- **On R2:** 88.8 GB for the generation (36.0 GB folded sorts, 52.8 GB slice sorts).
+- **On R2:** 36.0 GB of folded sorts and 71.1 GB of slice sorts, 16.7 GB of which is the unread per-slice `slices-bysize`.
+- **`fold -S`** (8 tasks): 1,156,339,350 slice versions → 1,156,356,048 pieces with their path's total.
 
 **Local timings,** in ms: the TS reader (`buildView` / `buildDiff`) run in Node on the laptop, against R2 (the interval store) and GCS (per-scan stores). Per-scan footers come from a local copy of gcs's D1 (row groups through 10-04). Cold means a fresh module graph and colo cache; warm is the same read again. Each figure is the best of 2. The laptop is a long way from both stores, so absolute times are higher than a Worker's; compare within a row.
 
@@ -265,10 +273,10 @@ Sample: 20 scans; per scan, the root, a depth-1 band, two buckets, and dirs at d
 | diff 10-01 → 10-04, `marin-us-central2` | 5,685 | 1,689 | 2,973 | 1,199 | 1,583 | 868 | 10.3 |
 | root 10-09 | 1,941 | 21 | 1,400 | 21 | — | — | 2.8 |
 | diff 10-08 → 10-09, root | 4,962 | 2,676 | 3,216 | 1,337 | — | — | 8.7 |
-| lens `user:michael-ryan`, root 10-04 | per-scan | | 6,242 | 3,741 | 7,896 | 8,383 | 23.6 |
-| pool `unowned`, root 10-04 | per-scan | | 2,833 | 42 | 901 | 104 | 5.7 |
-| lens `user:michael-ryan`, root 09-15 (v1) | per-scan | | 8,375 | 6,431 | 3,520 | 3,082 | 27.5 |
-| diff 10-03 → 10-04, lens `user:michael-ryan` | per-scan | | 9,445 | 6,834 | 16,702 | 18,841 | 30.6 |
+| lens `user:michael-ryan`, root 10-04 | per-scan | | 5,293 | 2,716 | 7,896 | 8,383 | 24.7 |
+| pool `unowned`, root 10-04 | per-scan | | 2,113 | 71 | 901 | 104 | 6.0 |
+| lens `user:michael-ryan`, root 09-15 (v1) | per-scan | | 6,290 | 4,065 | 3,520 | 3,082 | 29.6 |
+| diff 10-03 → 10-04, lens `user:michael-ryan` | per-scan | | 6,852 | 4,820 | 16,702 | 18,841 | 31.7 |
 
 - **Historical reads now decode about what the newest does.** At root 10-04, 12 row groups are read (v3: 28; the newest scan: 6; per-scan: 6). The extra groups are one per small dyadic block (L0–L3) plus L7.
 - **Owner reads are served from the store.** The v2 lens root and lens diff have the per-scan tree and rows exactly, and are faster. The unowned pool differs only in float rounding of one `(other)`'s class bytes.
@@ -305,7 +313,7 @@ The missing bytes land in the parent's `(other)`. Totals at the root are unaffec
 - **Not affected:** v1 scans (coarse/fine tiers, read by `path`) and `depth=1` bands read from `path`.
 - **Fixes:**
   - in the per-scan store, give each slice row its path's total in a sort column (bucket on the path's total), or read every slice of the selected paths in a second pass;
-  - the interval store's one-row-per-path design has no such case for unscoped reads. Its `slices-bysize` sort mirrors the per-scan `bysize`, so owner pools read from it inherit the undercount until it is keyed on the path's total too (`bysize-path-total.md`).
+  - the interval store's one-row-per-path design has no such case for unscoped reads, and its owner-slice size sort is keyed on the path's total (`slices-bytotal`).
 
 ## Open questions
 
