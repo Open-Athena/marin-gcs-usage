@@ -10,7 +10,7 @@ import { allUsers } from './UserChip'
 import { useUnits } from './units'
 import { type CoverItem, type FilterCover, groupItems } from './filterCover'
 import { ActStatus, useActDeps, useKeepFocus, useMatchAct } from './MatchActions'
-import { ACT_BLOCKED_LABEL } from './matchAct'
+import { actBlockedLabel } from './matchAct'
 import { Tooltip } from './Tooltip'
 
 export { caveats } from './matchAct'
@@ -76,7 +76,7 @@ export function BulkBar({ cover, loading, onIntent, resolve, resetKey, scheme, q
   if (!canAssign && !canStage) return null
   if (blocked) return (
     <span className="bulkbar blocked">
-      <Tooltip content={<span className="bb-tip">{blocked}</span>}><span className="act-st muted" tabIndex={0}>{ACT_BLOCKED_LABEL}</span></Tooltip>
+      <Tooltip content={<span className="bb-tip">{blocked}</span>}><span className="act-st muted" tabIndex={0}>{actBlockedLabel(blocked)}</span></Tooltip>
     </span>
   )
   const idle = act.state.s === 'idle'
