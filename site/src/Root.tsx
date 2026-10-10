@@ -12,6 +12,7 @@ import { AssignmentsPage } from './AssignmentsPage'
 import { StagedPage } from './StagedPage'
 import { RunPage } from './RunPage'
 import { ScanRunPage, ScansPage } from './ScansPage'
+import { HealthPage } from './HealthPage'
 import { NamePage } from './NamePage'
 import { OgPage } from './OgPage'
 import { UserOgPage, UserPage, UsersOgPage, UsersPage } from './UserPage'
@@ -87,6 +88,8 @@ export default function Root() {
       {/* What each scan job did (specs/scan-runs-ui.md). */}
       <Route path="/scans" element={<AuthGate><ScansPage /></AuthGate>} />
       <Route path="/scans/*" element={<AuthGate><ScanRunPage /></AuthGate>} />
+      {/* The append-only stores' state (specs/health-page.md). */}
+      <Route path="/health" element={<AuthGate><HealthPage /></AuthGate>} />
       <Route path="/names" element={<AuthGate><NamePage /></AuthGate>} />
       {/* Retired pages: the mark & sweep console became /staged; the review
           lenses became the home page's owner axis; the name-search preview

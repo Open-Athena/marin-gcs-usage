@@ -1,0 +1,55 @@
+# `/health`: the state of the append-only stores
+
+Every deployment gets a stock `/health` page: each append-only store's stack drawn as binary-counter shards over the scan timeline, every scan's coverage (and its gaps), and freshness. `/scans` stays the per-run job table; `/health` is the state of the stores. They link to each other, and both are in the ☰ menu and the omnibar's Pages.
+
+## Model: pyrmts' health timeline
+
+Ryan's pyrmts consumers draw their `/health` as dyadic shards over a timeline: awair uses `pyrmts-react`'s `<CoverTimeline>`; ctbk still has a hand-rolled copy (`CoverBars`). disky **reuses `pyrmts-react` as-is**, from the pyrmts `dist` branch at the SHA the site already pins `pyrmts` / `pyrmts-cfw` at (`ad35ff8`; its `pyrmts` transitive resolves to the dist head, as `pyrmts-cfw`'s already did). `CoverTimeline` takes `PyramidTierCoverStatus[]` rows (`pyrmts`' `cover-status.ts`): one row per tier, one segment per shard, each `present | pending | missing`. disky's rows come from its own stacks (`stackTiers`, `coverageTiers`), not from `pyramidCover` (which reads a D1 shard registry the run stores don't have).
+
+What the page adds around it:
+- **Row labels as an HTML column pinned over the SVG's label gutter** (the SVG's own labels hidden): the timeline scales with its width (its viewBox is fixed-aspect), so on a phone it keeps a 720 px minimum and scrolls inside itself, starting at its newest end; the labels stay put.
+- **A day axis** under each timeline (the component's gridlines are monthly) at the same x mapping, and one legend for all timelines (the per-timeline legends hidden).
+- Theming: the `--pyrmts-*` vars set from the site's tokens (light and dark), the portaled `.tt-tooltip` restyled like the site's tooltips.
+
+pyrmts follow-ups worth upstreaming (not done here): a `labels: false` / external-label mode and a pluggable axis (days vs months) in `CoverTimeline`; an `end` that reads inclusively in the tooltip (a run's segment ends at the next scan, so its tooltip reads "10-08 → 10-10" for scans 10-08 and 10-09).
+
+## API: `GET /api/health`
+
+`site/functions/api/health.ts`, gated `requireViewer` (like `/api/scan-runs`). Held in the colo cache for 60 s keyed by store and generations (`?fresh` bypasses it); `cache-control: private, max-age=30`.
+
+Sources, each optional (an unconfigured store is absent; no D1 = no per-scan / job data):
+- **Interval store** (`INTERVAL_STORE_GEN` + `INDEX_R2`): `interval-store/<gen>/scans.json` (the base), the newest manifest under `manifests/` (`manifests.ts`' `newestManifest`; its R2 `uploaded` is the store's last append or merge), and per listed run whether `served/{path,bysize}{,.groups}.parquet` are all on R2 (`r2_publish` copies the manifest after them).
+- **Static name index** (`STATIC_GEN` + `INDEX_R2`): `static-names/<gen>/scans.json`, the newest manifest, and per tier dir (the base and each run) the markers `catalog/meta.json` (light), `drill/meta.json`, `anchors/meta.json` (+ `anchors/start/meta.json` when the base carries the starts-with catalog), as `static_runner.has_tier` checks them.
+- **D1**: `index_schema` `path` rows (`pathScans`: the per-scan path store) and `scan_runs` (`loadScanRuns`: the head runs' scans and statuses).
+
+The document (`src/healthModel.ts` `HealthDoc`, DOM-free, shared with the page):
+- `stores[]`: per store its read (gen, base scans, newest manifest, revision / `revises`, upload time, runs with `r2` and static `tiers`), plus `carries` (the due merges: `append_runner.plan_carries` ported as `planCarries`, drill-mixing and the compaction level respected), `compaction` (`run_scans` of `2^level`, highest run level, `due` when two adjacent runs sit at `level − 1`), `served` (the scans each tier serves: the base plus the runs up to the first one without the tier, the readers' cut rule) and `cut` (that first run).
+- `coverage[]`: per scan, cells `path`, `interval`, `light`, `drill`, `anchors`, `r2`, each `present | missing | pending | na`, and its `gaps`. `path` is the per-scan store or the interval store; a store's columns are expected from its base's first scan on (`na` before it, or when the tier isn't configured); a scan newer than a store's newest while its job is running is `pending`; `r2` is `missing` when a store lists the scan but its run isn't whole on R2.
+- `gaps`: missing counts per column; `freshness`: the newest scan and its age, and per store its newest scan, age, and last manifest upload's age.
+
+The compaction level is `COMPACT_LEVEL` (5, `append_runner`'s) unless the manifest carries `compact_level` (no profile key exists yet on `cloud`; the reader takes one when the runner writes it).
+
+## Page: `/health`
+
+`src/HealthPage.tsx` (React Query `['health']`, 60 s refetch):
+- **Freshness**: the newest scan, each store's newest scan and last append, and the last scan job (status chip, start, duration, phase bar), from `/scans`' own fetch.
+- **Window** (7d / 30d / 90d / all) for every timeline, and the legend.
+- **Per store**: facts (base span, runs, newest manifest and revision, newest scan), the compaction gauge, due carries, any cut tier, and the stack timeline: `base`, rows `L<level−1>` … `L0` (each run a shard over its scans' span; a due carry's output a `pending` shard on its level), and for the static index `drill` / `anch` rows (each tier dir present or missing). A run not whole on R2 is `missing`.
+- **Coverage per scan**: the gap counts, a coverage timeline (one row per live column, one shard per scan), and a table of the scans with gaps (or every scan), newest first.
+
+Shared with `/scans` (`src/scanRunsUi.tsx`, extracted from `ScansPage.tsx`): the scan-run list fetch (one React Query entry), `Status` chip, `PhaseBar`, phase colors, `fmtDur` / `utc`; the page rides `/scans`' `staged-page scans-page` frame and styles.
+
+## Not covered
+
+- **The merge lease** lives in the job's GCS scratch bucket (`<scratch>/<prefix>/<gen>/merge.lease.json`), which the site has no binding for; the page says so, and a due carry shows until its revision lands on R2. Surfacing it would need the job to mirror the lease (or a "merging" phase) somewhere the site reads (R2 or `scan_runs`).
+- **GCS-side state** ahead of R2 (a manifest published on GCS whose R2 copy hasn't run) is invisible for the same reason: the page shows what the readers serve.
+
+## Tests
+
+- `src/healthModel.test.ts`: `planCarries` (N-way chained carry, drill-mixing, compaction level), `storeHealth` (due carry, gauge, served / cut), coverage over a fixture with a scan missing from the interval store and a drill-less static run (plus a run not whole on R2 cutting the light stack, and an unconfigured store), freshness, and the stack → shards layout (exact segments per row).
+- `functions/_lib/health.test.ts`: `/api/health` over a fake `INDEX_R2` and the cw-lineage D1: both stores, a revision manifest, the gaps, a broken run, a missing `scans.json`, no stores.
+- Mutation check (manual, each reverted): served-prefix → all runs, dropping the drill-mixing guard, carrying into the compaction level, never `pending`, ignoring `r2`, and an off-by-one span end each fail 1–4 tests.
+
+## Verification
+
+Local stack with synthetic data (`site/./dev --local-db` over an untracked local `wrangler.toml`: local D1 seeded with `index_schema` / `scan_runs` rows, local R2 with both stores' `scans.json`, manifests and run files; generator in `tmp/health-local/gen.py`), checked in Chrome in dark and light, desktop and phone width. Not deployed.
