@@ -112,6 +112,8 @@ export interface Env {
   PUBLIC_READ?: string
   /** The store root's crumb label (e.g. `my GCS`); unset = `all buckets`. */
   ROOT_LABEL?: string
+  /** The root crumb's tooltip: what the store root covers (e.g. which buckets), in words. */
+  ROOT_TITLE?: string
   /** Snapshot dir of this store inside the data bucket (`snapshots/<sub>/`); unset = the bare `snapshots/`. */
   SNAPSHOTS_SUBDIR?: string
   /** Dedicated SA key (Batch submit + actAs the job SA) for the sweep dispatch bridge. */
