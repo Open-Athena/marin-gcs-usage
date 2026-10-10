@@ -1,6 +1,0 @@
-# Fixed central2 response settings match the complete-body experiments.
-# Run sequentially first, then with ch-bench -j2; no cold resets in parallel.
-zarr-tm=/api/subtree?date=2026-10-01&path=marin-us-central2&q=zarr.json&w=1408&h=896&minArea=12&atten=2&matchLimit=1000
-000-tm=/api/subtree?date=2026-10-01&path=marin-us-central2&q=000&w=1408&h=896&minArea=12&atten=2&matchLimit=1000
-zarr-diff=/api/diff?from=2026-09-30&to=2026-10-01&path=marin-us-central2&q=zarr.json&w=1408&h=896&minArea=12&atten=2&matchLimit=1000&top=500
-000-diff=/api/diff?from=2026-09-30&to=2026-10-01&path=marin-us-central2&q=000&w=1408&h=896&minArea=12&atten=2&matchLimit=1000&top=500
