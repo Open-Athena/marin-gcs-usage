@@ -294,6 +294,31 @@ def test_publish_adds_a_level_0_run_and_merges_run_apart(chain, tmp_path):
     assert not (tmp_path / "scratch" / "merge.lease.json").exists()
 
 
+def test_a_stack_with_an_l0_below_an_l1_reads_exactly(chain, tmp_path):
+    """gcs's `2026-10-08c` after 10-10: [L0 10-09, L1 T1236..10-10], then T1514's L0 on top — levels not monotone (an
+    oldest run with a drill, the newer ones without: drill parity keeps it apart while the next two carry). The runs stay
+    in scan order with contiguous spans, so every manifest reads exactly (brute force per scan, and the rebuild once it
+    covers every scan), and the next scan's L0 carries nothing (L1 vs L0); the lone L0 is never merged with a later one."""
+    a, b, c, d = chain["runs"]
+    store = _store(chain, tmp_path)
+    store.create(f"deltas/{a}/drill/meta.json", "{}")  # `a` drilled, `b`/`c` not: parity keeps `a` out of the carry
+    for s in (a, b, c):
+        _publish(store, s)
+    bc = sa.run_key(b, c)
+    got = _merge(store, tmp_path)
+    assert [(m["inputs"], m["output"], m["level"], m["manifest"]) for m in got["merged"]] == [
+        ([f"deltas/{b}", f"deltas/{c}"], bc, 1, f"manifests/{c}.m001.json")]
+    assert _stack(store, f"manifests/{c}.m001.json") == [(f"deltas/{a}", 0), (bc, 1)]
+    _publish(store, d)
+    assert _stack(store, f"manifests/{d}.json") == [(f"deltas/{a}", 0), (bc, 1), (f"deltas/{d}", 0)]
+    assert _merge(store, tmp_path, dry_run=True) == {"manifest": f"manifests/{d}.json", "plan": []}
+    assert store.read_json(f"manifests/{d}.json")["scans"] == chain["ids"]
+    keys = sm.manifest_keys(store.keys("manifests/"))
+    assert keys == [f"manifests/{s}" for s in (f"{a}.json", f"{b}.json", f"{c}.json", f"{c}.m001.json", f"{d}.json")]
+    for k in keys:
+        _check_readers(chain, store, k)
+
+
 def test_parallel_tier_merges_write_the_same_bytes(chain, tmp_path):
     """Each tier in its own process (`jobs` > 1) writes exactly what one process does."""
     a, b = chain["runs"][:2]
