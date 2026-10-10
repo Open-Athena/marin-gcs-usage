@@ -15,7 +15,7 @@
  */
 import { type Ctx, json, requireScope, requireViewer } from '../_lib/auth.js'
 import { snapshotsPrefix } from '../_lib/shared.js'
-import { type Lens, makeStore, pathGens, withPathStore, pathScans, storeReady } from '../_lib/index.js'
+import { ivRetry, type Lens, makeStore, pathGens, withPathStore, pathScans, storeReady } from '../_lib/index.js'
 import { hasLedger, ledgerHead } from '../_lib/ledger.js'
 import { classKey, ownerKey, ownerOk, parseClasses, parseOwner, QueryError, queryParam } from '../_lib/scope.js'
 import { hexNote, hexQuery, liveTotal, rollupTotal, staticFilterStore, staticLiteral, staticTag } from '../_lib/staticFilter.js'
@@ -185,8 +185,10 @@ export const onRequestGet = async (ctx0: Ctx & { waitUntil?: (p: Promise<unknown
   // lists no files, so a name's total there reads ~0 — a gap, not a point).
   const sscans = shits ? new Set(shits.scans ?? await sfs!.scans()) : null
   if (sscans) for (const d of await sfs!.dirOnly?.() ?? []) sscans.delete(d)
-  // Indexed-only: no answer is `scan-not-indexed` (never the client's roots read per scan).
-  if (query && strict && !shits) return new Response(rejectBody(reject('scan-not-indexed')), { status: 400, headers: { 'content-type': 'application/json' } })
+  // An anchored term with no anchors build is `anchor-not-indexed`, indexed-only or not; else, indexed-only, no
+  // answer is `scan-not-indexed` (never the client's roots read per scan).
+  const unanchored = query && skey && !found && sfs!.source.why?.(skey) === 'anchor-not-indexed'
+  if (unanchored || (query && strict && !shits)) return new Response(rejectBody(reject(unanchored ? 'anchor-not-indexed' : 'scan-not-indexed')), { status: 400, headers: { 'content-type': 'application/json' } })
   if (query && !shits && !paths.length) return json({ error: 'a filtered series needs its match roots (paths=)' }, 400)
   /** The scans a static answer doesn't cover: gaps in the series, named (indexed-only or not). */
   const unindexed: string[] = []
@@ -213,19 +215,19 @@ export const onRequestGet = async (ctx0: Ctx & { waitUntil?: (p: Promise<unknown
       const covered = ot ? overTimePoint(ot, date) : undefined
       if (covered !== undefined) return covered && { date, ...covered }
       if (split) {
-        const rows = await readRootRows(env, date)
+        const rows = await ivRetry(() => readRootRows(env, date))
         if (!rows) return null
         rootsByDate.set(date, rows)
         return { date, b: rows.reduce((n, r) => n + r.b, 0), o: rows.reduce((n, r) => n + r.o, 0) }
       }
       if (paths.length) {
         // Σ over the match roots; a root absent from a scan contributes 0.
-        const parts = await Promise.all(paths.map(p => readRootAgg(env, { date, path: p, lens, owner, classes })))
+        const parts = await Promise.all(paths.map(p => ivRetry(() => readRootAgg(env, { date, path: p, lens, owner, classes }))))
         const b = parts.reduce((n, a) => n + (a?.b ?? 0), 0)
         const o = parts.reduce((n, a) => n + (a?.o ?? 0), 0)
         return parts.some(Boolean) ? { date, b, o } : null
       }
-      const a = await readRootAgg(env, { date, path, lens, owner, classes })
+      const a = await ivRetry(() => readRootAgg(env, { date, path, lens, owner, classes }))
       return a ? { date, ...a } : null
     } catch (e) {
       const msg = (e as Error).message

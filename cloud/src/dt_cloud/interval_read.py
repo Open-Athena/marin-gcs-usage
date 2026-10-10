@@ -259,40 +259,63 @@ def flatten(t: dict) -> dict[str, dict]:
 class Store:
     """The served sorts of one generation (a dir holding `path`, `bysize`, `reads` `.parquet` + `.groups.parquet`)."""
 
-    def __init__(self, root: str | Path):
+    def __init__(self, root: str | Path, runs: list[str | Path] = ()):
         root = Path(root)
         self.path = Sort(root / "path.parquet", "path")
         self.bysize = Sort(root / "bysize.parquet", "bysize")
         # The read days are a column of the path versions (`interval_store.fold`); `reads` stays an
         # optional standalone sort.
         self.reads = Sort(root / "reads.parquet", "reads") if (root / "reads.parquet").exists() else None
+        # Per-scan runs (`interval_append`, oldest first): each its own `path` and `bysize`, read beside the base.
+        self.runs = [(Sort(Path(r) / "path.parquet", "path"), Sort(Path(r) / "bysize.parquet", "bysize")) for r in runs]
+
+    def tiers(self, name: str) -> list[tuple[Sort, bool]]:
+        """A sort's tiers: the base's, then each run's (`True`: a run)."""
+        i = ("path", "bysize").index(name)
+        return [(getattr(self, name), False), *((r[i], True) for r in self.runs)]
+
+    @staticmethod
+    def may_hold(g: dict, D: int, run: bool) -> bool:
+        """A group can matter at D: the base's when a version in it is live then (a later run's close record only ever
+        lowers a `vt`); a run's when a version in it opened by then — a close record is not live, yet it ends a
+        version another tier holds as live."""
+        return g["vf_min"] <= D if run else live(g, D)
+
+    def read_tiers(self, plans: list[tuple[Sort, list[dict]]], cols: list[str], cost: Cost, D: int) -> pa.Table:
+        """The planned groups of every tier, combined (one row per version, the smallest `vt`), live at D."""
+        ts = [s.read(sorted(gs, key=lambda g: g["rg"]), cols, cost) for s, gs in plans]
+        ts = [t for t in ts if t.num_rows] or ts[:1]
+        return live_rows(combine(pa.concat_tables(ts) if len(ts) > 1 else ts[0]), D)
 
     # The reads, planned as `index.ts` plans them, with liveness at D added to every group test.
     def point(self, D: int, depth: int, lo: str, hi: str, cost: Cost, sort: Sort | None = None, cols=VIEW_COLS) -> pa.Table:
         """Rows at one depth with `lo ≤ path ≤ hi`, live at D."""
-        s = sort or self.path
-        gs = sorted((g for g in s.at_depth(depth, lo, hi) if live(g, D)), key=lambda g: g["rg"])
-        t = live_rows(combine(s.read(gs, cols, cost)), D)
+        tiers = [(sort, False)] if sort is not None else self.tiers("path")
+        t = self.read_tiers([(s, [g for g in s.at_depth(depth, lo, hi) if self.may_hold(g, D, run)]) for s, run in tiers], cols, cost, D)
         return t.filter(pc.and_(pc.equal(t["depth"], depth), pc.and_(pc.greater_equal(t["path"], lo), pc.less_equal(t["path"], hi))))
 
-    def plan_path(self, D: int, d_lo: int, d_hi: int, lo: str, hi: str, thr_at) -> list[dict]:
-        """`planRects` on `path`: groups meeting the depth rect (and the path range when the group is one
+    def plan_path(self, D: int, d_lo: int, d_hi: int, lo: str, hi: str, thr_at) -> list[tuple[Sort, list[dict]]]:
+        """`planRects` on `path`, per tier: groups meeting the depth rect (and the path range when the group is one
         depth), whose biggest row clears the threshold at their shallowest depth in the read."""
         out = []
-        for g in self.path.groups:
-            if not live(g, D) or g["d_max"] < d_lo or g["d_min"] > d_hi:
-                continue
-            if g["d_min"] == g["d_max"] and (g["p_max"] < lo or g["p_min"] >= hi):
-                continue
-            if g["b_max"] < thr_at(max(g["d_min"], d_lo)):
-                continue
-            out.append(g)
+        for s, run in self.tiers("path"):
+            gs = []
+            for g in s.groups:
+                if not self.may_hold(g, D, run) or g["d_max"] < d_lo or g["d_min"] > d_hi:
+                    continue
+                if g["d_min"] == g["d_max"] and (g["p_max"] < lo or g["p_min"] >= hi):
+                    continue
+                if g["b_max"] < thr_at(max(g["d_min"], d_lo)):
+                    continue
+                gs.append(g)
+            out.append((s, gs))
         return out
 
-    def plan_bysize(self, D: int, lo: str, hi: str, thr_min: float) -> list[dict]:
-        """`planSizeRects`: groups whose path range meets `[lo, hi)` and whose top size clears the read's
+    def plan_bysize(self, D: int, lo: str, hi: str, thr_min: float) -> list[tuple[Sort, list[dict]]]:
+        """`planSizeRects`, per tier: groups whose path range meets `[lo, hi)` and whose top size clears the read's
         lowest threshold."""
-        return [g for g in self.bysize.groups if live(g, D) and g["b_max"] >= math.floor(thr_min) and g["p_max"] >= lo and g["p_min"] < hi]
+        return [(s, [g for g in s.groups if self.may_hold(g, D, run) and g["b_max"] >= math.floor(thr_min) and g["p_max"] >= lo and g["p_min"] < hi])
+                for s, run in self.tiers("bysize")]
 
     def subtree(self, D: int, path: str, d_hi: int, thr_at, cost: Cost) -> tuple[pa.Table, str]:
         """Every live row under P at depths `dP+1..d_hi` with `size ≥ thrAt(depth)`, from whichever sort's
@@ -303,11 +326,11 @@ class Store:
         thr_min = min(thr_at(d_lo), thr_at(d_hi if d_hi < 10_000 else d_lo))
         pp = self.plan_path(D, d_lo, d_hi, lo, hi, thr_at)
         sp = self.plan_bysize(D, lo, hi, thr_min)
-        held = lambda gs: sum(g["row_end"] - g["row_start"] for g in gs)
-        sort, gs = (self.bysize, sp) if held(sp) < held(pp) else (self.path, pp)
-        t = live_rows(combine(sort.read(gs, VIEW_COLS, cost)), D)
+        held = lambda plan: sum(g["row_end"] - g["row_start"] for _, gs in plan for g in gs)
+        name, plan = ("bysize", sp) if held(sp) < held(pp) else ("path", pp)
+        t = self.read_tiers(plan, VIEW_COLS, cost, D)
         rows = [r for r in t.to_pylist() if d_lo <= r["depth"] <= d_hi and lo <= r["path"] < hi and r["size"] >= thr_at(r["depth"])]
-        return rows, sort.name
+        return rows, name
 
     def last_read(self, D: int, paths: list[str], cost: Cost) -> dict[str, int]:
         """`last_read` at D of each path: the reads sort's groups whose range holds one, one decode each."""

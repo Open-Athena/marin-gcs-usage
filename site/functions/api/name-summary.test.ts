@@ -125,3 +125,20 @@ describe('an indexed-only deployment (`FILTER_INDEXED_ONLY=1`)', () => {
     expect([unset.status, await unset.json()]).toEqual([400, UNSET_SLASH])
   })
 })
+
+describe('an anchored name (`^q`, `q$`): /names reads literals only', () => {
+  const ANCHOR = { error: 'Starts-with (^) and ends-with ($) search isn’t indexed on this deployment yet; search for a plain substring instead.', code: 'anchor-not-indexed' }
+  it('is `anchor-not-indexed` (flag set or not), never forwarded; a lone `^`/`$` or an inner one stays a literal', async () => {
+    const got = await Promise.all(['^qwen', 'qwen$', '^qwen$'].flatMap(name => [env, { ...env, FILTER_INDEXED_ONLY: '1' } as NameSummaryEnv].map(async vars => {
+      const r = await request(new URLSearchParams({ date: '2026-10-05', name }).toString(), vars)
+      return [r.status, await r.json()]
+    })))
+    expect([got, fetcher.mock.calls]).toEqual([Array(6).fill([400, ANCHOR]), []])
+    const literal = []
+    for (const name of ['^', '$', 'a^b$c']) {
+      fetcher.mockResolvedValueOnce(new Response(JSON.stringify(nameFixture('bounded-name-postings', '2026-10-05', name))))
+      literal.push((await request(new URLSearchParams({ date: '2026-10-05', name }).toString())).status)
+    }
+    expect([literal, fetcher.mock.calls.length]).toEqual([[200, 200, 200], 3])
+  })
+})

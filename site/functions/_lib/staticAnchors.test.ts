@@ -250,6 +250,17 @@ describe('the anchored stack', () => {
     const blobs = blobsOf({ hide: ['anchors/meta.json'] })
     const s = new AnchoredSource(tiers(blobs).tiers, blobs, { maxRows: 0 })
     expect(await Promise.all(['/tomat', '/config.json/', '.json/'].map(k => s.hits(k, '')))).toEqual([null, null, null])
+    expect(['/tomat', '/config.json/', '.json/'].map(k => s.why(k))).toEqual(['anchor-not-indexed', 'anchor-not-indexed', 'anchor-not-indexed'])
+  })
+  it('with anchors (gcs), the same keys answer and name no reason', async () => {
+    const s = source('run2', 0)
+    const got = await Promise.all(['/tomat', '/config.json/', '.json/'].map(k => s.hits(k, '')))
+    expect([got.map(f => f !== null), ['/tomat', '/config.json/', '.json/'].map(k => s.why(k))]).toEqual([[true, true, true], [undefined, undefined, undefined]])
+  })
+  it('no light index at all is not `anchor-not-indexed` (the scan, not the term, is the reason)', async () => {
+    const blobs = blobsOf({ hide: [...files.keys()] })
+    const s = new AnchoredSource(tiers(blobs).tiers, blobs, { maxRows: 0 })
+    expect([await s.hits('/tomat', ''), s.why('/tomat')]).toEqual([null, undefined])
   })
 })
 
