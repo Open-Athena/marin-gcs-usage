@@ -27,41 +27,39 @@ so it always runs.
 
 Exit status: 0 done, 3 not published yet or not the next scan, 1 a stage failed (the merge stage never fails the run).
 
+The chain's machinery (order, stage skipping, Batch, the merge stage, exit codes) is `append_runner`'s, shared with the
+interval store; this module is the static store's stage list and jobs.
+
 Config: the deployment profile (`static_profile`: `STATIC_NAMES_PROFILE` = an example or a JSON file, then each
 field's env var); a run needs its generation, buckets, layouts, region, image, accounts, R2 bucket and R2 secrets.
 """
 from __future__ import annotations
 
 import json
-import shlex
-import sys
-import time
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime
 from functools import partial
 from math import ceil
-from time import monotonic
-from typing import Callable
 
 from click import argument, command, option
 
-from .cost_labels import label_batch_spec
-from .scan_id import SCAN_ID
-from .static_merge import parse_manifest, plan_carries
+from . import append_runner as ar
+from .append_runner import (  # noqa: F401 — the shared names, as this module has always offered them
+    NOT_NEXT,
+    BatchRunner,
+    NotNext,
+    StillRunning,
+    duckdb_args,
+    exit_on,
+    pending_scans,
+    task_command,
+)
 from .static_names import PREFIX, err
 from .static_profile import Profile, profile
 
-#: Exit status: the scan is not published yet, or is not the next one to append.
-NOT_NEXT = 3
-
-
-class NotNext(Exception):
-    """The scan can't be appended now (not published, or an earlier published scan is pending): exit 3."""
-
-
-class StillRunning(Exception):
-    """A Batch job outlived the wait given for it (it keeps running; nothing is cancelled)."""
+#: A stage's cost-attribution `component` (`cost_labels`); the rest of the chain is `static-names`.
+STAGE_COMPONENTS = {"drill": "drill", "anchors": "anchors", "drill-merge": "drill", "anchors-merge": "anchors"}
 
 
 def ready(p: Profile, gen: str | None = None) -> Profile:
@@ -79,256 +77,52 @@ def ready(p: Profile, gen: str | None = None) -> Profile:
     return p
 
 
-# ── Order ──────────────────────────────────────────────────────────────────
-
-
-def pending_scans(have: list[str], published: list[str], scan_id: str, catch_up: bool) -> list[str]:
-    """The scans to append for a run given `scan_id`, oldest first: the published scans after `have[-1]` (the
-    generation's newest: base + live runs) through `scan_id`. Raises `NotNext` when `scan_id` is not published, or
-    when an earlier published scan is pending and not `catch_up`. `[]` when `scan_id` is already appended."""
-    if not SCAN_ID.fullmatch(scan_id):
-        raise ValueError(f"{scan_id!r} is not a scan id")
-    if scan_id in have:
-        return []
-    if scan_id <= have[-1]:
-        raise NotNext(f"{scan_id} precedes the generation's newest scan {have[-1]} but was never appended: it can't join now")
-    if scan_id not in published:
-        raise NotNext(f"{scan_id} is not published (no path sort under the generation's layouts)")
-    todo = sorted(s for s in published if have[-1] < s <= scan_id)
-    if todo[0] != scan_id and not catch_up:
-        raise NotNext(f"{len(todo) - 1} earlier published scan(s) pending: {', '.join(todo[:-1])} (append them first, or -c)")
-    return todo
-
-
-# ── Batch ──────────────────────────────────────────────────────────────────
-
-
-def task_command(cfg: Profile, module: str, args: list[str], *, mount: bool = True) -> str:
-    """A stage task's shell command: `python -m dt_cloud.<module> <args> [-m /gcs/<bucket>]`, from the image's code or
-    (`cfg.src`) the given mounted dirs."""
-    prep = "mkdir -p /stage/tmp /stage/out"
-    py = "python3 -u -m"
-    if cfg.src:
-        prep += " /stage/src && cp -r " + " ".join(shlex.quote(s) for s in cfg.src) + " /stage/src/"
-        py = "PYTHONPATH=/stage/src " + py
-    m = ["-m", f"/gcs/{cfg.bucket}"] if mount else []
-    return f"set -euo pipefail; {prep} && cd /stage && {py} dt_cloud.{module} {shlex.join([*args, *m])}"
-
-
 def job_spec(cfg: Profile, name: str, tasks: int, commands: list[str], *, stage: str, scratch: bool = True, r2: bool = False,
              machine: str | None = None, ssd_gb: int | None = None, purpose: str = "static-names", component: str | None = None) -> dict:
-    """A Batch job of `tasks` tasks (in parallel) running `commands` (one shell script, `&&`-chained) in the image, the
-    data bucket (and `scratch`) mounted read-only under /gcs, a local SSD at /stage. `r2`: as the R2 account, with its
-    credentials from Secret Manager. `purpose` labels the job; `component` is its cost label (default: the stage's,
-    `STAGE_COMPONENTS`)."""
-    machine = machine or cfg.machine
-    vcpus = int(machine.rsplit("-", 1)[-1])
-    buckets = [cfg.bucket, *([cfg.scratch] if scratch else [])]
-    env = {"STATIC_NAMES_BUCKET": cfg.bucket, "STATIC_NAMES_SCRATCH": cfg.scratch}
-    environment: dict = {"variables": env}
-    if r2:
-        env["R2_BUCKET"] = cfg.r2_bucket
-        if "endpoint" not in cfg.r2_secrets:
-            env["R2_ENDPOINT"] = cfg.r2_endpoint
-        secrets = cfg.r2_env_secrets()
-        environment["secretVariables"] = {k: f"projects/{cfg.project}/secrets/{v}/versions/latest" for k, v in sorted(secrets.items())}
-    return label_batch_spec({
-        "taskGroups": [{
-            "taskCount": tasks,
-            "parallelism": tasks,
-            "taskSpec": {
-                "runnables": [{"container": {
-                    "imageUri": cfg.need("image"),
-                    "entrypoint": "bash",
-                    "commands": ["-c", " && ".join(f"( {c} )" for c in commands) if len(commands) > 1 else commands[0]],
-                    "volumes": [*(f"/mnt/disks/gcs/{b}:/gcs/{b}:ro" for b in buckets), "/mnt/disks/stage:/stage:rw"],
-                }}],
-                "environment": environment,
-                "computeResource": {"cpuMilli": vcpus * 1000, "memoryMib": vcpus * 7700},
-                "maxRetryCount": 3 if cfg.spot else 0,
-                "maxRunDuration": "14400s",
-                "volumes": [
-                    *({"gcs": {"remotePath": b}, "mountPath": f"/mnt/disks/gcs/{b}", "mountOptions": ["--implicit-dirs"]} for b in buckets),
-                    {"deviceName": "stage", "mountPath": "/mnt/disks/stage"},
-                ],
-            },
-        }],
-        "allocationPolicy": {
-            "instances": [{"policy": {
-                "machineType": machine,
-                "provisioningModel": "SPOT" if cfg.spot else "STANDARD",
-                "bootDisk": {"type": "pd-balanced", "sizeGb": "100"},
-                "disks": [{"newDisk": {"type": "local-ssd", "sizeGb": str(ssd_gb or cfg.ssd_gb)}, "deviceName": "stage"}],
-            }}],
-            "serviceAccount": {"email": (cfg.r2_sa or cfg.sa) if r2 else cfg.sa},
-            "location": {"allowedLocations": [f"regions/{cfg.region}"]},
-        },
-        "labels": {"purpose": purpose, "stage": stage, "gen": _label(cfg.gen)},
-        "logsPolicy": {"destination": "CLOUD_LOGGING"},
-    }, component or STAGE_COMPONENTS.get(stage, "static-names"))
-
-
-#: A stage's cost-attribution `component` (`cost_labels`); the rest of the chain is `static-names`.
-STAGE_COMPONENTS = {"drill": "drill", "anchors": "anchors", "drill-merge": "drill", "anchors-merge": "anchors"}
-
-
-def _label(v: str) -> str:
-    return "".join(c if c.isalnum() or c in "-_" else "-" for c in v.lower())[:63]
+    """`append_runner.job_spec` labelled `purpose` (default `static-names`), its cost `component` the stage's
+    (`STAGE_COMPONENTS`, else `static-names`)."""
+    return ar.job_spec(cfg, name, tasks, commands, stage=stage, scratch=scratch, r2=r2, machine=machine, ssd_gb=ssd_gb, purpose=purpose,
+                       component=component or STAGE_COMPONENTS.get(stage, "static-names"))
 
 
 def job_id(stage: str, scan_id: str, now: datetime | None = None) -> str:
     """`sn-<stage>-<scan>-<hhmmss>`: Batch ids are lowercase letters, digits and hyphens."""
-    t = (now or datetime.now(timezone.utc)).strftime("%H%M%S")
-    return f"sn-{stage}-{scan_id.lower().replace('t', '-')}-{t}"
-
-
-class BatchRunner:
-    """Submit a Batch job and wait for it (REST over ADC, `batch.submit_job` / `gcp.batch_job`)."""
-
-    def __init__(self, cfg: Profile, log: Callable[[str], None], *, delay: int = 20, max_delay: int = 30):
-        """Polls every `delay` s, doubling up to `max_delay`: each stage's end is noticed up to one poll late, so the cap
-        stays low (at 120 s, 10-10's chain lost minutes between stages)."""
-        self.cfg, self.log, self.delay, self.max_delay = cfg, log, delay, max_delay
-
-    def __call__(self, name: str, spec: dict, wait: float | None = None) -> None:
-        """Submit, then poll until the job ends; `wait`: stop polling after that many seconds (`StillRunning`; the job runs on)."""
-        from .batch import submit_job
-        from .gcp import batch_job
-
-        submit_job(spec, name, region=self.cfg.region)
-        self.log(f"submitted {name}")
-        delay, t0 = self.delay, monotonic()
-        while True:
-            if wait is not None and monotonic() - t0 >= wait:
-                raise StillRunning(f"Batch job {name}: still running after {wait:.0f}s")
-            st = batch_job(name, project=self.cfg.project, region=self.cfg.region).get("status", {})
-            state = st.get("state", "?")
-            counts = " ".join(f"{k}={v}" for g in (st.get("taskGroups") or {}).values() for k, v in sorted(g.get("counts", {}).items()))
-            self.log(f"{name} {state} {counts}")
-            if state == "SUCCEEDED":
-                return
-            if state in ("FAILED", "DELETION_IN_PROGRESS", "CANCELLED"):
-                raise RuntimeError(f"Batch job {name}: {state}")
-            time.sleep(delay if wait is None else max(0.0, min(delay, wait - (monotonic() - t0))))
-            delay = min(delay * 2, self.max_delay)
+    return ar.job_id("sn", stage, scan_id, now)
 
 
 # ── The chain ──────────────────────────────────────────────────────────────
 
 
-@dataclass
-class Runner:
-    """The chain over injectable effects (tests pass fakes): `exists(key)` / `count(prefix, suffix)` / `read_json(key)` on
-    the data bucket (keys relative to it), `published()` the scan ids under the base's layouts, `run_job(name, spec[, wait])`,
-    `prepare(scan_id)`, `publish(scan_id)` and `prune(scan_id)` (the `runs` CLI's local stages), `list_keys(prefix)`, `log`.
-    `merge`: run the merge stage after the scans; `merge_wait`: how long it waits on its Batch job (None: to its end)."""
-    cfg: Profile
-    exists: Callable[[str], bool]
-    count: Callable[[str, str], int]
-    read_json: Callable[[str], dict]
-    published: Callable[[list[str] | None, str], list[str]]
-    run_job: Callable[[str, dict], None]
-    prepare: Callable[[str], None]
-    prune: Callable[[str], None]
+@dataclass(kw_only=True)
+class Runner(ar.Runner):
+    """The static store's chain (`append_runner.Runner`): `publish(scan_id)` is the `runs` CLI's local publish;
+    `verify_terms`: also run `runs verify` with this terms file."""
     publish: Callable[[str], None]
-    list_keys: Callable[[str], list[str]] = lambda prefix: []
-    log: Callable[[str], None] = err
-    dry_run: bool = False
     verify_terms: str | None = None
-    now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
-    merge: bool = True
-    merge_wait: float | None = 0
 
-    @property
-    def root(self) -> str:
-        return f"{PREFIX}/{self.cfg.gen}"
+    store_prefix = PREFIX
+    job_prefix = "sn"
 
-    def have(self) -> tuple[list[str], list[str] | None]:
-        """The generation's scans (base + the newest manifest's runs), and the base's layouts. Runs follow the base's
-        recorded hex-run rule (every stage reads it from the base's `scans.json`), so a run's tiers always agree; a
-        profile whose rule differs (a deployment that adopts the rule at its next generation) is logged, not applied."""
+    def layouts(self, base: dict):
+        """The base's recorded layouts (None: the profile's). Runs follow the base's recorded hex-run rule (every stage
+        reads it from the base's `scans.json`), so a run's tiers always agree; a profile whose rule differs (a deployment
+        that adopts the rule at its next generation) is logged, not applied."""
         from .hex_runs import rule_from_json
 
-        base = self.read_json(f"{self.root}/scans.json")
         recorded, wanted = rule_from_json(base.get("hex_runs")), self.cfg.hex_rule()
         if recorded != wanted:
             self.log(f"{self.cfg.gen}: built with hex_runs {recorded.to_json() if recorded else 'off'}, the profile says "
                      f"{wanted.to_json() if wanted else 'off'}: its runs keep the generation's rule (the profile's applies to the next generation)")
-        keys = self.manifests()
-        runs = self.read_json(keys[-1])["runs"] if keys else []
-        return [*(s["id"] for s in base["scans"]), *(s for r in runs for s in r["scans"])], base.get("layouts")
+        return base.get("layouts")
 
-    def manifests(self) -> list[str]:
-        """The manifests' keys, oldest first: by scan, then revision (`static_merge.manifest_keys`)."""
-        from .static_merge import manifest_keys
+    def spec(self, name: str, tasks: int, commands: list[str], *, stage: str, **kw) -> dict:
+        return job_spec(self.cfg, name, tasks, commands, stage=stage, **kw)
 
-        return [f"{self.root}/{k}" for k in manifest_keys([k.removeprefix(f"{self.root}/") for k in self.list_keys(f"{self.root}/manifests/")])]
+    def drilled(self, runs: list[dict]) -> set[str]:
+        return {r["key"] for r in runs if self.exists(f"{self.root}/{r['key']}/drill/meta.json")}
 
-    def run(self, scan_id: str, catch_up: bool = False) -> list[str]:
-        """Append `scan_id` (and with `catch_up` every earlier pending scan, in order). Returns the scans appended."""
-        have, layouts = self.have()
-        todo = pending_scans(have, self.published(layouts, have[-1]), scan_id, catch_up)
-        # Every listed run's drill / anchors first (a scan's own build reads its earlier runs').
-        built = self.backfill()
-        if not todo:
-            self.log(f"{scan_id}: already appended; the R2 copy and prune only")
-            if scan_id == have[-1]:
-                self.r2(scan_id)
-                self.stage(f"{scan_id} prune", lambda: self.prune(scan_id))
-            elif built:
-                self.r2_newest()
-            self.carries()
-            return []
-        if len(todo) > 1:
-            self.log(f"catching up {len(todo)} scans: {', '.join(todo)}")
-        for s in todo:
-            self.one(s)
-        self.carries()
-        return todo
-
-    def stage(self, name: str, fn: Callable[[], None]) -> None:
-        if self.dry_run:
-            self.log(f"{name}: would run")
-            return
-        t = monotonic()
-        self.log(f"{name}: start")
-        fn()
-        self.log(f"{name}: done in {monotonic() - t:.0f}s")
-
-    def concurrently(self, d: str, jobs: list[tuple[str, Callable[[], None]]]) -> None:
-        """`jobs` (`(label, fn)`, each a stage's job and its post-check) as one stage, at once (a lone one as itself). Each
-        runs to its end (a failure doesn't stop the other, whose output is kept, so a rerun resumes only the failed one);
-        then the failure is raised, or with several a `RuntimeError` naming each."""
-        if not jobs:
-            return
-        if len(jobs) == 1:
-            (label, fn), = jobs
-            self.stage(f"{d} {label}", fn)
-            return
-
-        def timed(label: str, fn: Callable[[], None]) -> None:
-            t = monotonic()
-            try:
-                fn()
-            except Exception as e:
-                self.log(f"{d} {label}: failed after {monotonic() - t:.0f}s: {e}")
-                raise
-            self.log(f"{d} {label}: done in {monotonic() - t:.0f}s")
-
-        def all_() -> None:
-            with ThreadPoolExecutor(len(jobs)) as ex:
-                futures = [(label, ex.submit(timed, label, fn)) for label, fn in jobs]
-            errs = [(label, e) for label, f in futures if (e := f.exception()) is not None]
-            if len(errs) == 1:
-                raise errs[0][1]
-            if errs:
-                raise RuntimeError("; ".join(f"{label}: {e}" for label, e in errs)) from errs[0][1]
-        self.stage(f"{d} {' ∥ '.join(label for label, _ in jobs)}", all_)
-
-    def job(self, stage: str, scan_id: str, tasks: int, module: str, args: list[str], **kw) -> tuple[str, dict]:
-        name = job_id(stage, scan_id, self.now())
-        cmd = task_command(self.cfg, module, args, mount=kw.pop("mount", True))
-        return name, job_spec(self.cfg, name, tasks, [cmd], stage=stage, **kw)
+    def merge_job(self, scan: str) -> tuple[str, dict]:
+        return self.job("merge", scan, 1, "static_merge", ["carry", "-g", self.cfg.gen])
 
     def one(self, d: str) -> None:
         run = f"{self.root}/deltas/{d}"
@@ -391,8 +185,6 @@ class Runner:
         those come first), `("merge", key)` a merged run's from its scans' level-0 runs (`static_merge tier`, after
         theirs). A run that has it is skipped, and so is everything it was built over: a build refuses missing earlier
         tiers, so no existing drill or anchors was built over a stack that lacked one, and none needs rebuilding."""
-        from .static_append import latest_key
-
         keys = self.manifests()
         if not keys:
             return []
@@ -405,7 +197,7 @@ class Runner:
                 return
             seen.add(key)
             if len(scans) == 1:
-                prior = latest_key(names, before=scans[0])
+                prior = ar.latest_key(names, before=scans[0])
                 for r in self.read_json(f"{self.root}/{prior}")["runs"] if prior else []:
                     ensure(r["key"], r["scans"])
                 plan.append(("build", scans[0]))
@@ -445,10 +237,9 @@ class Runner:
     def tier_merge(self, tier: str, key: str) -> None:
         """Merged run `key`'s `tier` from its scans' level-0 runs: one job, `static_merge tier` (`backfill_tier`), then a
         check that its liveness marker is there."""
-        vcpus = int(self.cfg.machine.rsplit("-", 1)[-1])
         last = key.rsplit("_", 1)[-1]
         name, spec = self.job(f"{tier}-merge", last, 1, "static_merge", ["tier", "-g", self.cfg.gen, "-r", key, "-t", tier,
-                                                                         "-M", f"{vcpus * 7700 * 3 // 4 // 1024}GB", "-p", str(vcpus)])
+                                                                         *duckdb_args(self.cfg.machine)])
         self.run_job(name, spec)
         if not self.tier_done(tier, key):
             raise RuntimeError(f"{self.root}/{key}: its {tier} not written (the merge job succeeded)")
@@ -467,8 +258,7 @@ class Runner:
         if self.exists(f"{run}/drill/meta.json"):
             self.log(f"{d} drill: done")
             return None
-        vcpus = int(self.cfg.machine.rsplit("-", 1)[-1])
-        args = ["build", "-g", self.cfg.gen, "-d", d, "-k", "task", "-M", f"{vcpus * 7700 * 3 // 4 // 1024}GB", "-p", str(vcpus)]
+        args = ["build", "-g", self.cfg.gen, "-d", d, "-k", "task", *duckdb_args(self.cfg.machine)]
         name, spec = self.job("drill", d, 2, "static_drill", args)
 
         def build():
@@ -485,8 +275,7 @@ class Runner:
         if self.exists(f"{run}/anchors/meta.json") and (not start or self.exists(f"{run}/anchors/start/meta.json")):
             self.log(f"{d} anchors: done")
             return None
-        vcpus = int(self.cfg.machine.rsplit("-", 1)[-1])
-        args = ["run", "-g", self.cfg.gen, "-d", d, "-M", f"{vcpus * 7700 * 3 // 4 // 1024}GB", "-p", str(vcpus)]
+        args = ["run", "-g", self.cfg.gen, "-d", d, *duckdb_args(self.cfg.machine)]
         name, spec = self.job("anchors", d, 1, "static_anchors", args)
 
         def build():
@@ -510,57 +299,15 @@ class Runner:
             return
         cmds = []
         for r in runs:
-            cmds.append(task_command(self.cfg, "static_names", ["r2-copy", "-g", f"{self.cfg.gen}/{r}", "-x", "drill/meta.json", "-x", "anchors/meta.json",
+            cmds.append(self.command("static_names", ["r2-copy", "-g", f"{self.cfg.gen}/{r}", "-x", "drill/meta.json", "-x", "anchors/meta.json",
                                                                 "-x", "anchors/start/meta.json"], mount=False))
             for m in ("drill/meta.json", "anchors/start/meta.json", "anchors/meta.json"):
-                cmds.append(task_command(self.cfg, "static_names", ["r2-copy", "-g", f"{self.cfg.gen}/{r}", "-o", m], mount=False))
-        cmds.append(task_command(self.cfg, "static_names", ["r2-verify", "-g", self.cfg.gen, "-m", stem], mount=False))
-        cmds.append(task_command(self.cfg, "static_names", ["r2-copy", "-g", self.cfg.gen, "-o", f"manifests/{stem}.json"], mount=False))
-        name = job_id("r2", d, self.now())
-        spec = job_spec(self.cfg, name, 1, cmds, stage="r2", scratch=False, r2=True, machine="n2-highmem-4", ssd_gb=375)
+                cmds.append(self.command("static_names", ["r2-copy", "-g", f"{self.cfg.gen}/{r}", "-o", m], mount=False))
+        cmds.append(self.command("static_names", ["r2-verify", "-g", self.cfg.gen, "-m", stem], mount=False))
+        cmds.append(self.command("static_names", ["r2-copy", "-g", self.cfg.gen, "-o", f"manifests/{stem}.json"], mount=False))
+        name = self.job_name("r2", d)
+        spec = self.spec(name, 1, cmds, stage="r2", scratch=False, r2=True, machine="n2-highmem-4", ssd_gb=375)
         self.stage(f"{d} r2 ({len(runs)} runs + manifests/{stem}.json)", lambda: self.run_job(name, spec))
-
-    def r2_newest(self) -> None:
-        """The R2 job for the newest manifest (a scan's, or a revision): its runs, then it."""
-        keys = self.manifests()
-        if keys:
-            stem = keys[-1].rsplit("/", 1)[-1].removesuffix(".json")
-            self.r2(parse_manifest(f"{stem}.json")[0], stem)
-
-    def carries(self, fatal: bool = False) -> None:
-        """The merge stage, once after the scans: the newest manifest's due carries (`static_merge.plan_carries`), when any,
-        as one Batch job (`static_merge carry`: each merged run, then a revision of the newest manifest), waited on up to
-        `merge_wait` s; then, when the newest manifest is a revision, the R2 job for it (a merge that outlived the wait
-        reaches R2 here on a later run, or with the next scan's manifest, which lists its run). Non-fatal: a failure or
-        timeout is logged and the store stays as it was, servable (the next run plans again; a merge resumes). `fatal`: raise
-        a failure (`RuntimeError`) instead."""
-        if not self.merge:
-            return
-        try:
-            keys = self.manifests()
-            if not keys:
-                return
-            m = self.read_json(keys[-1])
-            drilled = {r["key"] for r in m["runs"] if self.exists(f"{self.root}/{r['key']}/drill/meta.json")}
-            _, merges = plan_carries(m["runs"], drilled)
-            if merges:
-                desc = "; ".join(f"{len(ins)} runs → {out['key']} (level {out['level']})" for ins, out in merges)
-                name, spec = self.job("merge", m["date"], 1, "static_merge", ["carry", "-g", self.cfg.gen])
-                try:
-                    self.stage(f"merge: {desc}", lambda: self.run_job(name, spec, wait=self.merge_wait))
-                except StillRunning as e:
-                    self.log(f"merge: {e}; it publishes its revision on GCS when done, and R2 gets it with a later run")
-                    return
-                if self.dry_run:
-                    return
-                keys = self.manifests()
-            scan, rev = parse_manifest(keys[-1].rsplit("/", 1)[-1])
-            if rev:
-                self.r2(scan, keys[-1].rsplit("/", 1)[-1].removesuffix(".json"))
-        except Exception as e:
-            if fatal:
-                raise RuntimeError(str(e)) from e
-            self.log(f"merge: failed, not fatal (every listed run is whole; the next run plans again): {e}")
 
 
 def gcs_runner(cfg: Profile, *, dry_run: bool = False, verify_terms: str | None = None, merge: bool = True,
@@ -623,14 +370,7 @@ def add_cmd(catch_up: bool, gen: str | None, no_merge: bool, dry_run: bool, veri
     yet, or an earlier published scan is pending (without -c)."""
     cfg = ready(profile(), gen)
     runner = gcs_runner(cfg, dry_run=dry_run, verify_terms=verify_terms, merge=not no_merge, merge_wait=merge_wait)
-    try:
-        done = runner.run(scan_id, catch_up=catch_up)
-    except NotNext as e:
-        err(f"static-names runs add {scan_id}: {e}")
-        sys.exit(NOT_NEXT)
-    except RuntimeError as e:
-        err(f"static-names runs add {scan_id}: {e}")
-        sys.exit(1)
+    done = exit_on(f"static-names runs add {scan_id}", lambda: runner.run(scan_id, catch_up=catch_up), lambda m: err(m))
     print(json.dumps({"gen": cfg.gen, "scan": scan_id, "appended": done, "dry_run": dry_run}))
 
 
@@ -645,11 +385,10 @@ def merge_cmd(gen: str | None, dry_run: bool, wait: float | None) -> None:
     fails (the store stays as it was: servable)."""
     cfg = ready(profile(), gen)
     runner = gcs_runner(cfg, dry_run=dry_run, merge_wait=wait)
-    try:
+
+    def merge() -> None:
         if runner.backfill():
             runner.r2_newest()
         runner.carries(fatal=True)
-    except RuntimeError as e:
-        err(f"static-names runs merge: {e}")
-        sys.exit(1)
+    exit_on("static-names runs merge", merge, lambda m: err(m))
     print(json.dumps({"gen": cfg.gen, "manifest": (runner.manifests() or [None])[-1], "dry_run": dry_run}))

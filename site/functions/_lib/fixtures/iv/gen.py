@@ -10,8 +10,9 @@ interval reader returns the same trees.
 
     cloud/.venv-or-root/bin/python site/functions/_lib/fixtures/iv/gen.py [g2 | tiered]
 
-`tiered`: the base + per-scan runs generations (`interval_append`): `g3` / `g4` over `g1`'s scans (runs unmerged /
-merged), `g5` over `g2`'s.
+`tiered`: the base + per-scan runs generations (`interval_append`): `g3` / `g4` / `g6` over `g1`'s scans (runs unmerged /
+merged pairwise as the old inline publish did / merged by the deferred carries, a revision manifest listing the merged
+run), `g5` over `g2`'s.
 """
 from __future__ import annotations
 
@@ -88,13 +89,16 @@ def main() -> None:
 
 
 #: Base + per-scan runs (`interval_append`) over `g1`'s scans: the base holds the first four, each later scan is a
-#: run. `g3`: the newest manifest lists the runs unmerged (each its own tier); `g4`: merged into one, as the binary
-#: counter merges two level-0 runs. Both must serve exactly `g1`'s answers (`expected.json`).
-TIERED = {"g3": False, "g4": True}
+#: run. `g3`: the newest manifest lists the runs unmerged (each its own tier); `g4`: merged into one, as the old inline
+#: publish's binary counter merged two level-0 runs; `g6`: the deferred carries' (`append_runner`): each scan's manifest
+#: lists its level-0 run, and a merge's revision `2026-08-05.m001.json` the merged run, byte for byte `g4`'s. All must
+#: serve exactly `g1`'s answers (`expected.json`).
+TIERED = {"g3": "unmerged", "g4": "pairwise", "g6": "deferred"}
 
 
-def tiered_gens(mount: Path, work: Path, scans: list[dict], n_base: int, ranges: dict, *, rg_rows: int, gens: dict[str, bool] = TIERED) -> None:
-    """`gens` built over the scans under `mount`, intermediates in `work`."""
+def tiered_gens(mount: Path, work: Path, scans: list[dict], n_base: int, ranges: dict, *, rg_rows: int, gens: dict[str, str] = TIERED) -> None:
+    """`gens` (name → `unmerged` | `pairwise` | `deferred`) built over the scans under `mount`, intermediates in `work`."""
+    from dt_cloud import append_runner as ar
     from dt_cloud import interval_append as ia
     from dt_cloud import interval_store as ist
     from dt_cloud.static_append import push_run, run_key
@@ -116,7 +120,7 @@ def tiered_gens(mount: Path, work: Path, scans: list[dict], n_base: int, ranges:
             ia.append_range(con, state, s, ranges["ranges"][i], name, d, bucket="b", mount=str(mount))
         runs[s["id"]] = d
         prev = d
-    for gen, merged in gens.items():
+    for gen, mode in gens.items():
         out = HERE / "interval-store" / gen
         shutil.rmtree(out, ignore_errors=True)
         for sort in ia.RUN_SORTS:
@@ -124,11 +128,39 @@ def tiered_gens(mount: Path, work: Path, scans: list[dict], n_base: int, ranges:
             ist.write_served(con, f"read_parquet('{base}/{sub}/r*.parquet')", sort, out / "served" / f"{sort}.parquet", ist.SUB_SCHEMA[sub],
                              rg_rows=rg_rows, stamps=[x["ts"] for x in scans[:n_base]])
         (out / "scans.json").write_text(json.dumps({"scans": [{"id": x["id"], "ts": x["ts"]} for x in scans[:n_base]]}, indent=1) + "\n")
+        if mode == "deferred":
+            # The bucket as the append writes it: each scan's run (deltas, cut, `meta.json`), published, then the merge stage.
+            root = work / "deferred" / gen
+            root.mkdir(parents=True)
+            shutil.copy(out / "scans.json", root / "scans.json")
+            store = ar.LocalRunStore(root, work / "deferred-lease" / gen, gen=gen)
+            for s in scans[n_base:]:
+                run = {"key": run_key(s["id"], s["id"]), "first": s["id"], "last": s["id"], "level": 0, "scans": [s["id"]]}
+                for t in ia.TABLES:
+                    shutil.copytree(runs[s["id"]] / t, root / run["key"] / t)
+                docs = ia.cut_run(con, str(root / run["key"]), root / run["key"] / "served", rg_rows=rg_rows)
+                (root / run["key"] / "meta.json").write_text(json.dumps(ia.run_meta(gen, run, {s["id"]: s["ts"]}, docs), indent=1) + "\n")
+                ia.publish_run(store, s["id"])
+                ar.merge_pending(store, ia.carry(gen, ranges["k"], threads=1, mem="1GB", rg_rows=rg_rows), root, tmp=work / "deferred-tmp",
+                                 owner="gen", log=lambda m: None)
+            keys = ar.manifest_keys(store.keys("manifests/"))
+            for k in keys:
+                (out / k).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy(root / k, out / k)
+            for key in sorted({r["key"] for k in keys for r in store.read_json(k)["runs"]}):
+                for f in sorted((root / key / "served").glob("*.parquet")):
+                    (out / key / "served").mkdir(parents=True, exist_ok=True)
+                    shutil.copy(f, out / key / "served" / f.name)
+            g4 = HERE / "interval-store" / "g4"
+            for f in sorted(g4.rglob("deltas/*_*/served/*.parquet")):
+                assert (out / f.relative_to(g4)).read_bytes() == f.read_bytes(), f.relative_to(g4)
+            print(f"{gen}: manifests {[k.removeprefix('manifests/') for k in keys]}", file=sys.stderr)
+            continue
         live, dirs, stamps = [], {}, {}
         for s in scans[n_base:]:
             new = {"key": run_key(s["id"], s["id"]), "first": s["id"], "last": s["id"], "scans": [s["id"]]}
             dirs[new["key"]], stamps[new["key"]] = runs[s["id"]], {s["id"]: s["ts"]}
-            if merged:
+            if mode == "pairwise":
                 live, merges = push_run(live, new)
                 for ins, m in merges:
                     md = work / "merged" / gen / m["key"]
@@ -207,7 +239,7 @@ def tiered() -> None:
     ranges = {"k": 3, "ranges": [{"i": 0, "lo": [0, ""], "hi": [2, "b1/gof"]}, {"i": 1, "lo": [2, "b1/gof"], "hi": [3, ""]}, {"i": 2, "lo": [3, ""], "hi": None}]}
     tiered_gens(work, work / "tiered", scans, 4, ranges, rg_rows=4)
     g2 = [{"id": d, "src": f"{name}/path-index.parquet", "ts": sn.scan_epoch(d), "version": 2} for d, name in G2_SCANS]
-    tiered_gens(HERE.parent, work / "tiered-g5", g2, 2, {"k": 1, "ranges": [{"i": 0, "lo": [0, ""], "hi": None}]}, rg_rows=256, gens={"g5": False})
+    tiered_gens(HERE.parent, work / "tiered-g5", g2, 2, {"k": 1, "ranges": [{"i": 0, "lo": [0, ""], "hi": None}]}, rg_rows=256, gens={"g5": "unmerged"})
     shutil.rmtree(work)
 
 

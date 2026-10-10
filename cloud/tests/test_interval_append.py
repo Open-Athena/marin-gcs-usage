@@ -1,13 +1,18 @@
 """`dt_cloud.interval_append`: a base generation plus per-scan runs is, version for version, a full rebuild through the
 same scan — for the folded path versions (`pvl`), the owner slices (`sv`) and the slices with their path's total
 (`svt`) — with each run read alone and with runs merged on the binary counter; every view at every path and scan read
-over base + runs is the per-scan reference's; and the comparison catches a broken run (mutations)."""
+over base + runs is the per-scan reference's; and the comparison catches a broken run (mutations). The deferred carries
+(`append_runner`: publish adds a level-0 run, `carry` merges N-way and publishes a revision) end, scan by scan, at the
+old inline pairwise carries' stacks, their merged runs byte for byte; a merge interrupted anywhere leaves the store
+servable and resumes; one merger at a time (the lease); a publish landing mid-merge is rebased onto. And the chain: order,
+stages, the merge stage, jobs."""
 from __future__ import annotations
 
 import json
 import random
+import shutil
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import duckdb
@@ -16,6 +21,7 @@ import pyarrow.parquet as pq
 import pytest
 from test_interval_store import V2_FROM, _scan_rows, _slice_oracle, _universe, _write
 
+from dt_cloud import append_runner as ar
 from dt_cloud import interval_append as ia
 from dt_cloud import interval_store as ist
 from dt_cloud import static_names as sn
@@ -308,6 +314,287 @@ def test_a_view_over_runs_missing_a_close_record_differs(world, served, tmp_path
     assert differ == ["", "b1", "b1/d", "b1/d/e", "b1/gof", "b1/gof/e", "b2/e", "b2/e/e", "b2/f", "b2/f/c"]
 
 
+# ── Deferred carries over real runs (`append_runner.merge_pending`, `carry`) ─
+
+
+RG = 4
+
+
+@pytest.fixture(scope="module")
+def laid(world, tmp_path_factory) -> Path:
+    """The appended scans' level-0 runs laid out as the data bucket holds them under `interval-store/<gen>/` (each run's
+    deltas, its served sorts cut at 4-row groups, its `meta.json`), the base's `scans.json`; nothing published."""
+    gen = tmp_path_factory.mktemp("laid") / "gen"
+    gen.mkdir()
+    (gen / "scans.json").write_text(json.dumps({"scans": [{"id": s["id"], "ts": s["ts"]} for s in world["scans"][:BASE]]}) + "\n")
+    con = duckdb.connect()
+    for s in world["scans"][BASE:]:
+        run = {"key": run_key(s["id"], s["id"]), "first": s["id"], "last": s["id"], "level": 0, "scans": [s["id"]]}
+        d = gen / run["key"]
+        for t in ia.TABLES:
+            shutil.copytree(world["runs"][s["id"]] / t, d / t)
+        docs = ia.cut_run(con, str(d), d / "served", rg_rows=RG)
+        (d / "meta.json").write_text(json.dumps(ia.run_meta("g", run, {s["id"]: s["ts"]}, docs), indent=1) + "\n")
+    return gen
+
+
+def _ivstore(laid: Path, tmp_path: Path, cls=ar.LocalRunStore, **kw) -> ar.LocalRunStore:
+    """A fresh copy of the laid-out bucket (publishes and merges write into it)."""
+    shutil.copytree(laid, tmp_path / "gen")
+    return cls(tmp_path / "gen", tmp_path / "scratch", gen="g", **kw)
+
+
+def _ivmerge(store, tmp_path, build=None, **kw) -> dict:
+    c = ia.carry("g", RANGES["k"], threads=2, mem="1GB", rg_rows=RG)
+    if build:
+        c = ar.Carry(build=build(c.build), missing=c.missing)
+    return ar.merge_pending(store, c, store.root, tmp=tmp_path / "work", owner="test", now=lambda: NOW, log=lambda m: None, **kw)
+
+
+def _ivstack(store, key: str) -> list[tuple[str, int]]:
+    return [(r["key"], r["level"]) for r in store.read_json(key)["runs"]]
+
+
+def _ids(world) -> list[str]:
+    return [s["id"] for s in world["scans"][BASE:]]
+
+
+def _run_files(d: Path) -> dict[str, bytes]:
+    """A run's data files, by run-relative path: its deltas and its served sorts and group indexes (not the cut's timing
+    reports, nor `meta.json`)."""
+    return {f.relative_to(d).as_posix(): f.read_bytes() for f in sorted(d.rglob("*.parquet"))}
+
+
+def _pairwise_files(world, served, key: str) -> dict[str, bytes]:
+    """The old inline pairwise carries' run `key` (`world`'s `push_run` stacks: deltas merged two at a time, then cut)."""
+    d = next(p for st in world["stacks"].values() for r, p in st if r["key"] == key)
+    deltas = {f.relative_to(d).as_posix(): f.read_bytes() for t in ia.TABLES for f in sorted((d / t).glob("r*.parquet"))}
+    cut = served["cut"][key]
+    return {**deltas, **{f"served/{f.name}": f.read_bytes() for f in sorted(cut.glob("*.parquet"))}}
+
+
+def _old_manifest(store, key: str) -> dict:
+    """What the old inline publish wrote for the stack manifest `key` lists: `manifest` over its runs with their
+    `meta.json`'s stamps, rows and bytes."""
+    runs = []
+    for r in store.read_json(key)["runs"]:
+        meta = store.read_json(f"{r['key']}/meta.json")
+        runs.append({**{k: r[k] for k in ("key", "first", "last", "level", "scans")}, "stamps": meta["stamps"], "rows": meta["rows"], "bytes": meta["bytes"]})
+    return ia.manifest("g", store.read_json("scans.json"), runs)
+
+
+def test_deferred_carries_end_at_the_pairwise_stacks_byte_for_byte(world, served, laid, tmp_path):
+    """Each scan published (its level-0 run alone), then the merge stage: after every scan the newest manifest (a scan's,
+    or a merge's revision) lists the old inline pairwise stack — the L2 one N-way merge of three runs, not an L1 then an L2
+    — each merged run byte for byte the pairwise one's (deltas and served sorts), the manifest the old publish's but for
+    its revision fields; and every view over the last stack is the per-scan reference's."""
+    from dt_cloud import interval_read as ir
+
+    a, b, c, d = _ids(world)
+    store = _ivstore(laid, tmp_path)
+    newest, merged = {}, []
+    for s in (a, b, c, d):
+        doc = ia.publish_run(store, s)
+        assert (doc["date"], doc["scans"][-1], [r["key"] for r in doc["runs"]][-1]) == (s, s, f"deltas/{s}")
+        merged += _ivmerge(store, tmp_path)["merged"]
+        key = ar.latest_key(store.keys("manifests/"))
+        newest[s] = (key, _ivstack(store, key))
+    ab, ad = run_key(a, b), run_key(a, d)
+    assert newest == {
+        a: (f"manifests/{a}.json", [(f"deltas/{a}", 0)]),
+        b: (f"manifests/{b}.m001.json", [(ab, 1)]),
+        c: (f"manifests/{c}.json", [(ab, 1), (f"deltas/{c}", 0)]),
+        d: (f"manifests/{d}.m001.json", [(ad, 2)]),
+    }
+    assert {s: st for s, (_, st) in newest.items()} == {s: [(r["key"], r["level"]) for r, _ in st] for s, st in world["stacks"].items()}
+    assert [{k: m[k] for k in ("inputs", "output", "level", "scans", "manifest")} for m in merged] == [
+        {"inputs": [f"deltas/{a}", f"deltas/{b}"], "output": ab, "level": 1, "scans": 2, "manifest": f"manifests/{b}.m001.json"},
+        {"inputs": [ab, f"deltas/{c}", f"deltas/{d}"], "output": ad, "level": 2, "scans": 4, "manifest": f"manifests/{d}.m001.json"},
+    ]
+    for key in (ab, ad):
+        assert _run_files(store.root / key) == _pairwise_files(world, served, key), key
+    assert store.read_json(f"{ad}/meta.json")["stamps"] == {s["id"]: s["ts"] for s in world["scans"][BASE:]}
+    for s in (b, d):
+        rev = store.read_json(f"manifests/{s}.m001.json")
+        assert {k: v for k, v in rev.items() if k not in ("rev", "revises")} == _old_manifest(store, f"manifests/{s}.m001.json")
+        assert (rev["rev"], rev["revises"], rev["scans"], rev["stamps"]) == (
+            1, f"manifests/{s}.json", store.read_json(f"manifests/{s}.json")["scans"], store.read_json(f"manifests/{s}.json")["stamps"])
+    # every manifest ever published stays servable: nothing was deleted
+    keys = ar.manifest_keys(store.keys("manifests/"))
+    assert keys == [f"manifests/{n}" for n in (f"{a}.json", f"{b}.json", f"{b}.m001.json", f"{c}.json", f"{d}.json", f"{d}.m001.json")]
+    assert [(k, ia.missing_files(store.read_json(k)["runs"], store.exists)) for k in keys] == [(k, []) for k in keys]
+    paths = ["", *sorted({p for p in world["paths"] if "." not in p.rsplit("/", 1)[-1]})]
+    runs = [store.root / r["key"] / "served" for r in store.read_json(keys[-1])["runs"]]
+    assert _views_equal(world, lambda s: ir.Store(served["base"], runs), paths) > 0
+    assert not (tmp_path / "scratch" / "merge.lease.json").exists()
+
+
+def test_a_backlog_is_one_n_way_merge(world, served, laid, tmp_path):
+    """Four scans published with no merge in between: one plan, one merge of the four level-0 runs into the L2 — the
+    pairwise L2, byte for byte."""
+    ids = _ids(world)
+    store = _ivstore(laid, tmp_path)
+    for s in ids:
+        ia.publish_run(store, s)
+    ad = run_key(ids[0], ids[-1])
+    assert _ivmerge(store, tmp_path, dry_run=True) == {"manifest": f"manifests/{ids[-1]}.json",
+                                                         "plan": [{"inputs": [f"deltas/{s}" for s in ids], "output": ad, "level": 2}]}
+    got = _ivmerge(store, tmp_path)
+    assert [(m["inputs"], m["output"], m["manifest"]) for m in got["merged"]] == [([f"deltas/{s}" for s in ids], ad, f"manifests/{ids[-1]}.m001.json")]
+    assert _ivstack(store, got["manifest"]) == [(ad, 2)]
+    assert _run_files(store.root / ad) == _pairwise_files(world, served, ad)
+
+
+class FlakyStore(ar.LocalRunStore):
+    """Uploads `fail_after` files of a tree, then fails (the job killed mid-upload); or fails creating a revision."""
+
+    def __init__(self, *a, fail_after: int | None = None, fail_create: bool = False, **kw):
+        super().__init__(*a, **kw)
+        self.fail_after, self.fail_create = fail_after, fail_create
+
+    def upload(self, local: Path, prefix: str) -> list[dict]:
+        if self.fail_after is None:
+            return super().upload(local, prefix)
+        files = sorted((p for p in local.rglob("*") if p.is_file()), key=lambda p: (p == local / "meta.json", p))
+        for p in files[:self.fail_after]:
+            (self.root / prefix / p.relative_to(local)).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(p, self.root / prefix / p.relative_to(local))
+        raise Boom(f"killed after {self.fail_after} files")
+
+    def create(self, key: str, text: str) -> None:
+        if self.fail_create and key.startswith("manifests/") and ".m" in key:
+            raise Boom(f"killed before {key}")
+        super().create(key, text)
+
+
+class Boom(Exception):
+    pass
+
+
+@pytest.mark.parametrize("where", ["build", "upload", "revision"])
+def test_an_interrupted_merge_leaves_the_store_servable_and_resumes(world, served, laid, tmp_path, where):
+    """A merge killed while building, midway through uploading, or before its revision: the manifests are as they were,
+    the newest one's runs whole, the lease released. A rerun completes it (reusing a merged dir wholly uploaded), byte for
+    byte the pairwise run."""
+    a, b = _ids(world)[:2]
+    store = _ivstore(laid, tmp_path, FlakyStore, fail_after=5 if where == "upload" else None)
+    for s in (a, b):
+        ia.publish_run(store, s)
+    store.fail_create = where == "revision"
+    before = store.listing("manifests/")
+    builds = []
+
+    def build(inner):
+        def b_(dirs, run, outp, **kw):
+            builds.append(run["key"])
+            if where == "build" and len(builds) == 1:
+                raise Boom("killed while building")
+            return inner(dirs, run, outp, **kw)
+        return b_
+
+    with pytest.raises(Boom):
+        _ivmerge(store, tmp_path, build=build)
+    assert store.listing("manifests/") == before
+    assert ar.latest_key(store.keys("manifests/")) == f"manifests/{b}.json"
+    assert ia.missing_files(store.read_json(f"manifests/{b}.json")["runs"], store.exists) == []
+    assert not (tmp_path / "scratch" / "merge.lease.json").exists()
+    ab = run_key(a, b)
+    out = {"key": ab, "first": a, "last": b, "level": 1, "scans": [a, b]}
+    c = ia.carry("g", RANGES["k"])
+    assert ar.complete(store, c, out) == (where == "revision")
+    assert len(store.keys(f"{ab}/")) == {"build": 0, "upload": 5, "revision": len(store.keys(f"{ab}/"))}[where]
+
+    store.fail_after, store.fail_create = None, False
+    got = _ivmerge(store, tmp_path, build=build)
+    assert [(m["output"], m["manifest"]) for m in got["merged"]] == [(ab, f"manifests/{b}.m001.json")]
+    assert builds == [ab, *([] if where == "revision" else [ab])]
+    assert _run_files(store.root / ab) == _pairwise_files(world, served, ab)
+    assert _ivstack(store, f"manifests/{b}.m001.json") == [(ab, 1)]
+
+
+def test_a_merge_refuses_a_dir_holding_foreign_keys_and_a_run_lacking_a_file(world, laid, tmp_path):
+    a, b = _ids(world)[:2]
+    store = _ivstore(laid, tmp_path)
+    for s in (a, b):
+        ia.publish_run(store, s)
+    ab = run_key(a, b)
+    store.create(f"{ab}/stray.json", "{}")
+    with pytest.raises(RuntimeError) as e:
+        _ivmerge(store, tmp_path)
+    assert str(e.value) == f"{ab}/ holds 1 objects this merge doesn't write (e.g. {ab}/stray.json): not merging into it"
+    (store.root / ab / "stray.json").unlink()
+
+    def build(inner):
+        def b_(dirs, run, outp, **kw):
+            doc = inner(dirs, run, outp, **kw)
+            (outp / "served" / "slices.groups.parquet").unlink()
+            return doc
+        return b_
+
+    with pytest.raises(RuntimeError) as e:
+        _ivmerge(store, tmp_path, build=build)
+    assert str(e.value) == f"not publishing manifests/{b}.m001.json: listed runs lack ['{ab}/served/slices.groups.parquet']"
+    assert ar.latest_key(store.keys("manifests/")) == f"manifests/{b}.json"
+
+
+def test_a_publish_landing_mid_merge_is_rebased_onto(world, laid, tmp_path):
+    """The third and fourth scans publish while the L1 merge builds: its revision is of the fourth's manifest, then the
+    next carry (the L1 and the two L0s, one merge) is planned from it."""
+    a, b, c, d = _ids(world)
+    store = _ivstore(laid, tmp_path)
+    for s in (a, b):
+        ia.publish_run(store, s)
+
+    def build(inner):
+        def b_(dirs, run, outp, **kw):
+            for s in (c, d):
+                if not store.exists(f"manifests/{s}.json"):
+                    ia.publish_run(store, s)
+            return inner(dirs, run, outp, **kw)
+        return b_
+
+    got = _ivmerge(store, tmp_path, build=build)
+    ab, ad = run_key(a, b), run_key(a, d)
+    assert [(m["output"], m["manifest"]) for m in got["merged"]] == [(ab, f"manifests/{d}.m001.json"), (ad, f"manifests/{d}.m002.json")]
+    assert [_ivstack(store, f"manifests/{d}{x}.json") for x in ("", ".m001", ".m002")] == [
+        [(f"deltas/{s}", 0) for s in (a, b, c, d)], [(ab, 1), (f"deltas/{c}", 0), (f"deltas/{d}", 0)], [(ad, 2)]]
+    assert not store.exists(f"manifests/{b}.m001.json")
+
+
+def test_one_merger_at_a_time(world, laid, tmp_path):
+    """A held lease: nothing merges, nothing is written; a stale one (older than a Batch task can run) is taken over."""
+    a, b = _ids(world)[:2]
+    store = _ivstore(laid, tmp_path)
+    for s in (a, b):
+        ia.publish_run(store, s)
+    held = {"owner": "other", "at": (NOW - timedelta(hours=1)).isoformat()}
+    (tmp_path / "scratch").mkdir()
+    (tmp_path / "scratch" / "merge.lease.json").write_text(json.dumps(held))
+    listing = store.listing("")
+    assert _ivmerge(store, tmp_path) == {"held": held, "merged": [], "manifest": f"manifests/{b}.json"}
+    assert store.listing("") == listing
+    (tmp_path / "scratch" / "merge.lease.json").write_text(json.dumps({"owner": "other", "at": (NOW - timedelta(seconds=ar.LEASE_S + 1)).isoformat()}))
+    assert [m["manifest"] for m in _ivmerge(store, tmp_path)["merged"]] == [f"manifests/{b}.m001.json"]
+    assert not (tmp_path / "scratch" / "merge.lease.json").exists()
+
+
+def test_publish_refuses_a_rewrite_an_old_scan_and_a_run_without_its_files(world, laid, tmp_path):
+    a, b, c = _ids(world)[:3]
+    store = _ivstore(laid, tmp_path)
+    ia.publish_run(store, b)
+    with pytest.raises(SystemExit) as e:
+        ia.publish_run(store, b)
+    assert str(e.value) == f"manifests/{b}.json exists: manifests are never rewritten"
+    with pytest.raises(SystemExit) as e:
+        ia.publish_run(store, a)
+    assert str(e.value) == f"{a} is not past the generation's newest scan {b}"
+    (store.root / f"deltas/{c}/served/bysize.parquet").unlink()
+    with pytest.raises(SystemExit) as e:
+        ia.publish_run(store, c)
+    assert str(e.value) == f"not publishing manifests/{c}.json: listed runs lack ['deltas/{c}/served/bysize.parquet']"
+    assert ar.manifest_keys(store.keys("manifests/")) == [f"manifests/{b}.json"]
+
+
 # ── The chain: order, stages, jobs ─────────────────────────────────────────
 
 
@@ -343,97 +630,244 @@ def _cfg(**kw) -> ia.Config:
     return ia.Config(p, "g0")
 
 
-class Fake:
-    """The data bucket as a dict of keys, Batch as a log of submitted jobs (each stage's outputs appear when it runs)."""
+G1 = "interval-store/g1"
+NOW = datetime(2026, 8, 5, 1, 2, 3, tzinfo=timezone.utc)
 
-    def __init__(self, published: list[str], **cfg):
+
+def _l0(*ids: str) -> list[dict]:
+    return [{"key": f"deltas/{d}", "first": d, "last": d, "level": 0, "scans": [d]} for d in ids]
+
+
+class Fake:
+    """The data bucket as a dict of keys, Batch as a log of submitted jobs whose stages write their outputs: `ranges` its
+    range docs, `publish` `manifests/<D>.json` (the newest earlier manifest's runs + D's at level 0), `merge` what
+    `carry` writes (each due carry's `meta.json`, then a revision of the newest manifest). `fail`: stages whose job fails."""
+
+    def __init__(self, published: list[str], fail: tuple = (), **cfg):
         self.cfg = cfg
         self.keys: dict[str, dict] = {
-            "interval-store/g1/scans.json": {"scans": [{"id": "2026-08-03"}]},
+            f"{G1}/scans.json": {"scans": [{"id": "2026-08-03"}]},
             "interval-store/g0/ranges.json": {"k": 4},
         }
-        self.published = published
+        self.published, self.fail = published, fail
         self.jobs: list[tuple[str, dict]] = []
         self.log: list[str] = []
 
-    def run_job(self, name: str, spec: dict) -> None:
+    def manifests(self) -> list[str]:
+        return ar.manifest_keys([k.removeprefix(f"{G1}/") for k in self.keys if k.startswith(f"{G1}/manifests/")])
+
+    def stack(self, name: str) -> list[tuple[str, int]]:
+        return [(r["key"], r["level"]) for r in self.keys[f"{G1}/manifests/{name}"]["runs"]]
+
+    def run_job(self, name: str, spec: dict, wait: float | None = None) -> None:
         self.jobs.append((name, spec))
         stage = spec["labels"]["stage"]
-        d = name.split("-", 2)[2].rsplit("-", 1)[0]
-        d = next(x for x in self.published if x.lower().replace("t", "-") == d)
+        if stage in self.fail:
+            raise RuntimeError(f"Batch job {name}: FAILED")
+        words = _runnables(spec)[0][1].split()
+        d = words[words.index("-d") + 1] if "-d" in words else None
         if stage == "ranges":
             for i in range(4):
-                self.keys[f"interval-store/g1/deltas/{d}/ranges/r{i:04d}.json"] = {}
+                self.keys[f"{G1}/deltas/{d}/ranges/r{i:04d}.json"] = {}
         elif stage == "publish":
-            have = [k for k in self.keys if k.startswith("interval-store/g1/manifests/")]
-            prev = self.keys[sorted(have)[-1]]["runs"] if have else []
-            self.keys[f"interval-store/g1/manifests/{d}.json"] = {"runs": [*prev, {"scans": [d]}]}
+            prev = ar.latest_key(self.manifests(), before=d)
+            runs = self.keys[f"{G1}/{prev}"]["runs"] if prev else []
+            self.keys[f"{G1}/manifests/{d}.json"] = {"date": d, "runs": [*runs, *_l0(d)]}
+        elif stage == "merge":
+            while True:
+                key = self.manifests()[-1]
+                m = self.keys[f"{G1}/{key}"]
+                _, merges = ar.plan_carries(m["runs"])
+                if not merges:
+                    break
+                ins, out = merges[0]
+                self.keys[f"{G1}/{out['key']}/meta.json"] = {"scans": out["scans"]}
+                scan, rev = ar.parse_manifest(key.removeprefix("manifests/"))
+                self.keys[f"{G1}/manifests/{ar.manifest_name(scan, rev + 1)}"] = {**m, "runs": ar.rebase(m["runs"], [r["key"] for r in ins], out)}
+            if wait == 0:
+                raise ar.StillRunning(f"Batch job {name}: still running after 0s")
 
-    def runner(self, dry_run: bool = False) -> ia.Runner:
+    def runner(self, dry_run: bool = False, **kw) -> ia.Runner:
         return ia.Runner(
             cfg=_cfg(**self.cfg), exists=lambda k: k in self.keys,
             count=lambda prefix, suffix: sum(1 for k in self.keys if k.startswith(prefix) and k.endswith(suffix)),
             read_json=lambda k: self.keys[k], list_keys=lambda prefix: [k for k in self.keys if k.startswith(prefix)],
             published=lambda layouts, start: [s for s in self.published if s >= start], run_job=self.run_job,
-            prepare=lambda d: self.keys.__setitem__(f"interval-store/g1/deltas/{d}/scans.json", {}),
-            prune=lambda d: self.log.append(f"prune {d}"), log=self.log.append, dry_run=dry_run,
-            now=lambda: datetime(2026, 8, 5, 1, 2, 3, tzinfo=timezone.utc),
+            prepare=lambda d: self.keys.__setitem__(f"{G1}/deltas/{d}/scans.json", {}),
+            prune=lambda d: self.log.append(f"prune {d}"), log=self.log.append, dry_run=dry_run, now=lambda: NOW, **kw,
         )
+
+    def calls(self) -> list[tuple[str, str]]:
+        """Each job's stage and its runnables' commands, past the common prefix."""
+        return [(spec["labels"]["stage"], " ; ".join(c[1].removeprefix(f"{PREP} ") for c in _runnables(spec))) for _, spec in self.jobs]
+
+
+COMMON = "-b data -g g1 -R g0 -S scr"
+
+
+def _ranges(d: str) -> tuple[str, str]:
+    return ("ranges", f"ranges -d {d} -n 2 -M 90GB -p 16 {COMMON} -m /gcs/data")
+
+
+def _publish_r2(d: str) -> tuple[str, str]:
+    return ("publish", f"publish -d {d} -M 90GB -p 16 -s {COMMON} -m /gcs/data ; r2 -d {d} {COMMON}")
+
+
+def _r2(d: str, manifest: str | None = None) -> tuple[str, str]:
+    return ("r2", f"r2 -d {d}{f' -m {manifest}' if manifest else ''} {COMMON}")
+
+
+MERGE = ("merge", f"carry -M 90GB -p 16 {COMMON} -m /gcs/data")
 
 
 def test_the_chain_appends_strictly_in_scan_id_order():
-    from dt_cloud.static_runner import NotNext
-
     f = Fake(["2026-08-03", "2026-08-04", "2026-08-04T1236"])
-    with pytest.raises(NotNext, match=r"1 earlier published scan\(s\) pending: 2026-08-04"):
+    with pytest.raises(ar.NotNext, match=r"1 earlier published scan\(s\) pending: 2026-08-04"):
         f.runner().run("2026-08-04T1236")
-    with pytest.raises(NotNext, match="2026-08-05 is not published"):
+    with pytest.raises(ar.NotNext, match="2026-08-05 is not published"):
         f.runner().run("2026-08-05")
     assert f.runner().run("2026-08-04T1236", catch_up=True) == ["2026-08-04", "2026-08-04T1236"]
-    assert [n for n, _ in f.jobs] == [
-        "iv-ranges-2026-08-04-010203", "iv-publish-2026-08-04-010203",
-        "iv-ranges-2026-08-04-1236-010203", "iv-publish-2026-08-04-1236-010203",
-    ]
+    # Each scan publishes its own level-0 run; the merge stage, once after both, submits the carry (not waited on).
+    assert f.calls() == [_ranges("2026-08-04"), _publish_r2("2026-08-04"), _ranges("2026-08-04T1236"), _publish_r2("2026-08-04T1236"), MERGE]
+    assert [n for n, _ in f.jobs] == ["iv-ranges-2026-08-04-010203", "iv-publish-2026-08-04-010203", "iv-ranges-2026-08-04-1236-010203",
+                                      "iv-publish-2026-08-04-1236-010203", "iv-merge-2026-08-04-1236-010203"]
     assert [x for x in f.log if x.startswith("prune")] == ["prune 2026-08-04", "prune 2026-08-04T1236"]
-    # Done: a rerun only re-copies and prunes.
+    assert f.manifests() == ["manifests/2026-08-04.json", "manifests/2026-08-04T1236.json", "manifests/2026-08-04T1236.m001.json"]
+    assert [f.stack(n.removeprefix("manifests/")) for n in f.manifests()] == [
+        _stack(_l0("2026-08-04")), _stack(_l0("2026-08-04", "2026-08-04T1236")), [("deltas/2026-08-04_2026-08-04T1236", 1)]]
+    # Done: a rerun only re-copies and prunes, then copies the revision the detached merge published.
     f.jobs.clear()
     assert f.runner().run("2026-08-04T1236") == []
-    assert [n for n, _ in f.jobs] == ["iv-r2-2026-08-04-1236-010203"]
+    assert f.calls() == [_r2("2026-08-04T1236"), _r2("2026-08-04T1236", "2026-08-04T1236.m001")]
+
+
+def _stack(runs: list[dict]) -> list[tuple[str, int]]:
+    return [(r["key"], r["level"]) for r in runs]
 
 
 def test_the_chain_resumes_at_the_first_missing_stage():
     f = Fake(["2026-08-03", "2026-08-04"])
-    f.keys["interval-store/g1/deltas/2026-08-04/scans.json"] = {}
+    f.keys[f"{G1}/deltas/2026-08-04/scans.json"] = {}
     for i in range(4):
-        f.keys[f"interval-store/g1/deltas/2026-08-04/ranges/r{i:04d}.json"] = {}
+        f.keys[f"{G1}/deltas/2026-08-04/ranges/r{i:04d}.json"] = {}
     f.runner().run("2026-08-04")
-    assert [spec["labels"]["stage"] for _, spec in f.jobs] == ["publish"]
-    # Published but the copy not known done (a rerun): the copy alone, its own job.
+    assert f.calls() == [_publish_r2("2026-08-04")]
+    # Published but the copy not known done (a rerun): the copy alone, its own job; no carry due, no merge job.
     f.jobs.clear()
     f.runner().run("2026-08-04")
-    assert [spec["labels"]["stage"] for _, spec in f.jobs] == ["r2"]
+    assert f.calls() == [_r2("2026-08-04")]
+
+
+SCANS = ["2026-08-04", "2026-08-04T1236", "2026-08-05", "2026-08-07"]
+
+
+def test_publish_adds_level_0_runs_and_the_merge_stage_carries_them_later():
+    """Four scans with the merge stage off (`-M`): each publish adds only its level-0 run. The stage alone (`interval-store
+    merge`, waited on) then submits one merge job — the four runs into one L2, one N-way merge — and the R2 job for the
+    revision it published."""
+    f = Fake(["2026-08-03", *SCANS])
+    for d in SCANS:
+        assert f.runner(merge=False).run(d) == [d]
+    assert [f.stack(f"{d}.json") for d in SCANS] == [_stack(_l0(*SCANS[:i + 1])) for i in range(4)]
+    assert [c for c in f.calls() if c[0] == "merge"] == []
+    f.jobs.clear()
+    f.runner(merge_wait=None).carries()
+    assert f.calls() == [MERGE, _r2(SCANS[-1], f"{SCANS[-1]}.m001")]
+    assert f.stack(f"{SCANS[-1]}.m001.json") == [(f"deltas/{SCANS[0]}_{SCANS[-1]}", 2)]
+
+
+def test_a_waited_merge_reaches_r2_in_the_same_run_and_a_detached_one_with_the_next_scan():
+    f = Fake(["2026-08-03", *SCANS[:3]])
+    assert f.runner(merge_wait=None).run(SCANS[1], catch_up=True) == SCANS[:2]
+    ab = f"deltas/{SCANS[0]}_{SCANS[1]}"
+    assert f.calls()[-2:] == [MERGE, _r2(SCANS[1], f"{SCANS[1]}.m001")]
+    g = Fake(["2026-08-03", *SCANS[:3]])
+    g.runner().run(SCANS[1], catch_up=True)
+    assert g.calls()[-1] == MERGE
+    assert [m for m in g.log if "still running" in m] == [
+        "merge: Batch job iv-merge-2026-08-04-1236-010203: still running after 0s; it publishes its revision on GCS when done, "
+        "and R2 gets it with a later run"]
+    # The next scan's manifest builds on the revision: its R2 copy carries the merged run.
+    g.jobs.clear()
+    assert g.runner().run(SCANS[2]) == [SCANS[2]]
+    assert g.calls() == [_ranges(SCANS[2]), _publish_r2(SCANS[2])]
+    assert g.stack(f"{SCANS[2]}.json") == [(ab, 1), (f"deltas/{SCANS[2]}", 0)]
+
+
+def test_a_failed_merge_never_fails_the_run():
+    f = Fake(["2026-08-03", *SCANS[:2]], fail=("merge",))
+    assert f.runner(merge_wait=None).run(SCANS[1], catch_up=True) == SCANS[:2]
+    assert f.calls()[-1] == MERGE
+    assert [m for m in f.log if m.startswith("merge: failed")] == [
+        "merge: failed, not fatal (every listed run is whole; the next run plans again): Batch job iv-merge-2026-08-04-1236-010203: FAILED"]
+    assert f.manifests() == [f"manifests/{d}.json" for d in SCANS[:2]]
+    # A rerun (already appended) plans the carry again.
+    f.jobs.clear()
+    f.fail = ()
+    assert f.runner(merge_wait=None).run(SCANS[1]) == []
+    assert f.calls() == [_r2(SCANS[1]), MERGE, _r2(SCANS[1], f"{SCANS[1]}.m001")]
+
+
+def test_level_5_is_left_to_a_compaction():
+    """Two L4s never carry into an L5: the merge stage submits nothing and says a compaction is due."""
+    f = Fake(["2026-08-03"])
+    l4 = lambda a, b: {"key": f"deltas/{a}_{b}", "first": a, "last": b, "level": 4, "scans": [a, b]}  # noqa: E731
+    f.keys[f"{G1}/manifests/2026-08-07.json"] = {"date": "2026-08-07", "runs": [l4("2026-08-04", "2026-08-05"), l4("2026-08-06", "2026-08-07")]}
+    f.runner(merge_wait=None).carries()
+    assert (f.jobs, [m for m in f.log if m.startswith("merge")]) == (
+        [], ["merge: level 5 is due: compact into a new base generation (carries stop below it)"])
+
+
+def test_the_cli_merge_and_append_M(monkeypatch):
+    """`interval-store merge` exits 1 on a failure (the store as it was) and 0 once merged; `append -M` skips the stage;
+    `append` turns `NotNext` into exit 3."""
+    from click.testing import CliRunner
+
+    f = Fake(["2026-08-03", *SCANS[:2]])
+    f.runner(merge=False).run(SCANS[1], catch_up=True)
+    seen, errs = [], []
+    monkeypatch.setattr(ia, "ready", lambda profile: _cfg())
+    monkeypatch.setattr(ia, "gcs_runner", lambda cfg, **kw: seen.append(kw) or f.runner(**{k: v for k, v in kw.items() if k != "dry_run"}))
+    monkeypatch.setattr(ia, "err", errs.append)
+    f.fail, f.jobs = ("merge",), []
+    r = CliRunner().invoke(ia.merge_cmd, [])
+    assert (r.exit_code, errs) == (1, ["interval-store merge: Batch job iv-merge-2026-08-04-1236-010203: FAILED"])
+    f.fail, f.jobs = (), []
+    r = CliRunner().invoke(ia.merge_cmd, ["-w", "600"])
+    assert (r.exit_code, f.calls()) == (0, [MERGE, _r2(SCANS[1], f"{SCANS[1]}.m001")])
+    assert json.loads(r.output) == {"gen": "g1", "manifest": f"{G1}/manifests/{SCANS[1]}.m001.json", "dry_run": False}
+    f.jobs = []
+    r = CliRunner().invoke(ia.append_cmd, ["-M", SCANS[1]])
+    assert (r.exit_code, f.calls()) == (0, [_r2(SCANS[1])])
+    assert seen == [{"dry_run": False, "merge_wait": None}, {"dry_run": False, "merge_wait": 600.0},
+                    {"dry_run": False, "merge": False, "merge_wait": 0}]
+    errs.clear()
+    r = CliRunner().invoke(ia.append_cmd, ["2026-08-09"])
+    assert (r.exit_code, errs) == (3, ["interval-store append 2026-08-09: 2026-08-09 is not published (no path sort under the generation's layouts)"])
 
 
 def test_jobs_are_the_profiles_and_carry_the_cost_label(monkeypatch):
     monkeypatch.setenv("DISKY_LABELS", "app=disky,deployment=t")
-    f = Fake(["2026-08-03", "2026-08-04"])
+    f = Fake(["2026-08-03", "2026-08-04", "2026-08-04T1236"])
     f.runner().run("2026-08-04")
     f.runner().run("2026-08-04")  # published: the copy's own job
-    (_, ranges), (_, publish), (_, r2) = f.jobs
+    f.runner().run("2026-08-04T1236")  # then a carry: the merge job
+    (_, ranges), (_, publish), (_, r2), _, _, (_, merge) = f.jobs
     want = {"app": "disky", "deployment": "t", "component": "interval-store"}
-    for spec in (ranges, publish, r2):
+    for spec in (ranges, publish, r2, merge):
         assert spec["allocationPolicy"]["labels"] == want
         assert {k: spec["labels"][k] for k in ("purpose", "component", "gen")} == {"purpose": "interval-store", "component": "interval-store", "gen": "g1"}
     cmd = lambda s: s["taskGroups"][0]["taskSpec"]["runnables"][0]["container"]["commands"][1]  # noqa: E731
-    assert [s["taskGroups"][0]["taskCount"] for s in (ranges, publish, r2)] == [2, 1, 1]
+    assert [s["taskGroups"][0]["taskCount"] for s in (ranges, publish, r2, merge)] == [2, 1, 1, 1]
     assert cmd(ranges) == ("set -euo pipefail; mkdir -p /stage/tmp /stage/out && cd /stage && python3 -u -m dt_cloud.interval_append ranges "
                            "-d 2026-08-04 -n 2 -M 90GB -p 16 -b data -g g1 -R g0 -S scr -m /gcs/data")
     assert cmd(r2) == ("set -euo pipefail; mkdir -p /stage/tmp /stage/out && cd /stage && python3 -u -m dt_cloud.interval_append r2 "
                        "-d 2026-08-04 -b data -g g1 -R g0 -S scr")
-    assert r2["taskGroups"][0]["taskSpec"]["environment"] == {
-        "variables": {"STATIC_NAMES_BUCKET": "data", "STATIC_NAMES_SCRATCH": "scr", "R2_BUCKET": "r2b", "R2_ENDPOINT": "https://r2"},
-        "secretVariables": {"R2_ACCESS_KEY_ID": "projects/proj/secrets/kid/versions/latest", "R2_SECRET_ACCESS_KEY": "projects/proj/secrets/sec/versions/latest"},
-    }
+    assert cmd(merge) == ("set -euo pipefail; mkdir -p /stage/tmp /stage/out && cd /stage && python3 -u -m dt_cloud.interval_append carry "
+                          "-M 90GB -p 16 -b data -g g1 -R g0 -S scr -m /gcs/data")
+    assert r2["taskGroups"][0]["taskSpec"]["environment"] == R2_ENV
+    assert (merge["allocationPolicy"]["serviceAccount"]["email"], merge["allocationPolicy"]["instances"][0]["policy"]["machineType"],
+            "secretVariables" in merge["taskGroups"][0]["taskSpec"]["environment"]) == ("sa@x", "n2-highmem-16", False)
 
 
 def test_the_profile_drives_the_append(tmp_path):
@@ -469,7 +903,7 @@ def test_publish_and_the_r2_copy_are_one_task_in_order():
     assert [n for n, _ in f.jobs] == ["iv-ranges-2026-08-04-010203", "iv-publish-2026-08-04-010203"]
     _, spec = f.jobs[1]
     tg = spec["taskGroups"][0]
-    # Runnables run in order and stop at a failure: the publish (its runs, its check, the manifest last), then the
+    # Runnables run in order and stop at a failure: the publish (its run's cut, its check, the manifest last), then the
     # copy (the runs, its check, the manifest last). A retried task skips the written manifest (`-s`).
     assert _runnables(spec) == [
         ["-c", f"{PREP} publish -d 2026-08-04 -M 90GB -p 16 -s -b data -g g1 -R g0 -S scr -m /gcs/data"],
@@ -584,9 +1018,12 @@ class PruneGcs:
 
 
 def test_prune_deletes_the_earlier_states_in_parallel():
+    """Only the scratch bucket's earlier states: the merge lease beside them stays, and a merge's revision of the scan's
+    manifest changes nothing (the scan's own manifest says it is published)."""
     pre = "interval-store/g1"
     objs = [f"{pre}/state/{s}/{t}/r{i:04d}.parquet" for s in ("2026-08-03", "2026-08-04", "2026-08-05") for t in ia.TABLES for i in range(4)]
-    g = PruneGcs(objs, [f"{pre}/manifests/2026-08-05.json"], barrier=4, gone={f"{pre}/state/2026-08-03/sv/r0002.parquet"})
+    g = PruneGcs([*objs, f"{pre}/merge.lease.json"], [f"{pre}/manifests/2026-08-05.json", f"{pre}/manifests/2026-08-05.m001.json"], barrier=4,
+                 gone={f"{pre}/state/2026-08-03/sv/r0002.parquet"})
     doc = ia.prune_state(g, "g1", "2026-08-05", 4, bucket="data", scratch="scr", workers=4)
     old = [n for n in objs if "/2026-08-05/" not in n]
     assert sorted(g.deleted) == sorted(("scr", n) for n in old if n not in g.gone)

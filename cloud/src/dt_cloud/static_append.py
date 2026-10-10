@@ -31,6 +31,7 @@ import pyarrow.parquet as pq
 from click import IntRange, group, option
 
 from . import static_catalog as sc
+from .append_runner import COMPACT_LEVEL, StateIncomplete, latest_key, run_key, scans_of  # noqa: F401 — shared with the interval store
 from .hex_runs import HexRule, occurs, occurs_sql, rule_json
 from .static_profile import data_bucket, layouts as profile_layouts, scratch_bucket
 from .static_names import (
@@ -42,15 +43,6 @@ from .static_names import (
 CDELTA_SCHEMA = CINTERVAL_SCHEMA.append(pa.field("op", pa.int8(), nullable=False))
 #: A run's shards: about this many suffix rows each (the base's target).
 RUN_SHARD_ROWS = 50_000_000
-#: The binary counter folds runs into a new base generation (a compaction) at this level (2^5 = 32 scans).
-COMPACT_LEVEL = 5
-
-
-def run_key(first: str, last: str) -> str:
-    """A run's directory under the generation: `deltas/<first>` (one scan) or `deltas/<first>_<last>`."""
-    return f"deltas/{first}" if first == last else f"deltas/{first}_{last}"
-
-
 # ── 1. Coalesced append on the open versions ───────────────────────────────
 
 
@@ -416,10 +408,6 @@ def manifest(gen: str, base_scans: list[str], runs: list[dict]) -> dict:
 # ── 5. The open-version state: the newest complete day only ────────────────
 
 
-class StateIncomplete(Exception):
-    """`prune` refused: the scan's state is not complete (or its run not published), so nothing is deleted."""
-
-
 def prune_plan(objects: list[tuple[str, int]], prefix: str, k: int, published: bool, date: str) -> dict:
     """What `prune` deletes, from the scratch bucket's `(name, size)` listing under `<prefix>/state/`: every day
     before `date`, once `date`'s state is complete — all `k` ranges' `copen/r####.parquet` and `done/r####.json`,
@@ -453,20 +441,17 @@ def prune_plan(objects: list[tuple[str, int]], prefix: str, k: int, published: b
             "names": [n for d in drop for n in sorted(days[d]["names"])]}
 
 
-def prune_state(gcs, gen: str, date: str, k: int, *, bucket: str | None = None, scratch: str | None = None, dry_run: bool = False) -> dict:
+def prune_state(gcs, gen: str, date: str, k: int, *, bucket: str | None = None, scratch: str | None = None, dry_run: bool = False,
+                workers: int = 8) -> dict:
     """Delete every `state/<prev>/` (prev < `date`) of generation `gen` in the scratch bucket (the profile's,
-    nowhere else), once `date`'s state is complete and its run published (`prune_plan`). Idempotent: a rerun
-    finds nothing before `date`. `gcs`: a `google.cloud.storage.Client`. Returns the plan, `deleted` = objects."""
+    nowhere else), once `date`'s state is complete and its run published (`prune_plan`), `workers` deletes at a time
+    (`append_runner.prune_state`). Idempotent: a rerun finds nothing before `date`. `gcs`: a
+    `google.cloud.storage.Client`. Returns the plan, `deleted` = objects."""
+    from .append_runner import prune_state as prune
+
     prefix = f"{PREFIX}/{gen}"
-    bucket, scratch = bucket or data_bucket(), scratch or scratch_bucket()
-    objects = [(b.name, int(b.size or 0)) for b in gcs.list_blobs(scratch, prefix=f"{prefix}/state/")]
-    published = gcs.bucket(bucket).blob(f"{prefix}/manifests/{date}.json").exists()
-    plan = prune_plan(objects, prefix, k, published, date)
-    names = plan.pop("names")
-    if not dry_run and names:
-        sb = gcs.bucket(scratch)
-        sb.delete_blobs([sb.blob(n) for n in names], on_error=lambda blob: None)
-    return {**plan, "deleted": 0 if dry_run else len(names)}
+    return prune(gcs, prefix, date, lambda objects, published: prune_plan(objects, prefix, k, published, date),
+                 bucket=bucket or data_bucket(), scratch=scratch or scratch_bucket(), dry_run=dry_run, workers=workers)
 
 
 def rebuild_open(con, base_cintervals: str, cdeltas_oldest_first: list[str], out: Path) -> int:
@@ -506,19 +491,11 @@ def _gcs():
 
 def _latest_manifest(bucket: str, gen: str, before: str | None = None) -> dict | None:
     """The newest manifest of the generation (of a scan strictly before `before`, when given), or None: the greatest
-    `manifests/<id>.json` or merge revision `manifests/<id>.m<NNN>.json` (`static_merge`), which sort by scan, then
-    revision."""
+    `manifests/<id>.json` or merge revision `manifests/<id>.m<NNN>.json` (`append_runner.latest_key`), which sort by
+    scan, then revision."""
     prefix = f"{PREFIX}/{gen}/"
     keys = latest_key([b.name.removeprefix(prefix) for b in _gcs().list_blobs(bucket, prefix=f"{prefix}manifests/")], before)
     return read_json(f"gs://{bucket}/{prefix}{keys}") if keys else None
-
-
-def latest_key(keys: list[str], before: str | None = None) -> str | None:
-    """The newest manifest among generation-relative `keys` (of a scan strictly before `before`), or None."""
-    from .static_merge import manifest_keys, parse_manifest
-
-    ms = [k for k in manifest_keys(keys) if before is None or parse_manifest(k.removeprefix("manifests/"))[0] < before]
-    return ms[-1] if ms else None
 
 
 def _state(bucket: str, gen: str, date: str) -> tuple[dict, list[dict]]:
@@ -526,10 +503,6 @@ def _state(bucket: str, gen: str, date: str) -> tuple[dict, list[dict]]:
     base = read_json(f"gs://{bucket}/{PREFIX}/{gen}/scans.json")
     m = _latest_manifest(bucket, gen, before=date)
     return base, (m["runs"] if m else [])
-
-
-def _day_scans(base: dict, runs: list[dict]) -> list[str]:
-    return [*(s["id"] for s in base["scans"]), *(s for r in runs for s in r["scans"])]
 
 
 @cli.command("prepare")
@@ -542,7 +515,7 @@ def prepare_cmd(bucket, date, gen) -> None:
     from .static_names import _version_from_footer, list_scans
 
     base, runs = _state(bucket, gen, date)
-    have = _day_scans(base, runs)
+    have = scans_of(base, runs)
     # The base's layouts (its `scans.json`; gcs's when it names none), so a run's scan is found where the base's were.
     found = list_scans(bucket, layouts=base.get("layouts") or profile_layouts(), start=have[-1])["scans"]
     nxt = [s for s in found if s["id"] > have[-1]]
@@ -577,7 +550,7 @@ def append_cmd(bucket, date, force, gen, index, mount, mem, per_task, out, threa
     scan = read_json(f"gs://{bucket}/{run}/scans.json")["scans"][0]
     ranges = read_json(f"gs://{bucket}/{PREFIX}/{gen}/ranges.json")
     base, runs = _state(bucket, gen, date)
-    prev_day = _day_scans(base, runs)[-1]
+    prev_day = scans_of(base, runs)[-1]
     smount = str(Path(mount).parent / scratch)
     t = _task(index)
     todo = list(range(t * per_task, min((t + 1) * per_task, ranges["k"])))
@@ -665,11 +638,10 @@ def publish_run(store, date: str, rule: HexRule | None = None, dry_run: bool = F
     binary counter's merges run apart (`static_merge`), each published as a revision of the newest manifest, so a scan's
     publish takes seconds however big a carry it makes due. Refuses (`SystemExit`) a manifest that exists, whose runs lack
     a reader file, or whose drill covers fewer scans than the last's. Returns the manifest (dry run: and the carries due)."""
-    from .static_merge import plan_carries
+    from .append_runner import plan_carries, publish_scan
+    from .static_merge import drilled_runs, missing, refuse
 
     base = store.read_json("scans.json")
-    prev = latest_key(store.keys("manifests/"), before=date)
-    runs = store.read_json(prev)["runs"] if prev else []
     run = run_key(date, date)
     key = f"manifests/{date}.json"
     if store.exists(key):
@@ -677,27 +649,18 @@ def publish_run(store, date: str, rule: HexRule | None = None, dry_run: bool = F
     if not store.exists(f"{run}/catalog/meta.json"):
         raise SystemExit(f"{run}: no catalog yet")
     meta = {"rows": store.read_json(f"{run}/shards.json")["total_rows"], "bytes": sum(store.listing(f"{run}/sx/").values())}
-
-    def drill_meta(k: str) -> dict | None:
-        return store.read_json(f"{k}/drill/meta.json") if store.exists(f"{k}/drill/meta.json") else None
-
     new = {"key": run, "first": date, "last": date, "level": 0, "scans": [date], **meta}
-    after = [*runs, new]
-    drilled = {r["key"] for r in after if drill_meta(r["key"]) is not None}
-    doc = manifest(store.gen, [s["id"] for s in base["scans"]], after)
+    doc = lambda m, after: manifest(store.gen, [s["id"] for s in base["scans"]], after)  # noqa: E731
     if dry_run:
-        return {"manifest": doc, "carries_due": [[[r["key"] for r in ins], m["key"]] for ins, m in plan_carries(after, drilled)[1]]}
+        prev = latest_key(store.keys("manifests/"), before=date)
+        after = [*(store.read_json(prev)["runs"] if prev else []), new]
+        return {"manifest": doc({}, after), "carries_due": [[[r["key"] for r in ins], m["key"]] for ins, m in plan_carries(after, drilled_runs(store, after))[1]]}
     if not store.exists(f"{run}/meta.json"):
         store.create(f"{run}/meta.json", json.dumps({"gen": store.gen, "first": date, "last": date, "level": 0, "scans": [date], **meta,
                                                      **rule_json(rule)}, indent=1) + "\n")
     # A manifest only after every file of every run it lists exists (the readers need each tier whole), and never one
     # whose drill covers fewer scans than the last's.
-    if missing := missing_files(after, store.exists, drill_meta):
-        raise SystemExit(f"not publishing {key}: listed runs lack {missing}")
-    if lost := sorted(set(drill_scans(runs, drilled)) - set(drill_scans(after, drilled))):
-        raise SystemExit(f"not publishing {key}: its runs' drill would no longer cover {lost}")
-    store.create(key, json.dumps(doc, indent=1) + "\n")
-    return doc
+    return publish_scan(store, date, new, doc, lambda runs: missing(store, runs), lambda before, after: refuse(store, before, after))
 
 
 @cli.command("publish")
@@ -708,9 +671,9 @@ def publish_run(store, date: str, rule: HexRule | None = None, dry_run: bool = F
 def publish_cmd(bucket, date, gen, dry_run) -> None:
     """Add the scan's run (level 0) to the newest earlier manifest's runs and write `manifests/<D>.json`, last and once
     (`publish_run`). No carries: those run apart (`runs merge`)."""
-    from .static_merge import GcsRunStore
+    from .static_merge import gcs_store
 
-    print(json.dumps(publish_run(GcsRunStore(bucket, None, gen), date, gen_rule_at(bucket, gen), dry_run), indent=1))
+    print(json.dumps(publish_run(gcs_store(bucket, None, gen), date, gen_rule_at(bucket, gen), dry_run), indent=1))
 
 
 @cli.command("prune")

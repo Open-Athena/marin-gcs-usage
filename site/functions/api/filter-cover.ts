@@ -21,6 +21,7 @@ import { cacheEnvTag, cacheKeyFor, cacheMatch, cacheStore, serverTiming } from '
 import { storeKey, withStore } from '../_lib/stores.js'
 import { isScanId } from '../../src/scanSlug.js'
 import { indexedScan, noScan, scanArg } from '../_lib/scanArg.js'
+import { traceJoins } from '../_lib/shared.js'
 
 /** The most items a response lists; past it, none (`complete: false`). A deployment's `COVER_ITEMS_MAX` env
  *  overrides it (tests). */
@@ -44,6 +45,7 @@ export async function onRequestGet(ctx0: Ctx): Promise<Response> {
   const ctx = withStore(ctx0)
   if (ctx instanceof Response) return ctx
   const st = serverTiming()
+  traceJoins(ctx.env, st.trace)
   if (!storeReady(ctx.env)) return new Response('filter-cover API not configured (missing index store creds)', { status: 503 })
   const url = new URL(ctx.request.url)
   let date = url.searchParams.get('date') ?? ''

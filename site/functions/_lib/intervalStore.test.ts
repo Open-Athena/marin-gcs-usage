@@ -287,10 +287,11 @@ describe('interval store', () => {
   })
 })
 
-// Base + per-scan runs (specs/interval-store.md §2.7, `interval_append`): `g3` and `g4` hold `g1`'s six scans as a base
-// of four and a run per later scan — unmerged (two tiers) and merged into one by the binary counter — listed by the
-// newest `manifests/<scan>.json` (`fixtures/iv/gen.py tiered`). Every view must be `g1`'s, and a broken run is cut out,
-// never a failed request.
+// Base + per-scan runs (specs/interval-store.md §2.7, `interval_append`): `g3`, `g4` and `g6` hold `g1`'s six scans as a
+// base of four and a run per later scan — unmerged (two tiers), merged into one by the old inline pairwise carry, and
+// merged by the deferred carries (`append_runner`: each scan's manifest lists its level-0 run, a merge's revision
+// `2026-08-05.m001.json` the merged run) — listed by the newest manifest (`fixtures/iv/gen.py tiered`). Every view must be
+// `g1`'s, and a broken run is cut out, never a failed request.
 describe('interval store: base + runs', () => {
   const RUN_DATES = ['2026-08-04', '2026-08-05']
   // `rev`: a test's own isolate caches (state, footers, groups and broken runs are keyed by the generation's revision).
@@ -302,15 +303,36 @@ describe('interval store: base + runs', () => {
       const h = await openIndex(at(gen), date, 'path')
       return [h.asOf, h.gen, (h.runs ?? []).map(r => [r.run, r.gen, r.asOf])]
     }
-    expect(await Promise.all([shape('g3', '2026-08-03'), shape('g3', '2026-08-05'), shape('g4', '2026-08-04')])).toEqual([
+    expect(await Promise.all([shape('g3', '2026-08-03'), shape('g3', '2026-08-05'), shape('g4', '2026-08-04'), shape('g6', '2026-08-05')])).toEqual([
       [1785715200, 'iv:g3', [['deltas/2026-08-04', 'iv:g3/deltas/2026-08-04', 1785715200], ['deltas/2026-08-05', 'iv:g3/deltas/2026-08-05', 1785715200]]],
       [1785888000, 'iv:g3', [['deltas/2026-08-04', 'iv:g3/deltas/2026-08-04', 1785888000], ['deltas/2026-08-05', 'iv:g3/deltas/2026-08-05', 1785888000]]],
       [1785801600, 'iv:g4', [['deltas/2026-08-04_2026-08-05', 'iv:g4/deltas/2026-08-04_2026-08-05', 1785801600]]],
+      // the revision `2026-08-05.m001.json`, over its scan's own `2026-08-05.json`
+      [1785888000, 'iv:g6', [['deltas/2026-08-04_2026-08-05', 'iv:g6/deltas/2026-08-04_2026-08-05', 1785888000]]],
     ])
   })
 
-  for (const gen of ['g3', 'g4']) {
-    it(`serves every view of every scan as g1 does (${gen}: runs ${gen === 'g3' ? 'unmerged' : 'merged'})`, async () => {
+  it('takes a merge\'s revision over its scan\'s manifest, and reads the scan\'s own before the revision lands (deferred carries)', async () => {
+    const runs = async (e: Env) => ((await openIndex(e, '2026-08-05', 'path')).runs ?? []).map(r => r.run)
+    const reads: string[] = []
+    expect(await runs(at('g6', reads, undefined, { rev: 'rev-on' }))).toEqual(['deltas/2026-08-04_2026-08-05'])
+    expect(reads.filter(k => k.includes('/manifests/'))).toEqual(['interval-store/g6/manifests/2026-08-05.m001.json'])
+    const before = (k: string) => k.endsWith('/manifests/2026-08-05.m001.json')
+    expect(await runs(at('g6', [], before, { rev: 'rev-off' }))).toEqual(['deltas/2026-08-04', 'deltas/2026-08-05'])
+    // …and every view of every scan is g1's either way (the revision is the same scans, an equal stack).
+    for (const [rev, hide] of [['rev-views-on', undefined], ['rev-views-off', before]] as const) {
+      for (const c of cases.filter(x => x.w === 30 && x.depth == null)) {
+        const v = await buildView(at('g6', [], hide, { rev }), { date: c.date, path: c.path, w: c.w, h: c.h, minArea: 12, atten: 2 })
+        const got = flatten(v.tree)
+        if (c.v === 1) for (const n of Object.values(got)) delete n.f
+        const want = Object.fromEntries(Object.entries(c.tiles).map(([k, n]) => [k, n.f === null ? Object.fromEntries(Object.entries(n).filter(([f]) => f !== 'f')) : n]))
+        expect({ rev, case: [c.date, c.path], tiles: got }).toEqual({ rev, case: [c.date, c.path], tiles: want })
+      }
+    }
+  })
+
+  for (const gen of ['g3', 'g4', 'g6']) {
+    it(`serves every view of every scan as g1 does (${gen}: runs ${{ g3: 'unmerged', g4: 'merged pairwise', g6: 'merged, a revision' }[gen]})`, async () => {
       const e = at(gen)
       for (const c of cases) {
         const v = await buildView(e, { date: c.date, path: c.path, w: c.w, h: c.h, minArea: 12, atten: 2, ...(c.depth != null ? { maxDepth: c.depth } : {}) })
@@ -530,5 +552,5 @@ describe('interval store: base + runs', () => {
       }
     }
     expect(totals).toEqual({ cases: 450, candidates: 1839, pruned: 58, rows: 108595 })
-  })
+  }, 60_000)  // 450 cases over the fixture's sorts: seconds alone, past the 5 s default under the parallel suite
 })

@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { Env } from './auth'
 import { IV_JOIN, openIndex, slices } from './index'
+import { type Req, reqOf, withReq } from './shared'
 import type { OwnerScope } from './scope'
 import { LEDGER_KIND, sqliteD1 } from './testD1'
 import { type D1Variant, fixture, GETS, readJson, seedGeneration } from './testStore'
@@ -274,9 +275,9 @@ describe('interval store g5: a lens read joining a cancelled request\'s frozen r
       return { rows: d.rows.map(r => r.p.split('/').pop() === 'twin' ? { ...r, k: 'dir' } : r), totals: [d.total_a, d.total_b, d.objects_a, d.objects_b] }
     }],
   ]
-  const join0 = IV_JOIN.ms
-  beforeAll(() => { IV_JOIN.ms = 100 })
-  afterAll(() => { IV_JOIN.ms = join0 })
+  const join0 = { ...IV_JOIN }
+  beforeAll(() => { Object.assign(IV_JOIN, { min: 100, max: 100, cold: 100 }) })
+  afterAll(() => { Object.assign(IV_JOIN, join0) })
   const after = <T>(ms: number, v: T) => new Promise<T>(r => setTimeout(() => r(v), ms))
 
   for (const [stage, freeze] of STAGES) {
@@ -303,4 +304,91 @@ describe('interval store g5: a lens read joining a cancelled request\'s frozen r
       }, 10_000)
     }
   }
+})
+
+// The same, after a cancelled request froze at several stages at once — the state, a footer, footer groups and row
+// groups each its own memo: prod (2026-10-10) waited a fixed 10 s on each in turn, ~60 s, and later requests found
+// the ones it hadn't touched still there. Now the first dead entry a request joins convicts its owner (every entry
+// it owns is evicted) once that entry is `IV_JOIN`'s bound old, so the next request waits at most one bound, and a
+// third waits on nothing; a cancel (the request's abort signal) evicts them all at once, and nothing waits at all.
+describe('interval store g5: the requests after a cancelled read frozen at several stages', () => {
+  type Range = { offset: number; length: number } | { suffix: number }
+  const BOUND = 1000
+  const join0 = { ...IV_JOIN }
+  beforeAll(() => { Object.assign(IV_JOIN, { min: BOUND, max: BOUND, cold: BOUND, budget: 10 * BOUND }) })
+  afterAll(() => { Object.assign(IV_JOIN, join0) })
+  const after = <T>(ms: number, v: T) => new Promise<T>(r => setTimeout(() => r(v), ms))
+  const lens = { key: 'alice' }
+  const view = (e: Env) => buildView(e, { ...base, date: S3, path: '', lens }).then(a => storeKinds(a.tree))
+  const diff = (e: Env) => buildDiff(e, { ...base, from: S1, to: S3, path: '', top: 500, lens }).then(d => ({
+    rows: d.rows.map(r => r.p.split('/').pop() === 'twin' ? { ...r, k: 'dir' } : r), totals: [d.total_a, d.total_b, d.objects_a, d.objects_b],
+  }))
+  /** A store whose first request freezes at two stages at once: its prefetch of the sibling sort's footers (the
+   *  base's and the run's, `slices-bytotal`), and its read of the run's row group (`deltas/…/slices.parquet`). */
+  function freezing(rev: string) {
+    const stage = (k: string, r?: Range): string | null =>
+      /\/slices-bytotal\.groups\.parquet$/.test(k) && r && 'suffix' in r ? 'footer'
+        : /\/deltas\/[^/]+\/served\/slices\.parquet$/.test(k) ? 'row group' : null
+    const froze = new Set<string>()
+    let frozen = true
+    const bucket = r2()
+    const get0 = bucket.get.bind(bucket) as (k: string, o?: { range?: Range }) => Promise<unknown>
+    const env = {
+      ...iv,
+      INTERVAL_STORE_GEN: 'g5',
+      INTERVAL_STORE_REV: rev, // this test's own isolate caches
+      INDEX_R2: {
+        ...bucket,
+        get: (k: string, o?: { range?: Range }) => {
+          const s = stage(k, o?.range)
+          if (frozen && s) {
+            froze.add(s)
+            return new Promise(() => {})
+          }
+          return get0(k, o)
+        },
+      },
+    } as Env
+    return { env, froze, thaw: () => { frozen = false } }
+  }
+  const timed = async <T>(p: Promise<T>): Promise<[T, number]> => {
+    const t0 = performance.now()
+    const got = await p
+    return [got, performance.now() - t0]
+  }
+  const evicts = (r: Req, t: [string, string?][]) => { r.trace = (name, _ms, desc) => { if (name === 'join-evict') t.push([name, desc]) } }
+
+  it('the next request waits out one bound, the one after nothing; both answer exactly', async () => {
+    const [wantView, wantDiff] = [await view(perScan), await diff(perScan)]
+    const { env, froze, thaw } = freezing('chain')
+    void view(withReq(env)) // the cancelled request: never settles
+    for (let i = 0; i < 100 && froze.size < 2; i++) await after(20, null)
+    await after(50, null) // its other reads, started beside the frozen ones, register too
+    expect([...froze].sort()).toEqual(['footer', 'row group'])
+    thaw()
+    const b = withReq(env), c = withReq(env)
+    const tb: [string, string?][] = [], tc: [string, string?][] = []
+    evicts(reqOf(b)!, tb)
+    evicts(reqOf(c)!, tc)
+    const [gotB, msB] = await timed(view(b))
+    const [gotC, msC] = await timed(diff(c))
+    expect([gotB, gotC, tb.length, tc]).toEqual([wantView, wantDiff, 1, []])
+    expect([reqOf(b)!.waited <= BOUND, msB < 2 * BOUND, reqOf(c)!.waited, msC < BOUND]).toEqual([true, true, 0, true])
+  }, 30_000)
+
+  it('a cancel evicts its frozen reads at once: the next requests wait on nothing, and answer exactly', async () => {
+    const [wantView, wantDiff] = [await view(perScan), await diff(perScan)]
+    const { env, froze, thaw } = freezing('abort')
+    const ctl = new AbortController()
+    void view(withReq(env, ctl.signal))
+    for (let i = 0; i < 100 && froze.size < 2; i++) await after(20, null)
+    await after(50, null)
+    expect([...froze].sort()).toEqual(['footer', 'row group'])
+    ctl.abort()
+    thaw()
+    const b = withReq(env), c = withReq(env)
+    const [gotB, msB] = await timed(view(b))
+    const [gotC, msC] = await timed(diff(c))
+    expect([gotB, gotC, reqOf(b)!.waited, reqOf(c)!.waited, msB < BOUND, msC < BOUND]).toEqual([wantView, wantDiff, 0, 0, true, true])
+  }, 30_000)
 })
