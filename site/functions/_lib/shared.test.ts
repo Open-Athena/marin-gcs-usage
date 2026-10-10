@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { shared, snapshotsPrefix } from './shared'
+import { inFlight, shared, snapshotsPrefix } from './shared'
 
 describe('shared', () => {
   beforeEach(() => vi.useFakeTimers())
@@ -46,6 +46,50 @@ describe('shared', () => {
     await vi.advanceTimersByTimeAsync(200)
     expect(await settled).toBe('shared k: no result after 100 ms')
     expect(map.has('k')).toBe(false)
+  })
+
+  it('a joiner gives up on another request\'s entry after `joinMs`, its own computation after `waitMs`', async () => {
+    const map = new Map<string, Promise<number>>()
+    map.set('k', new Promise<number>(() => {}))
+    let calls = 0
+    const p = shared(map, 'k', () => new Promise<number>(r => { calls++; setTimeout(() => r(5), 1000) }), 5000, 100)
+    await vi.advanceTimersByTimeAsync(100)
+    expect(calls).toBe(1) // evicted at `joinMs`, recomputing; that wait is bounded by `waitMs`, not `joinMs`
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(await p).toBe(5)
+  })
+})
+
+describe('inFlight', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it('shares a computation while it runs, and drops it once settled', async () => {
+    const map = new Map<string, Promise<number>>()
+    let calls = 0
+    const make = async () => { calls++; return 4 }
+    expect(await Promise.all([inFlight(map, 'k', make, 100), inFlight(map, 'k', make, 100)])).toEqual([4, 4])
+    expect([calls, map.size]).toEqual([1, 0])
+  })
+
+  it('a joiner stuck on a frozen entry evicts it after `joinMs` and computes, unbounded, itself', async () => {
+    const map = new Map<string, Promise<number>>()
+    const frozen = new Promise<number>(() => {})
+    map.set('k', frozen)
+    let calls = 0
+    const p = inFlight(map, 'k', () => new Promise<number>(r => { calls++; setTimeout(() => r(6), 10_000) }), 100)
+    await vi.advanceTimersByTimeAsync(99)
+    expect(calls).toBe(0)
+    await vi.advanceTimersByTimeAsync(10_001)
+    expect([await p, calls, map.size]).toEqual([6, 1, 0])
+  })
+
+  it('a rejected entry rejects its joiners and leaves the map', async () => {
+    const map = new Map<string, Promise<number>>()
+    const make = () => Promise.reject(new Error('boom'))
+    const [a, b] = await Promise.allSettled([inFlight(map, 'k', make, 100), inFlight(map, 'k', make, 100)])
+    expect([a, b].map(x => x.status === 'rejected' && (x.reason as Error).message)).toEqual(['boom', 'boom'])
+    expect(map.size).toBe(0)
   })
 })
 

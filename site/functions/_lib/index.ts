@@ -32,7 +32,7 @@
 import { S3Store } from '@rdub/file-tree/stores/s3'
 import { type FileMetaData, parquetMetadata, parquetMetadataAsync, parquetRead, parquetReadObjects, type RowGroup } from 'hyparquet'
 import type { Env } from './auth.js'
-import { shared } from './shared.js'
+import { inFlight, shared, STALLED, within } from './shared.js'
 import { d1Variant, isPrimary, PRIMARY_STORE, storeKey } from './stores.js'
 import { compressors } from './zstd.js'
 
@@ -485,7 +485,7 @@ const IV_SIBLING = new Map([['path', 'bysize'], ['bysize', 'path'], ['slices', '
 const ivFooters = new Map<string, Promise<FooterIndex>>()
 function ivFooter(env: Env, file: string): Promise<FooterIndex> {
   const key = ivKey(env, `${IV_PREFIX}/${env.INTERVAL_STORE_GEN!}/served/${file}.groups.parquet`)
-  return shared(ivFooters, `${storeKey(env)}|${key}`, () => openIvFooter(env, key, r2Bytes(env.INDEX_R2!)), 30_000)
+  return shared(ivFooters, `${storeKey(env)}|${key}`, () => openIvFooter(env, key, r2Bytes(env.INDEX_R2!)), 30_000, IV_JOIN.ms)
 }
 
 /** `INDEX_R2` as a `ByteStore`. */
@@ -527,6 +527,11 @@ export const IV_STATE_TTL = 60_000
 /** How long a broken run stays cut out (then it is tried again: a publish caught mid-copy heals). */
 export const IV_BROKEN_TTL = 30_000
 const ivStates = new Map<string, { at: number; p: Promise<IvState>; ok?: IvState }>()
+/** How long a read waits on an interval-store promise another request started (its state, a handle, a footer or
+ *  footer group, a row group) before it evicts it and reads for itself. Workers freeze a cancelled request's
+ *  promises (`shared`): a viewer leaving a slow lens view left its handle or groups pending forever, and every
+ *  later read of them in the isolate waited on them with no response (gcs, 2026-10-10). A knob for tests. */
+export const IV_JOIN = { ms: 10_000 }
 const ivBroken = new Map<string, { at: number; error: string }>()
 const ivGenKey = (env: Env): string => `${storeKey(env)}|${env.INTERVAL_STORE_GEN}${ivRev(env)}`
 
@@ -621,11 +626,17 @@ async function loadIvState(env: Env): Promise<IvState> {
 
 /** The store's state, re-read once it is `IV_STATE_TTL` old (`IV_BROKEN_TTL` when cut); a failed re-read keeps
  *  serving the last good one. */
-function ivState(env: Env): Promise<IvState> {
+async function ivState(env: Env): Promise<IvState> {
   const k = ivGenKey(env)
   const cur = ivStates.get(k)
   const age = cur ? Date.now() - cur.at : Infinity
-  if (cur && age < (cur.ok?.cut ? IV_BROKEN_TTL : IV_STATE_TTL)) return cur.p
+  if (cur && age < (cur.ok?.cut ? IV_BROKEN_TTL : IV_STATE_TTL)) {
+    if (cur.ok) return cur.ok
+    // A load another request started: waited on up to `IV_JOIN`, then read afresh here.
+    const got = await within(cur.p, IV_JOIN.ms)
+    if (got !== STALLED) return got
+    if (ivStates.get(k) === cur) ivStates.delete(k)
+  }
   const last = cur?.ok
   const entry: { at: number; p: Promise<IvState>; ok?: IvState } = { at: Date.now(), p: Promise.resolve(null as unknown as IvState) }
   entry.p = loadIvState(env).then(
@@ -651,7 +662,7 @@ function ivRunFooter(env: Env, run: string, file: string): Promise<FooterIndex> 
     const [footer, data] = await Promise.all([openIvFooter(env, key, r2Bytes(env.INDEX_R2!)), typeof r2.head === 'function' ? r2.head(`${dir}/${file}.parquet`) : Promise.resolve(true)])
     if (!data) throw Object.assign(new Error(`${dir}/${file}.parquet: not found`), { name: 'NotFoundError' })
     return footer
-  }, 30_000)
+  }, 30_000, IV_JOIN.ms)
 }
 
 /** A served sort of the interval store as an index handle as of `date`'s scan (`pq` mode over its
@@ -699,7 +710,7 @@ export async function openInterval(env: Env, date: string, variant: string, retr
       const h: PqHandle = { mode: 'pq', file, env, date, variant, gen: `iv:${gen}${ivRev(env)}${sliced ? ':s' : ''}`, dir, schema, version, columns: variant === 'reads' ? null : rowColumns(version, schema), floor: null, footer, asOf, src, dataKey: key }
       if (!runs.length) return h
       return { ...h, runs: await Promise.all(runs.map(r => openIvRun(env, h, r.key, file0))) }
-    }, 300_000)
+    }, 300_000, IV_JOIN.ms)
   } catch (e) {
     // A run that won't open is cut out; the date is then the store's (an older run's or the base's) or per-scan.
     if (e instanceof IvTierBroken && !retried) return openInterval(env, date, variant, true)
@@ -1037,10 +1048,7 @@ const docsInFlight = new Map<string, Promise<{ groups: BlobGroup[]; json: [numbe
  *  plans on a group's bounds then wants its `rg_json`: reading the two apart would cost a round trip each. */
 async function ivFooterDoc(h: PqHandle, fg: FooterGroup): Promise<{ groups: BlobGroup[]; json: [number, string][] }> {
   const fk = (part: string) => `${storeKey(h.env)}|iv|${h.variant}|${h.gen}|${part}`
-  const k = fk(`fd:${fg.n}`)
-  const pending = docsInFlight.get(k)
-  if (pending) return pending
-  const p = (async () => {
+  return inFlight(docsInFlight, fk(`fd:${fg.n}`), async () => {
     const t0 = now()
     const ck = coloKey(h.env, h.footer.key, `fd=${fg.n}&d=${IV_FOOTER_DOC}`)
     const hit = await colo().match(ck)
@@ -1070,13 +1078,7 @@ async function ivFooterDoc(h: PqHandle, fg: FooterGroup): Promise<{ groups: Blob
     footerCache.put(fk(`fg:${fg.n}`), groups, groupsBytes(groups))
     footerCache.put(fk(`fj:${fg.n}`), json, jsonBytes(json))
     return { groups, json }
-  })()
-  docsInFlight.set(k, p)
-  try {
-    return await p
-  } finally {
-    docsInFlight.delete(k)
-  }
+  }, IV_JOIN.ms)
 }
 const groupsBytes = (gs: BlobGroup[]): number => gs.reduce((n, g) => n + 96 + 2 * (g.pMin.length + g.pMax.length), 0)
 const jsonBytes = (js: [number, string][]): number => js.reduce((n, [, j]) => n + 32 + 2 * j.length, 0)
@@ -1112,15 +1114,7 @@ async function footerOnce<T>(h: PqHandle, part: string, make: () => Promise<[T[]
   const k = `${storeKey(h.env)}|${h.asOf != null ? 'iv' : h.date}|${h.variant}|${h.gen}|${part}`
   const hit = footerCache.get<T>(k)
   if (hit) return hit
-  const pending = footersInFlight.get(k)
-  if (pending) return pending as Promise<T[]>
-  const p = make().then(([v, bytes]) => { footerCache.put(k, v, bytes); return v })
-  footersInFlight.set(k, p)
-  try {
-    return await p
-  } finally {
-    footersInFlight.delete(k)
-  }
+  return inFlight(footersInFlight, k, () => make().then(([v, bytes]) => { footerCache.put(k, v, bytes); return v as unknown[] }), IV_JOIN.ms) as Promise<T[]>
 }
 
 /** The stored metadata (`rg_json`) of one footer group's tier groups, by `rg` (cached per isolate). */
@@ -1633,7 +1627,14 @@ async function readGroupsCached<T>(h: IndexHandle, groups: { rg: number; json: s
       const pending = groupsInFlight.get(fk)
       if (pending) {
         h.trace?.('gshared', 1)
-        waits.push(pending.then(got => { if (got) take(i, g.rg, got, false) }))
+        // Up to `IV_JOIN`; a group its reader dropped (abandoned, failed, or frozen with its cancelled request) is
+        // read here instead — an empty slot would be rows silently missing from the answer.
+        waits.push(within(pending, IV_JOIN.ms).then(async got => {
+          if (got !== STALLED && got) return take(i, g.rg, got, false)
+          if (got === STALLED && groupsInFlight.get(fk) === pending) groupsInFlight.delete(fk)
+          if (stop?.()) return
+          out[i] = (await readGroupsCached(h, [g], f, stop, versions, pre))[0]
+        }))
         return
       }
       let resolve!: (g: IvGroup | null) => void
