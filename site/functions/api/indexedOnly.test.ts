@@ -295,7 +295,12 @@ describe('an anchored term on a generation with no anchors build (cw: `anchors=F
 describe('/api/filter-caps', () => {
   it('names the flag', async () => {
     const got = await Promise.all([envOf(true), envOf(false)].map(async env => (await caps({ request: new Request('http://localhost/api/filter-caps'), env } as never)).json()))
-    expect(got).toEqual([{ indexedOnly: true }, { indexedOnly: false }])
+    expect(got).toEqual([{ indexedOnly: true, rootLabel: 'root' }, { indexedOnly: false, rootLabel: 'root' }])
+  })
+  it('and the store root\'s label (`ROOT_LABEL`), the primary\'s or a secondary store\'s own', async () => {
+    const env = { ...envOf(true), ROOT_LABEL: 'marin CoreWeave (dev)', STORES_JSON: JSON.stringify({ meta: { vars: { ROOT_LABEL: 'our storage' } } }) } as Env
+    const got = await Promise.all(['', '?store=meta'].map(async qs => (await caps({ request: new Request(`http://localhost/api/filter-caps${qs}`), env } as never)).json()))
+    expect(got).toEqual([{ indexedOnly: true, rootLabel: 'marin CoreWeave (dev)' }, { indexedOnly: true, rootLabel: 'our storage' }])
   })
 })
 
