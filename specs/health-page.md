@@ -24,15 +24,15 @@ Sources, each optional (an unconfigured store is absent; no D1 = no per-scan / j
 
 The document (`src/healthModel.ts` `HealthDoc`, DOM-free, shared with the page):
 - `stores[]`: per store its read (gen, base scans, newest manifest, revision / `revises`, upload time, runs with `r2` and static `tiers`), plus `carries` (the due merges: `append_runner.plan_carries` ported as `planCarries`, drill-mixing and the compaction level respected), `compaction` (`run_scans` of `2^level`, highest run level, `due` when two adjacent runs sit at `level − 1`), `served` (the scans each tier serves: the base plus the runs up to the first one without the tier, the readers' cut rule) and `cut` (that first run).
-- `coverage[]`: per scan, cells `path`, `interval`, `light`, `drill`, `anchors`, `r2`, each `present | missing | pending | na`, and its `gaps`. `path` is the per-scan store or the interval store; a store's columns are expected from its base's first scan on (`na` before it, or when the tier isn't configured); a scan newer than a store's newest while its job is running is `pending`; `r2` is `missing` when a store lists the scan but its run isn't whole on R2.
-- `gaps`: missing counts per column; `freshness`: the newest scan and its age, and per store its newest scan, age, and last manifest upload's age.
+- `coverage[]`: per scan, cells `path`, `interval`, `light`, `drill`, `anchors`, `r2`, each `present | missing | pending | na`, and its `gaps`. `path` is the per-scan store or the interval store; a store's columns are expected from its base's first scan on (`na` before it, or when the tier isn't configured); a scan newer than a store's newest while its job is running is `pending` (its job matched by scan id over every `scan_runs` row, downstream jobs included, `started_ts` not needed; or, when some job is running, any scan newer than every store's newest); `r2` is `missing` when a store lists the scan but its run isn't whole on R2.
+- `gaps`: missing counts per column; `freshness`: the newest scan and its age (from its job's earliest `started_ts` when one is recorded, else the scan id's time: a date-only id is 00:00 UTC), and per store its newest scan, age, and last manifest upload's age.
 
 The compaction level is `COMPACT_LEVEL` (5, `append_runner`'s) unless the manifest carries `compact_level` (no profile key exists yet on `cloud`; the reader takes one when the runner writes it).
 
 ## Page: `/health`
 
 `src/HealthPage.tsx` (React Query `['health']`, 60 s refetch):
-- **Freshness**: the newest scan, each store's newest scan and last append, and the last scan job (status chip, start, duration, phase bar), from `/scans`' own fetch.
+- **Freshness**: the newest scan, each store's newest scan and last append, and the last scan job (status chip, start, duration, phase bar), from `/scans`' own fetch. Both pages order runs by `runTime` (`scanRunsModel.ts`): `started_ts`, else the scan id's time, else `updated_ts` — the in-job runs before `6842ed63` have `started_ts` NULL and sorted last.
 - **Window** (7d / 30d / 90d / all) for every timeline, and the legend.
 - **Per store**: facts (base span, runs, newest manifest and revision, newest scan), the compaction gauge, due carries, any cut tier, and the stack timeline: `base`, rows `L<level−1>` … `L0` (each run a shard over its scans' span; a due carry's output a `pending` shard on its level), and for the static index `drill` / `anch` rows (each tier dir present or missing). A run not whole on R2 is `missing`.
 - **Coverage per scan**: the gap counts, a coverage timeline (one row per live column, one shard per scan), and a table of the scans with gaps (or every scan), newest first.
@@ -46,9 +46,9 @@ Shared with `/scans` (`src/scanRunsUi.tsx`, extracted from `ScansPage.tsx`): the
 
 ## Tests
 
-- `src/healthModel.test.ts`: `planCarries` (N-way chained carry, drill-mixing, compaction level), `storeHealth` (due carry, gauge, served / cut), coverage over a fixture with a scan missing from the interval store and a drill-less static run (plus a run not whole on R2 cutting the light stack, and an unconfigured store), freshness, and the stack → shards layout (exact segments per row).
+- `src/healthModel.test.ts`: `planCarries` (N-way chained carry, drill-mixing, compaction level), `storeHealth` (due carry, gauge, served / cut), coverage over a fixture with a scan missing from the interval store and a drill-less static run (plus a run not whole on R2 cutting the light stack, and an unconfigured store), freshness, and the stack → shards layout (exact segments per row); a gcs-shaped fixture (2026-10-10) with NULL-`started_ts` running and succeeded rows: the running scan `pending` (gaps once its job stops), the unmatched-running-job fallback, ages from `started_ts`. `src/scanRunsModel.test.ts`: `runTime` ordering over NULL starts.
 - `functions/_lib/health.test.ts`: `/api/health` over a fake `INDEX_R2` and the cw-lineage D1: both stores, a revision manifest, the gaps, a broken run, a missing `scans.json`, no stores.
-- Mutation check (manual, each reverted): served-prefix → all runs, dropping the drill-mixing guard, carrying into the compaction level, never `pending`, ignoring `r2`, and an off-by-one span end each fail 1–4 tests.
+- Mutation check (manual, each reverted): served-prefix → all runs, dropping the drill-mixing guard, carrying into the compaction level, never `pending`, ignoring `r2`, and an off-by-one span end each fail 1–4 tests. The 10-10 fixes: reverting `summarize`'s sort to `started_ts ?? 0`, the pending rule to scan-id-only, and the ages to the scan id each fail (3 tests).
 
 ## Verification
 
