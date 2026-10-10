@@ -112,7 +112,7 @@ All runs were spot n2-highmem-16 in us-east1 through the deployment's `job/stati
 
 **Cost.** About 10 spot VM-hours ≈ $2.2, plus R2 egress of 7.7 GB ≈ $0.9, plus laptop reads of GCS for the cases and the reader (a few GB) ≈ $0.3–0.5. **≈ $3.5 in all.**
 
-- Per scan, the `anchors` stage is 12–17 min on one spot VM (~$0.05) and 40–90 MB to R2 (~$0.01). It runs after the drill today, so it adds to the per-scan wall time; it could run in parallel with it.
+- Per scan, the `anchors` stage is 12–17 min on one spot VM (~$0.05) and 40–90 MB to R2 (~$0.01). It runs beside the drill (`runs add` submits both at once, since 2026-10-10), so it adds nothing to the per-scan wall time while the drill is longer.
 - Storage: R2 +7.6 GB (~$0.11/month), GCS +9 GB.
 
 ## Heavy `^q`: graceful degradation (2026-10-09, branch `anchor-degrade`)

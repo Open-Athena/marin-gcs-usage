@@ -694,11 +694,21 @@ def publish_cmd(bucket, date, gen, mount, dry_run, tmp) -> None:
             outp = Path(tmp) / "merge" / m["key"]
             shutil.rmtree(outp, ignore_errors=True)
             dirs = [Path(mount) / prefix / r["key"] for r in ins]
+            t = monotonic()
+
+            def lap(what: str) -> None:
+                # each tier's merge time, so a slow publish shows which tier dominates
+                nonlocal t
+                err(f"publish {date}: {m['key']} {what} in {monotonic() - t:.0f}s")
+                t = monotonic()
             doc = merge_shards(dirs, outp)
+            lap(f"shards ({doc['rows']:,} rows)")
             membership = json.loads((dirs[-1] / "catalog" / "meta.json").read_text())["membership"]
             merge_catalogs([d / "catalog" for d in dirs], outp / "catalog", membership, gen_rule_at(bucket, gen))
+            lap("catalog")
             if all(r["key"] in drilled for r in ins):
                 merge_drills(dirs, outp / "drill", m, tmp)
+                lap("drill")
             # anchored search's tiers (`static_anchors`): merged when every input carries them (else the merged run has
             # none, and the anchored stack is cut there)
             if all((d / "anchors" / "meta.json").exists() for d in dirs):
@@ -707,12 +717,14 @@ def publish_cmd(bucket, date, gen, mount, dry_run, tmp) -> None:
                 meta_a = json.loads((dirs[-1] / "anchors" / "meta.json").read_text())
                 merge_run_local(connect(16, "100GB", tmp), [ATier(d) for d in dirs], ATier(outp), meta_a["R"], meta_a["K"], m["scans"],
                                 rule=rule_from_json(meta_a.get("hex_runs")))
+                lap("names + anchors")
             (outp / "meta.json").write_text(json.dumps({**m, **doc}, indent=1) + "\n")
             # a merged run is written once: an earlier attempt may have left only the same keys (overwritten here)
             ours = {f"{prefix}/{m['key']}/{f.relative_to(outp).as_posix()}" for f in outp.rglob("*") if f.is_file()}
             if stale := sorted(x.name for x in _gcs().list_blobs(bucket, prefix=f"{prefix}/{m['key']}/") if x.name not in ours):
                 raise SystemExit(f"{prefix}/{m['key']}/ holds {len(stale)} objects this merge doesn't write (e.g. {stale[0]}): not merging into it")
-            upload_tree(outp, bucket, f"{prefix}/{m['key']}")
+            up = upload_tree(outp, bucket, f"{prefix}/{m['key']}")
+            lap(f"upload ({len(up)} files, {sum(f['size'] for f in up) / 2**30:.1f} GiB)")
             shutil.rmtree(outp)
             m.update(rows=doc["rows"], bytes=doc["bytes"])
     doc = manifest(gen, [s["id"] for s in base["scans"]], after)
