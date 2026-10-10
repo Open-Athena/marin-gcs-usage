@@ -2,7 +2,9 @@
 skipping (a rerun resumes at the first missing output), and the Batch jobs it submits."""
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
+from threading import Barrier, Lock
 
 import pytest
 
@@ -44,12 +46,42 @@ def test_pending_scans_refuses(have, published, scan, msg):
     assert str(e.value) == msg
 
 
-class Fake:
-    """The data bucket as a dict of keys → JSON (or None), Batch as a recorder whose jobs write their stage's outputs."""
+#: The stages submitted at once (`Runner.concurrently`), in the order `_chain` lists them.
+CONCURRENT = ({"shards": 0, "catalog": 1}, {"drill": 0, "anchors": 1})
 
-    def __init__(self, keys: dict, published: list[str], k: int = 8):
+
+def canon(calls: list[tuple]) -> list[tuple]:
+    """`calls` with each run of adjacent stages from one concurrent pair in `_chain`'s order (their recorded order is a
+    race): a pair's jobs still sit between the stage before it and the one after."""
+    out = []
+    for c in calls:
+        group = next((g for g in CONCURRENT if c[0] in g), None)
+        j = len(out)
+        while group and j and out[j - 1][0] in group and group[out[j - 1][0]] > group[c[0]]:
+            j -= 1
+        out.insert(j, c)
+    return out
+
+
+class Fake:
+    """The data bucket as a dict of keys → JSON (or None), Batch as a recorder whose jobs write their stage's outputs.
+    `calls` lists them, each concurrent pair in `_chain`'s order (`canon`). `fail`: stages whose job fails (Batch FAILED,
+    nothing written); `silent`: stages whose job succeeds but writes nothing; `barrier`: stages whose job waits for all
+    of them to be in flight at once (else `BrokenBarrierError`)."""
+
+    def __init__(self, keys: dict, published: list[str], k: int = 8, fail: tuple = (), silent: tuple = (), barrier: tuple = ()):
         self.keys = {f"{ROOT}/scans.json": {"scans": [{"id": "2026-10-08T1801"}]}, f"{ROOT}/ranges.json": {"k": k}, **keys}
-        self.pub, self.calls = published, []
+        self.pub, self._calls, self.lock = published, [], Lock()
+        self.fail, self.silent = fail, silent
+        self.barrier = (barrier, Barrier(len(barrier), timeout=5)) if barrier else ((), None)
+
+    @property
+    def calls(self) -> list[tuple]:
+        return canon(self._calls)
+
+    @calls.setter
+    def calls(self, v: list[tuple]) -> None:
+        self._calls = v
 
     def runs(self, d: str) -> list[dict]:
         ms = sorted(k for k in self.keys if k.startswith(f"{ROOT}/manifests/"))
@@ -58,8 +90,16 @@ class Fake:
 
     def run_job(self, name: str, spec: dict) -> None:
         stage = spec["labels"]["stage"]
-        self.calls.append((stage, spec["taskGroups"][0]["taskCount"], spec["taskGroups"][0]["taskSpec"]["runnables"][0]["container"]["commands"][1]))
-        words = self.calls[-1][2].split()
+        call = (stage, spec["taskGroups"][0]["taskCount"], spec["taskGroups"][0]["taskSpec"]["runnables"][0]["container"]["commands"][1])
+        with self.lock:
+            self._calls.append(call)
+        if stage in self.barrier[0]:
+            self.barrier[1].wait()
+        if stage in self.fail:
+            raise RuntimeError(f"Batch job {name}: FAILED")
+        if stage in self.silent:
+            return
+        words = call[2].split()
         d = words[words.index("-d") + 1] if "-d" in words else None
         out = {"append": [f"{ROOT}/deltas/{d}/dhist/r{i:04d}.parquet" for i in range(8)], "shards": [f"{ROOT}/deltas/{d}/sidecar.parquet"],
                "catalog": [f"{ROOT}/deltas/{d}/catalog/meta.json"], "drill": [f"{ROOT}/deltas/{d}/drill/meta.json"],
@@ -73,8 +113,8 @@ class Fake:
         return sd.Runner(
             cfg=cfg, exists=lambda key: key in self.keys, count=lambda p, s: sum(1 for x in self.keys if x.startswith(p) and x.endswith(s)),
             read_json=lambda key: self.keys[key], published=lambda layouts, start: [s for s in self.pub if s > start],
-            run_job=self.run_job, prepare=lambda d: self.calls.append(("prepare", d)) or self.keys.__setitem__(f"{ROOT}/deltas/{d}/scans.json", None),
-            prune=lambda d: self.calls.append(("prune", d)), list_keys=lambda p: [x for x in self.keys if x.startswith(p)],
+            run_job=self.run_job, prepare=lambda d: self._calls.append(("prepare", d)) or self.keys.__setitem__(f"{ROOT}/deltas/{d}/scans.json", None),
+            prune=lambda d: self._calls.append(("prune", d)), list_keys=lambda p: [x for x in self.keys if x.startswith(p)],
             now=lambda: NOW, **{"log": lambda m: None, **kw})
 
 
@@ -289,7 +329,7 @@ def test_runs_follow_the_base_rule_and_log_a_differing_profile():
 ANCHORS = Profile(**{**DRILL.__dict__, "anchors": True})
 
 
-def test_the_anchors_stage_follows_the_drill_and_its_meta_is_copied_last():
+def test_the_anchors_stage_runs_beside_the_drill_and_its_meta_is_copied_last():
     d = "2026-10-09T0001"
     f = Fake({}, [d])
     f.daily(ANCHORS).run(d)
@@ -318,3 +358,88 @@ def test_an_appended_scan_without_its_anchors_gets_them_then_the_r2_copy():
     f = Fake({f"{ROOT}/manifests/{d}.json": {"runs": runs}, f"{ROOT}/deltas/{d}/drill/meta.json": None}, [d])
     assert f.daily(ANCHORS).run(d) == []
     assert f.calls == [_chain(d, [], drill=True, anchors=True)[5], _r2(d, ["2026-10-09", d]), ("prune", d)]
+
+
+def _done(d: str, *stages: str) -> dict:
+    """A run's outputs through shards ∥ catalog, and those of `stages` (`drill`, `anchors`)."""
+    run = f"{ROOT}/deltas/{d}"
+    out = {f"{run}/scans.json": None, **{f"{run}/dhist/r{i:04d}.parquet": None for i in range(8)}, f"{run}/sidecar.parquet": None,
+           f"{run}/catalog/meta.json": None}
+    return {**out, **{f"{run}/{s}/meta.json": None for s in stages}}
+
+
+def test_drill_and_anchors_are_in_flight_at_once():
+    """Each job waits at a two-party barrier: run one after the other, the first would wait alone and break it."""
+    d = "2026-10-09T0001"
+    logs = []
+    f = Fake({}, [d], barrier=("drill", "anchors"))
+    assert f.daily(ANCHORS, log=logs.append).run(d) == [d]
+    assert f.calls == _chain(d, [d], drill=True, anchors=True)
+    pair = [re.sub(r"\d+s$", "<n>s", m) for m in logs if m.startswith(f"{d} drill") or m.startswith(f"{d} anchors")]
+    assert sorted(pair) == [
+        f"{d} anchors: done in <n>s",
+        f"{d} drill (long ∥ short) ∥ anchors: done in <n>s",
+        f"{d} drill (long ∥ short) ∥ anchors: start",
+        f"{d} drill (long ∥ short): done in <n>s",
+    ]
+
+
+def test_an_appended_scan_missing_both_gets_them_at_once():
+    d = "2026-10-09T1236"
+    runs = [{"key": "deltas/2026-10-09", "scans": ["2026-10-09"]}, {"key": f"deltas/{d}", "scans": [d]}]
+    f = Fake({f"{ROOT}/manifests/{d}.json": {"runs": runs}}, [d], barrier=("drill", "anchors"))
+    assert f.daily(ANCHORS).run(d) == []
+    chain = _chain(d, [], drill=True, anchors=True)
+    assert f.calls == [chain[4], chain[5], _r2(d, ["2026-10-09", d]), ("prune", d)]
+
+
+@pytest.mark.parametrize("done, missing", [("drill", 5), ("anchors", 4)])
+def test_a_rerun_with_one_of_drill_and_anchors_built_runs_only_the_other(done, missing):
+    d = "2026-10-09T0001"
+    f = Fake(_done(d, done), [d])
+    assert f.daily(ANCHORS).run(d) == [d]
+    chain = _chain(d, [d], drill=True, anchors=True)
+    assert f.calls == [chain[missing], *chain[6:]]
+
+
+@pytest.mark.parametrize("fails, other", [("drill", "anchors"), ("anchors", "drill")])
+def test_a_failed_drill_or_anchors_fails_the_run_after_the_other_ends_and_a_rerun_resumes_it(fails, other):
+    """The other job runs to its end and its output is kept; nothing after the pair runs; a rerun submits only the failed one."""
+    d = "2026-10-09T0001"
+    f = Fake(_done(d), [d], fail=(fails,), barrier=("drill", "anchors"))
+    with pytest.raises(RuntimeError) as e:
+        f.daily(ANCHORS).run(d)
+    assert str(e.value) == f"Batch job sn-{fails}-2026-10-09-0001-123456: FAILED"
+    chain = _chain(d, [d], drill=True, anchors=True)
+    assert f.calls == chain[4:6]
+    assert (f"{ROOT}/deltas/{d}/{other}/meta.json" in f.keys, f"{ROOT}/deltas/{d}/{fails}/meta.json" in f.keys) == (True, False)
+    f.calls, f.fail, f.barrier = [], (), ((), None)
+    assert f.daily(ANCHORS).run(d) == [d]
+    assert f.calls == [chain[4 if fails == "drill" else 5], *chain[6:]]
+
+
+def test_both_failing_names_each():
+    """The drill's job fails; the anchors' succeeds without writing its `meta.json` (the post-check)."""
+    d = "2026-10-09T0001"
+    f = Fake(_done(d), [d], fail=("drill",), silent=("anchors",))
+    with pytest.raises(RuntimeError) as e:
+        f.daily(ANCHORS).run(d)
+    assert str(e.value) == (f"drill (long ∥ short): Batch job sn-drill-2026-10-09-0001-123456: FAILED; "
+                            f"anchors: {ROOT}/deltas/{d}/anchors/meta.json: not written (the task succeeded)")
+    assert f.calls == _chain(d, [d], drill=True, anchors=True)[4:6]
+
+
+def test_the_cli_exits_1_on_a_drill_or_anchors_failure(monkeypatch):
+    """`runs add`: a failure in the pair is a `RuntimeError`, which the CLI turns into exit 1."""
+    from click.testing import CliRunner
+
+    d = "2026-10-09T0001"
+    f = Fake(_done(d), [d], fail=("anchors",))
+    monkeypatch.setattr(sd, "ready", lambda p, gen: ANCHORS)
+    monkeypatch.setattr(sd, "profile", lambda: ANCHORS)
+    monkeypatch.setattr(sd, "gcs_runner", lambda cfg, **kw: f.daily(cfg))
+    errs = []
+    monkeypatch.setattr(sd, "err", errs.append)
+    r = CliRunner().invoke(sd.add_cmd, [d])
+    assert (r.exit_code, r.output) == (1, "")
+    assert errs == [f"static-names runs add {d}: Batch job sn-anchors-2026-10-09-0001-123456: FAILED"]

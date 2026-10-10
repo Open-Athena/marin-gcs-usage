@@ -125,4 +125,12 @@ describe('blocked: the view lists no matches to act on', () => {
       ['assign to me', 'stage for deletion'],
     ])
   })
+  it('no matches: no assign, stage or memo — the muted "no matches to act on", the reason in the tooltip', () => {
+    const why = actBlock({ none: true })!
+    expect([render(undefined, { blocked: why }), render(undefined, { blocked: why, canStage: false }), render(undefined, { blocked: why, canAssign: false })]).toEqual([
+      `<span class="bulkbar blocked"><span class="tt"><span class="act-st muted" tabindex="0">no matches to act on</span><span class="tt-tip"><span class="bb-tip">${why}</span></span></span></span>`,
+      `<span class="bulkbar blocked"><span class="tt"><span class="act-st muted" tabindex="0">no matches to act on</span><span class="tt-tip"><span class="bb-tip">${why}</span></span></span></span>`,
+      `<span class="bulkbar blocked"><span class="tt"><span class="act-st muted" tabindex="0">no matches to act on</span><span class="tt-tip"><span class="bb-tip">${why}</span></span></span></span>`,
+    ])
+  })
 })

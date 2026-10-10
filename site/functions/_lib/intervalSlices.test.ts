@@ -141,7 +141,7 @@ for (const GEN of ['g2', 'g5'] as const) {
         }
       }
       expect(drawn).toBe(49)
-    })
+    }, 60_000)  // every scan × scope against the per-scan reader: seconds alone, past the 5 s default under the parallel suite
 
     it('totals a root by owner as the per-scan reader does', async () => {
       for (const date of [S1, S2, S3]) {
@@ -248,6 +248,6 @@ for (const GEN of ['g2', 'g5'] as const) {
           }
         }
       }
-    })
+    }, 60_000)  // every scan × scope against the per-scan reader: seconds alone, past the 5 s default under the parallel suite
   })
 }
