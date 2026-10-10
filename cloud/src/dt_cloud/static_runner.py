@@ -1,12 +1,14 @@
 """`dt-cloud static-names runs add SCAN_ID`: append one scan to the static name index as a run (specs/static-append.md),
 in Python, so a deployment's scan job calls it directly (no `gcloud`: GCS and Batch over their APIs):
 
-    prepare → append (key ranges on Batch) → shards ∥ catalog → [drill (long ∥ short)] → publish (tier merges +
+    prepare → append (key ranges on Batch) → shards ∥ catalog → [drill (long ∥ short)] ∥ [anchors] → publish (tier merges +
       `manifests/<id>.json`) → R2 (each run the manifest lists, its `drill/meta.json` last; then a check that every
       served file of those runs is on R2; then the manifest, last) [→ verify] → prune
 
 The drill stage (the heavy-term drilldown, `static_drill`) runs when the profile says so (`drill`): one Batch job of two
-tasks, `build -k task` (task 0 the long kind, task 1 the short; the second to finish writes `meta.json`).
+tasks, `build -k task` (task 0 the long kind, task 1 the short; the second to finish writes `meta.json`). The anchors
+stage (`static_anchors run`, the profile's `anchors`) reads none of the drill's output (nor the drill its), so the two
+run at once; each keeps its own skip-if-done and post-check, and a failure of either fails the run once both end.
 
 The unit is a scan: any deployment may scan once a day, every 6 h, or once more on demand, and each scan is its own
 run (specs/scan-ids-not-dates.md). Scans are added **strictly in scan-id order**: given SCAN_ID, every published scan
@@ -29,6 +31,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from functools import partial
 from math import ceil
 from time import monotonic
 from typing import Callable
@@ -246,10 +249,8 @@ class Runner:
             self.log(f"{scan_id}: already appended; {'its drill, ' if self.cfg.drill else ''}the R2 copy and prune only")
             if scan_id == have[-1]:
                 runs = self.read_json(self.manifests()[-1])["runs"] if self.manifests() else []
-                if self.cfg.drill and f"deltas/{scan_id}" in {r["key"] for r in runs}:
-                    self.drill(scan_id)
-                if self.cfg.anchors and f"deltas/{scan_id}" in {r["key"] for r in runs}:
-                    self.anchors(scan_id)
+                if f"deltas/{scan_id}" in {r["key"] for r in runs}:
+                    self.drill_anchors(scan_id)
                 self.r2(scan_id)
                 self.stage(f"{scan_id} prune", lambda: self.prune(scan_id))
             return []
@@ -267,6 +268,36 @@ class Runner:
         self.log(f"{name}: start")
         fn()
         self.log(f"{name}: done in {monotonic() - t:.0f}s")
+
+    def concurrently(self, d: str, jobs: list[tuple[str, Callable[[], None]]]) -> None:
+        """`jobs` (`(label, fn)`, each a stage's job and its post-check) as one stage, at once (a lone one as itself). Each
+        runs to its end (a failure doesn't stop the other, whose output is kept, so a rerun resumes only the failed one);
+        then the failure is raised, or with several a `RuntimeError` naming each."""
+        if not jobs:
+            return
+        if len(jobs) == 1:
+            (label, fn), = jobs
+            self.stage(f"{d} {label}", fn)
+            return
+
+        def timed(label: str, fn: Callable[[], None]) -> None:
+            t = monotonic()
+            try:
+                fn()
+            except Exception as e:
+                self.log(f"{d} {label}: failed after {monotonic() - t:.0f}s: {e}")
+                raise
+            self.log(f"{d} {label}: done in {monotonic() - t:.0f}s")
+
+        def all_() -> None:
+            with ThreadPoolExecutor(len(jobs)) as ex:
+                futures = [(label, ex.submit(timed, label, fn)) for label, fn in jobs]
+            errs = [(label, e) for label, f in futures if (e := f.exception()) is not None]
+            if len(errs) == 1:
+                raise errs[0][1]
+            if errs:
+                raise RuntimeError("; ".join(f"{label}: {e}" for label, e in errs)) from errs[0][1]
+        self.stage(f"{d} {' ∥ '.join(label for label, _ in jobs)}", all_)
 
     def job(self, stage: str, scan_id: str, tasks: int, module: str, args: list[str], **kw) -> tuple[str, dict]:
         name = job_id(stage, scan_id, self.now())
@@ -293,26 +324,14 @@ class Runner:
             self.stage(f"{d} append ({n}/{k} ranges)", lambda: self.run_job(name, spec))
         # 3. shards ∥ catalog (both read only the run's `cdelta/`).
         jobs = []
-        if self.exists(f"{run}/sidecar.parquet"):
-            self.log(f"{d} shards: done")
-        else:
-            jobs.append(self.job("shards", d, 1, "static_append", ["shards", *g]))
-        if self.exists(f"{run}/catalog/meta.json"):
-            self.log(f"{d} catalog: done")
-        else:
-            jobs.append(self.job("catalog", d, 1, "static_append", ["catalog", *g]))
-        if jobs:
-            def both():
-                with ThreadPoolExecutor(len(jobs)) as ex:
-                    for f in [ex.submit(self.run_job, name, spec) for name, spec in jobs]:
-                        f.result()
-            self.stage(f"{d} shards ∥ catalog", both)
-        # 4. drill (the profile's `drill`): reads the run's `sx/`, `cdelta/` and catalog, and the earlier runs' drills.
-        if self.cfg.drill:
-            self.drill(d)
-        # 4b. anchors (the profile's `anchors`): the run's name index and `q$` / `^q$` rollups, over the earlier tiers'.
-        if self.cfg.anchors:
-            self.anchors(d)
+        for stage, done in (("shards", "sidecar.parquet"), ("catalog", "catalog/meta.json")):
+            if self.exists(f"{run}/{done}"):
+                self.log(f"{d} {stage}: done")
+            else:
+                jobs.append((stage, partial(self.run_job, *self.job(stage, d, 1, "static_append", [stage, *g]))))
+        self.concurrently(d, jobs)
+        # 4. drill ∥ anchors (the profile's `drill`, `anchors`): neither reads the other's output, so they run at once.
+        self.drill_anchors(d)
         # 5. publish: the binary counter's merges, then `manifests/<d>.json` (written once).
         if self.exists(f"{self.root}/manifests/{d}.json"):
             self.log(f"{d} publish: done")
@@ -331,12 +350,20 @@ class Runner:
         # 8. prune: only the newest complete open-version state is kept.
         self.stage(f"{d} prune", lambda: self.prune(d))
 
-    def drill(self, d: str) -> None:
-        """The run's `drill/`: one job of two tasks (long ∥ short), each on a whole machine; done once `meta.json` is there."""
+    def drill_anchors(self, d: str) -> None:
+        """The run's drill and anchors (each when the profile says so and its output is missing), at once: the drill reads
+        the run's `sx/`, `cdelta/`, `sidecar.parquet` and catalog and the earlier runs' `drill/`; the anchors the run's
+        `sx/` and `cdelta/` and the earlier tiers' `names/` and `anchors/`; neither the other's (publish, after both,
+        merges each)."""
+        self.concurrently(d, [j for j in (self.cfg.drill and self.drill(d), self.cfg.anchors and self.anchors(d)) if j])
+
+    def drill(self, d: str) -> tuple[str, Callable[[], None]] | None:
+        """The run's `drill/` job (None when it's done): one job of two tasks (long ∥ short), each on a whole machine;
+        done once `meta.json` is there."""
         run = f"{self.root}/deltas/{d}"
         if self.exists(f"{run}/drill/meta.json"):
             self.log(f"{d} drill: done")
-            return
+            return None
         vcpus = int(self.cfg.machine.rsplit("-", 1)[-1])
         args = ["build", "-g", self.cfg.gen, "-d", d, "-k", "task", "-M", f"{vcpus * 7700 * 3 // 4 // 1024}GB", "-p", str(vcpus)]
         name, spec = self.job("drill", d, 2, "static_drill", args)
@@ -345,16 +372,16 @@ class Runner:
             self.run_job(name, spec)
             if not self.exists(f"{run}/drill/meta.json"):
                 raise RuntimeError(f"{run}/drill/meta.json: not written (both tasks succeeded)")
-        self.stage(f"{d} drill (long ∥ short)", build)
+        return "drill (long ∥ short)", build
 
-    def anchors(self, d: str) -> None:
-        """The run's `names/` and `anchors/` (`static_anchors run`): one task; done once `anchors/meta.json` is there, and
-        `anchors/start/meta.json` (the starts-with catalog) when the base carries one."""
+    def anchors(self, d: str) -> tuple[str, Callable[[], None]] | None:
+        """The run's `names/` and `anchors/` job (`static_anchors run`; None when it's done): one task; done once
+        `anchors/meta.json` is there, and `anchors/start/meta.json` (the starts-with catalog) when the base carries one."""
         run = f"{self.root}/deltas/{d}"
         start = self.exists(f"{self.root}/anchors/start/meta.json")
         if self.exists(f"{run}/anchors/meta.json") and (not start or self.exists(f"{run}/anchors/start/meta.json")):
             self.log(f"{d} anchors: done")
-            return
+            return None
         vcpus = int(self.cfg.machine.rsplit("-", 1)[-1])
         args = ["run", "-g", self.cfg.gen, "-d", d, "-M", f"{vcpus * 7700 * 3 // 4 // 1024}GB", "-p", str(vcpus)]
         name, spec = self.job("anchors", d, 1, "static_anchors", args)
@@ -364,7 +391,7 @@ class Runner:
             for m in ("anchors/meta.json", *(("anchors/start/meta.json",) if start else ())):
                 if not self.exists(f"{run}/{m}"):
                     raise RuntimeError(f"{run}/{m}: not written (the task succeeded)")
-        self.stage(f"{d} anchors", build)
+        return "anchors", build
 
     def r2(self, d: str) -> None:
         """One job: `r2-copy` of each run the manifest lists (its liveness markers last: `drill/meta.json`, then the starts-with
@@ -434,7 +461,7 @@ def gcs_runner(cfg: Profile, *, dry_run: bool = False, verify_terms: str | None 
 @option("-t", "--verify-terms", help="Also run `runs verify` with this terms file (a gs:// URL)")
 @argument("scan_id")
 def add_cmd(catch_up: bool, gen: str | None, dry_run: bool, verify_terms: str | None, scan_id: str) -> None:
-    """Append SCAN_ID to the static name index: prepare → append → shards ∥ catalog → [drill] → publish → R2 → prune, each stage
+    """Append SCAN_ID to the static name index: prepare → append → shards ∥ catalog → [drill] ∥ [anchors] → publish → R2 → prune, each stage
     skipped when its output exists. Exit 3 when SCAN_ID is not published yet, or an earlier published scan is pending
     (without -c)."""
     cfg = ready(profile(), gen)
