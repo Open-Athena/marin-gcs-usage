@@ -151,6 +151,18 @@ def test_record_failure_keeps_phases_and_names_the_error():
     assert rows(s, "SELECT phase, started_ts, finished_ts FROM scan_run_phases") == [("listing", 100, 200)]
 
 
+def test_record_start_with_a_job_not_yet_running_keeps_the_start():
+    """`scan_run -S -B` reads the Batch job right after it starts: its events may not show RUNNING yet, and the job's
+    empty start must not clear the one `-S` stamps (the live cw runs had `started_ts` NULL)."""
+    s = sink()
+    job = {"name": "projects/p/locations/us-central1/jobs/job-x", "status": {"statusEvents": [
+        {"description": "Job state is set from QUEUED to SCHEDULED", "eventTime": "2026-10-10T12:00:40Z"}]}}
+    record(s, PROFILE, "2026-10-08", "uid-6", 1000, start=True, job=job)
+    record(s, PROFILE, "2026-10-08", "uid-6", 1600, phase="listing")
+    assert rows(s, "SELECT status, started_ts, job_name, region FROM scan_runs") == [("running", 1000, "job-x", "us-central1")]
+    assert rows(s, "SELECT phase, started_ts, finished_ts FROM scan_run_phases") == [("listing", 1000, 1600)]
+
+
 def test_record_nop_and_first_call_without_start():
     s = sink()
     record(s, PROFILE, "2026-10-08", "uid-3", 500, nop=True)

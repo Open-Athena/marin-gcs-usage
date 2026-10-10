@@ -591,7 +591,9 @@ def record(
         if exit_code:
             run = replace(run, failed_phase=failed_phase, error=error or f"exit {exit_code}")
     if job:
-        run = replace(run, **job_fields(profile, job, now))
+        # only what the job knows: one read just after start has no RUNNING event yet, and its None must not clear
+        # the start `-S` stamped
+        run = replace(run, **{k: v for k, v in job_fields(profile, job, now).items() if v is not None})
     new_phases: list[Phase] = []
     if phase:
         prev_end = max((p["finished_ts"] for p in phases if p.get("finished_ts") and p["phase"] not in profile.overlapped), default=None)
