@@ -33,7 +33,7 @@ remote = true
 enabled = true
 
 [vars]
-ROOT_LABEL = "marin CoreWeave"  # the store root's crumb label (`_lib/view.ts`)
+ROOT_LABEL = "Marin CoreWeave"  # the store root's crumb label (`_lib/view.ts`)
 # Deployment as configuration (the base's `vite.config.ts` reads these from
 # this file at build time; `src/stores.ts` registry key + client whoami source):
 STORE = "cw"                    # the store this build serves (`src/stores.ts`)
@@ -153,7 +153,7 @@ database_id = "7f1e1326-b879-4ecd-8621-846621c24f36"
 migrations_dir = "migrations/cw"
 
 [env.preview.vars]
-ROOT_LABEL = "marin CoreWeave (dev)"
+ROOT_LABEL = "Marin CoreWeave (dev)"
 # Response-cache namespace (`_lib/edgeCache.ts`): this stack shares prod's KV, so its keys carry their own tag;
 # pinned so dev.cw-s3.oa.dev and the `pages.dev` alias share one.
 CACHE_NS = "dev.cw-s3.oa.dev"
