@@ -1,6 +1,20 @@
 # Retiring the ch-store VM
 
-Status: **mostly executed** (2026-10-10): the VM and its disk are deleted, gcs's job scripts and dev vars are gone, and the code left `cloud` (step 9, tag `ch-store-final`; the specs `ch-store.md` and `filter-query-service*.md` moved to `done/`). Whether steps 6–8 and 10 (tunnel + DNS, the account-wide R2 token, GCS staging, local worktrees) ran is not recorded here; move this spec to `done/` once they have. Prepared 2026-10-09: Ryan agreed to retire the VM once the static name search has run on gcs prod for a few days. This spec is the inventory, the preconditions, and the ordered runbook. Every destructive step is marked **needs Ryan's go**.
+Status: **mostly executed** (2026-10-10). What ran, by runbook step:
+
+| Step | State |
+|---|---|
+| 1 Site stops referencing the box | done: gcs prod + dev drop every `QUERY_BOX_*` var (gcs `b667b554`); `/names` answers from the static index |
+| 2–3 Timer, containers | implied by step 5 |
+| 4 Keep what is not derived | **skipped, data lost**: the VM was deleted from gcs's own inventory before this runbook was read, with no snapshot and no `vm-final/` copy. The ~5 GB of non-derived `/data` artifacts (bench-*, hot-l1-catalog, dated-l1-*, hot-frequency-sweeps, prof, ch-native builds) are gone; what remains is `gs://oa-gcs-usage-dvx/scratch/bench/ch-store/` (1.6 GB: inputs, native-l2-stage, queries, scripts, src, static, test-checkout) and the conclusions in `done/ch-store.md` |
+| 5 Delete the VM and disk | done ~15:40 UTC (`job/ch-store.sh delete`); no instance or disk remains |
+| 6 Tunnel + DNS | done: `pulumi up -s gcs`, 3 deleted; `gcs-query.oa.dev` no longer resolves; the `query_host` block stays as an unset opt-in |
+| 7 Account-wide R2 token | **open**: the hash compare is impossible (`/data/r2-index.env` went with the disk); find it in the dashboard by elimination (not `gcs-static-index-r2-*`, m3's or the r2 demo's; likely created ~10-08/09 for the VM's static-names setup), then roll or delete it (Ryan) |
+| 8 GCS staging | **open**: now the only surviving copy, so the suggestion is to keep `scratch/bench/ch-store/` (1.6 GB) — Ryan's call |
+| 9 Code | done: `cloud` `c41a5778` (tag `ch-store-final` = `fc9aeec7`), gcs `b667b554` / `c1b91518` |
+| 10 Local and memory | **open**: worktrees `wt/ch-daily`, `wt/ch-retire`, `wt/ch-retire-gcs`, `wt/ch-store` (+ `tmp/wt-append`), `wt/ch-tunnel`, `wt/ch-remove`; branches `ch-daily`, `ch-remove`, `ch-retire`, `ch-retire-gcs`, `ch-store`, `ch-tunnel`; `tmp/ch-store-ip`. Memory `serving-box-owner` updated |
+
+Move this spec to `done/` once 7, 8 and 10 are settled. Prepared 2026-10-09: Ryan agreed to retire the VM once the static name search has run on gcs prod for a few days. This spec is the inventory, the preconditions, and the ordered runbook.
 
 The VM was the experiment platform for an append-only historical query service ([`ch-store.md`], [`filter-query-service.md`], [`serving-options.md`]). It ended up serving one production-adjacent thing, the name search, which now comes from the static name index on R2 (`specs/static-append.md` on `gcs`, `specs/architecture/static-name-search.md`). Nothing in gcs prod reads from the VM any more; its last jobs are the hourly `ch-daily` catch-up and, until the code change below, the R2 copy in `job/static-daily.sh`.
 
