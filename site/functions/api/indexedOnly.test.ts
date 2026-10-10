@@ -7,6 +7,8 @@ import { type FilterRejectCode, REJECT_MESSAGES, rejectQuery } from '../_lib/ind
 import { drillSource, type HitSource, injectedStores, SuffixHits, type StaticFilterStore } from '../_lib/staticFilter'
 import { type Blobs, scanAt, StaticNames } from '../_lib/staticNames'
 import { StaticCatalog } from '../_lib/staticCatalog'
+import { AnchoredSource } from '../_lib/staticAnchors'
+import type { Tiers } from '../_lib/staticRuns'
 import { onRequestGet as subtree } from './subtree'
 import { onRequestGet as diff } from './diff'
 import { onRequestGet as series } from './series'
@@ -251,6 +253,42 @@ describe('the map routes, flag set: a scan the static index doesn\'t cover', () 
   it('a supported literal answers byte for byte as unset', async () => {
     const [on, off] = await Promise.all([true, false].map(async f => (await subtree({ request: new Request(`http://localhost/api/x?date=${A}&path=bk&q=tomat`), env: envOf(f) })).text()))
     expect(on).toEqual(off)
+  })
+})
+
+describe('an anchored term on a generation with no anchors build (cw: `anchors=False`)', () => {
+  /** The static-filter fixture's light index (no `anchors/meta.json`) with the anchored reader wired as
+   *  `staticFilterStore` wires it; `maxRows` 0 makes every `q$` heavy. The fixture predates `catalog/`, so its
+   *  one light tier is handed to the anchored reader directly (`Tiers.state` would find none usable). */
+  const anchorless = (maxRows?: number): StaticFilterStore => {
+    const b = blobsOf(filterFiles), names = new StaticNames(b)
+    const light = { state: async () => ({ version: 'base', scans: [A, B], tiers: [{ dir: null, names }], manifest: null, hexRuns: null }) } as unknown as Tiers
+    return { source: new SuffixHits(names, { maxRows: 40, heavy: drillSource(blobsOf(drillFiles, { 'scans.json': { scans: [A, B].map(id => ({ id })) } })), anchored: new AnchoredSource(light, b, { maxRows }) }), scans: async () => [A, B], gen: 'fixture' }
+  }
+  const q = (term: string) => `q=${encodeURIComponent(term)}`
+  it('says so in words', () => {
+    expect(refusal('anchor-not-indexed')).toEqual([400, { error: 'Starts-with (^) and ends-with ($) search isn’t indexed on this deployment yet; search for a plain substring instead.', code: 'anchor-not-indexed' }])
+  })
+  it.each([[false], [true]])('`^q`, `^q$` and a heavy `q$` are `anchor-not-indexed` on subtree, diff and series (flag %s), never the walk', async flag => {
+    const env = envOf(flag, anchorless(0))
+    const got = await Promise.all(['^tomat', '^tomato$', 'mato$'].flatMap(term => [
+      call(subtree, `date=${A}&path=bk&${q(term)}`, env),
+      call(diff, `from=${A}&to=${B}&path=bk&${q(term)}`, env),
+      call(series, `path=bk&${q(term)}`, env),
+    ]))
+    expect(got).toEqual(Array(9).fill(refusal('anchor-not-indexed')))
+  })
+  it('a light `q$` answers from the light index, exactly (no approximate note)', async () => {
+    const j = await (await subtree({ request: new Request(`http://localhost/api/x?date=${A}&path=bk&${q('mato$')}`), env: envOf(false, anchorless()) })).json() as Record<string, unknown>
+    expect([j.approximate, j.approximateReason, (j.matchCount as { n: number }).n > 0]).toEqual([undefined, undefined, true])
+  })
+  it('mutation: without the anchorless check, `^q` falls through to the path-store walk (the bug) and is answered', async () => {
+    const spy = vi.spyOn(AnchoredSource.prototype as unknown as { anchorless(): Promise<boolean> }, 'anchorless').mockResolvedValue(false)
+    try {
+      const env = envOf(false, anchorless(0))
+      expect(await Promise.all([call(subtree, `date=${A}&path=bk&${q('^tomat')}`, env), call(series, `path=bk&${q('^tomat')}`, env)]))
+        .toEqual([[200, 'ok'], [400, { error: 'a filtered series needs its match roots (paths=)' }]])
+    } finally { spy.mockRestore() }
   })
 })
 

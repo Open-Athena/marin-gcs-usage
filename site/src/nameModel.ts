@@ -1,5 +1,6 @@
 import { isScanId, resolveScan } from './scanSlug'
 import { HOT_DATES, HOT_SCOPE, hotRequest, parseRootSummary, type HotBucket, type HotRequest, type HotResult, type HotView, type HotWeights } from './hotModel'
+import { REJECT_MESSAGES } from '../functions/_lib/indexedOnly'
 
 export type NamePlan = 'catalog' | 'bounded-name-postings'
 export interface NameQualification { qualification_dates: string[]; target: string; patterns: number; selection_contract: string; threshold_paths?: number; threshold_rows?: number; name_rows?: number; max_chars?: number | null; short_chars?: number }
@@ -255,6 +256,7 @@ export async function loadName(
     if (response.status === 400) {
       const body = await response.json().catch(() => null) as { code?: string } | null
       if (body?.code === 'scan-dirs-only') throw new Error(NAME_DIRS_SPLIT)
+      if (body?.code === 'anchor-not-indexed') throw new Error(REJECT_MESSAGES['anchor-not-indexed'])
     }
     throw new Error(response.status === 401 ? 'Sign in to view name summaries.' : response.status === 400
       ? availableDates ? 'This literal or scan is unavailable for the selected name-summary plan; it is not a zero-match result.' : 'Invalid name-summary request. Check the literal and frozen scan dates; this is not a zero-match result.'
