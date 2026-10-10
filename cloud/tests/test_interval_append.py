@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import random
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -335,17 +336,18 @@ def test_manifest_lists_the_runs_and_their_scans_stamps():
     assert ia.missing_files([{"key": "deltas/x"}], lambda k: not k.endswith("slices.groups.parquet")) == ["deltas/x/served/slices.groups.parquet"]
 
 
-def _cfg() -> ia.Config:
+def _cfg(**kw) -> ia.Config:
     p = Profile(name="t", layouts=("listing/{id}/path-index.parquet",), bucket="data", scratch="scr", gen="g1", r2_bucket="r2b",
                 r2_secrets={"key_id": "kid", "secret": "sec"}, r2_endpoint="https://r2", project="proj", region="us-east1", image="img",
-                sa="sa@x", append_tasks=2)
+                sa="sa@x", append_tasks=2, **kw)
     return ia.Config(p, "g0")
 
 
 class Fake:
     """The data bucket as a dict of keys, Batch as a log of submitted jobs (each stage's outputs appear when it runs)."""
 
-    def __init__(self, published: list[str]):
+    def __init__(self, published: list[str], **cfg):
+        self.cfg = cfg
         self.keys: dict[str, dict] = {
             "interval-store/g1/scans.json": {"scans": [{"id": "2026-08-03"}]},
             "interval-store/g0/ranges.json": {"k": 4},
@@ -369,7 +371,7 @@ class Fake:
 
     def runner(self, dry_run: bool = False) -> ia.Runner:
         return ia.Runner(
-            cfg=_cfg(), exists=lambda k: k in self.keys,
+            cfg=_cfg(**self.cfg), exists=lambda k: k in self.keys,
             count=lambda prefix, suffix: sum(1 for k in self.keys if k.startswith(prefix) and k.endswith(suffix)),
             read_json=lambda k: self.keys[k], list_keys=lambda prefix: [k for k in self.keys if k.startswith(prefix)],
             published=lambda layouts, start: [s for s in self.published if s >= start], run_job=self.run_job,
@@ -389,8 +391,8 @@ def test_the_chain_appends_strictly_in_scan_id_order():
         f.runner().run("2026-08-05")
     assert f.runner().run("2026-08-04T1236", catch_up=True) == ["2026-08-04", "2026-08-04T1236"]
     assert [n for n, _ in f.jobs] == [
-        "iv-ranges-2026-08-04-010203", "iv-publish-2026-08-04-010203", "iv-r2-2026-08-04-010203",
-        "iv-ranges-2026-08-04-1236-010203", "iv-publish-2026-08-04-1236-010203", "iv-r2-2026-08-04-1236-010203",
+        "iv-ranges-2026-08-04-010203", "iv-publish-2026-08-04-010203",
+        "iv-ranges-2026-08-04-1236-010203", "iv-publish-2026-08-04-1236-010203",
     ]
     assert [x for x in f.log if x.startswith("prune")] == ["prune 2026-08-04", "prune 2026-08-04T1236"]
     # Done: a rerun only re-copies and prunes.
@@ -405,13 +407,18 @@ def test_the_chain_resumes_at_the_first_missing_stage():
     for i in range(4):
         f.keys[f"interval-store/g1/deltas/2026-08-04/ranges/r{i:04d}.json"] = {}
     f.runner().run("2026-08-04")
-    assert [spec["labels"]["stage"] for _, spec in f.jobs] == ["publish", "r2"]
+    assert [spec["labels"]["stage"] for _, spec in f.jobs] == ["publish"]
+    # Published but the copy not known done (a rerun): the copy alone, its own job.
+    f.jobs.clear()
+    f.runner().run("2026-08-04")
+    assert [spec["labels"]["stage"] for _, spec in f.jobs] == ["r2"]
 
 
 def test_jobs_are_the_profiles_and_carry_the_cost_label(monkeypatch):
     monkeypatch.setenv("DISKY_LABELS", "app=disky,deployment=t")
     f = Fake(["2026-08-03", "2026-08-04"])
     f.runner().run("2026-08-04")
+    f.runner().run("2026-08-04")  # published: the copy's own job
     (_, ranges), (_, publish), (_, r2) = f.jobs
     want = {"app": "disky", "deployment": "t", "component": "interval-store"}
     for spec in (ranges, publish, r2):
@@ -441,3 +448,154 @@ def test_the_profile_drives_the_append(tmp_path):
         ia.load_config(str(p), {})
     gcs = ia.load_config("gcs", {})
     assert [gcs.p.gen, gcs.ranges_gen, gcs.p.bucket] == ["2026-10-09b", "2026-10-09", "oa-gcs-usage-dvx"]
+
+
+PREP = "set -euo pipefail; mkdir -p /stage/tmp /stage/out && cd /stage && python3 -u -m dt_cloud.interval_append"
+R2_ENV = {
+    "variables": {"STATIC_NAMES_BUCKET": "data", "STATIC_NAMES_SCRATCH": "scr", "R2_BUCKET": "r2b", "R2_ENDPOINT": "https://r2"},
+    "secretVariables": {"R2_ACCESS_KEY_ID": "projects/proj/secrets/kid/versions/latest", "R2_SECRET_ACCESS_KEY": "projects/proj/secrets/sec/versions/latest"},
+}
+
+
+def _runnables(spec: dict) -> list[str]:
+    return [r["container"]["commands"] for r in spec["taskGroups"][0]["taskSpec"]["runnables"]]
+
+
+def test_publish_and_the_r2_copy_are_one_task_in_order():
+    f = Fake(["2026-08-03", "2026-08-04"])
+    f.runner().run("2026-08-04")
+    assert [n for n, _ in f.jobs] == ["iv-ranges-2026-08-04-010203", "iv-publish-2026-08-04-010203"]
+    _, spec = f.jobs[1]
+    tg = spec["taskGroups"][0]
+    # Runnables run in order and stop at a failure: the publish (its runs, its check, the manifest last), then the
+    # copy (the runs, its check, the manifest last). A retried task skips the written manifest (`-s`).
+    assert _runnables(spec) == [
+        ["-c", f"{PREP} publish -d 2026-08-04 -M 90GB -p 16 -s -b data -g g1 -R g0 -S scr -m /gcs/data"],
+        ["-c", f"{PREP} r2 -d 2026-08-04 -b data -g g1 -R g0 -S scr"],
+    ]
+    assert [r["container"]["imageUri"] for r in tg["taskSpec"]["runnables"]] == ["img", "img"]
+    assert [tg["taskCount"], tg["taskSpec"]["maxRetryCount"], tg["taskSpec"]["environment"]] == [1, 3, R2_ENV]
+    assert [spec["labels"]["stage"], spec["allocationPolicy"]["serviceAccount"]["email"],
+            spec["allocationPolicy"]["instances"][0]["policy"]["machineType"]] == ["publish", "sa@x", "n2-highmem-16"]
+
+
+def test_publish_and_r2_stay_two_jobs_when_the_r2_account_differs():
+    f = Fake(["2026-08-03", "2026-08-04"], r2_sa="r2@x")
+    f.runner().run("2026-08-04")
+    (_, ranges), (_, publish), (_, r2) = f.jobs
+    assert [s["labels"]["stage"] for s in (ranges, publish, r2)] == ["ranges", "publish", "r2"]
+    assert [s["allocationPolicy"]["serviceAccount"]["email"] for s in (publish, r2)] == ["sa@x", "r2@x"]
+    assert _runnables(publish) == [["-c", f"{PREP} publish -d 2026-08-04 -M 90GB -p 16 -b data -g g1 -R g0 -S scr -m /gcs/data"]]
+    assert "secretVariables" not in publish["taskGroups"][0]["taskSpec"]["environment"]
+
+
+def test_ranges_are_assigned_longest_first_to_the_least_loaded_task():
+    #           r0 r1 r2 r3 r4 r5 r6 r7
+    counts = [8, 1, 1, 7, 2, 2, 3, 6]
+    plan = ia.assign_ranges(8, 3, counts)
+    assert plan == [[0, 5], [1, 3, 4], [2, 6, 7]]
+    assert [sum(counts[i] for i in p) for p in plan] == [10, 10, 10]
+    # The measured shape: the big ranges contiguous (r0 and r1 of 8 over 4 tasks). Blocks would put both in task 0.
+    counts = [8, 8, 1, 1, 1, 1, 1, 1]
+    assert ia.assign_ranges(8, 4, counts) == [[0], [1], [2, 4, 6], [3, 5, 7]]
+    # Ties go to the lower range, then the lower task: equal counts are the interleave.
+    assert ia.assign_ranges(7, 3, [5] * 7) == [[0, 3, 6], [1, 4], [2, 5]]
+    # No counts (the base, a run before them): interleaved.
+    assert ia.assign_ranges(10, 4, None) == [[0, 4, 8], [1, 5, 9], [2, 6], [3, 7]]
+    # Every range exactly once, more tasks than ranges included.
+    assert ia.assign_ranges(2, 3, [1, 2]) == [[1], [0], []]
+    with pytest.raises(ValueError, match="3 counts for 4 ranges"):
+        ia.assign_ranges(4, 2, [1, 2, 3])
+
+
+def test_a_ranges_cost_is_its_open_rows_from_the_previous_scans_docs():
+    doc = lambda n: {t: {"opened": 0, "closed": 0, "delta": 0, "open": n * (j + 1)} for j, t in enumerate(ia.TABLES)}  # noqa: E731
+    docs = {"r0000": doc(1), "r0001": doc(10), "r0002": doc(100)}
+    assert ia.open_counts(docs, 3) == [6, 60, 600]
+    assert ia.open_counts({k: v for k, v in docs.items() if k != "r0001"}, 3) is None
+    assert ia.open_counts({**docs, "r0002": {"pvl": {"open": 1}}}, 3) is None
+
+    class Blob:
+        def __init__(self, name):
+            self.name = name
+
+        def download_as_bytes(self):
+            return json.dumps(docs[Path(self.name).stem]).encode()
+
+    class Gcs:
+        listed: list[tuple[str, str]] = []
+
+        def list_blobs(self, bucket, prefix):
+            self.listed.append((bucket, prefix))
+            return [Blob(f"{prefix}{n}.json") for n in reversed(sorted(docs))]
+
+        def bucket(self, name):
+            assert name == "data"
+            return type("B", (), {"blob": lambda _, n: Blob(n)})()
+
+    g = Gcs()
+    assert ia.prev_open_counts(g, "data", "interval-store/g1", "2026-08-04T1236", 3) == [6, 60, 600]
+    assert g.listed == [("data", "interval-store/g1/deltas/2026-08-04T1236/ranges/")]
+    assert ia.prev_open_counts(g, "data", "interval-store/g1", "2026-08-04T1236", 4) is None
+
+
+class PruneGcs:
+    """The data bucket's manifests and the scratch bucket's state objects; deletes recorded per bucket. The first
+    `barrier` deletes wait for each other: run one at a time, they time out."""
+
+    def __init__(self, objects: list[str], manifests: list[str], barrier: int, gone: set[str] = frozenset(), timeout: float = 5):
+        self.objects, self.manifests, self.gone, self.timeout = objects, manifests, set(gone), timeout
+        self.deleted: list[tuple[str, str]] = []
+        self.lock = threading.Lock()
+        self.barrier = threading.Barrier(barrier)
+        self.n = 0
+
+    def list_blobs(self, bucket, prefix):
+        assert bucket == "scr"
+        return [type("O", (), {"name": n, "size": 10})() for n in self.objects if n.startswith(prefix)]
+
+    def bucket(self, bucket):
+        gcs = self
+
+        class Blob:
+            def __init__(self, name):
+                self.name = name
+
+            def exists(self):
+                assert bucket == "data"
+                return self.name in gcs.manifests
+
+            def delete(self):
+                from google.api_core.exceptions import NotFound
+
+                with gcs.lock:
+                    i = gcs.n
+                    gcs.n += 1
+                if i < gcs.barrier.parties:
+                    gcs.barrier.wait(timeout=gcs.timeout)
+                if self.name in gcs.gone:
+                    raise NotFound(self.name)
+                with gcs.lock:
+                    gcs.deleted.append((bucket, self.name))
+
+        return type("B", (), {"blob": lambda _, n: Blob(n)})()
+
+
+def test_prune_deletes_the_earlier_states_in_parallel():
+    pre = "interval-store/g1"
+    objs = [f"{pre}/state/{s}/{t}/r{i:04d}.parquet" for s in ("2026-08-03", "2026-08-04", "2026-08-05") for t in ia.TABLES for i in range(4)]
+    g = PruneGcs(objs, [f"{pre}/manifests/2026-08-05.json"], barrier=4, gone={f"{pre}/state/2026-08-03/sv/r0002.parquet"})
+    doc = ia.prune_state(g, "g1", "2026-08-05", 4, bucket="data", scratch="scr", workers=4)
+    old = [n for n in objs if "/2026-08-05/" not in n]
+    assert sorted(g.deleted) == sorted(("scr", n) for n in old if n not in g.gone)
+    assert doc == {"scan": "2026-08-05", "keep": ["2026-08-05"], "deleted": 24,
+                   "delete": [{"scan": "2026-08-03", "objects": 12, "bytes": 120}, {"scan": "2026-08-04", "objects": 12, "bytes": 120}]}
+    # One at a time, the deletes the barrier holds never meet.
+    g = PruneGcs(objs, [f"{pre}/manifests/2026-08-05.json"], barrier=2, timeout=0.2)
+    with pytest.raises(threading.BrokenBarrierError):
+        ia.prune_state(g, "g1", "2026-08-05", 4, bucket="data", scratch="scr", workers=1)
+    # Incomplete (no manifest): nothing deleted.
+    g = PruneGcs(objs, [], barrier=4)
+    with pytest.raises(ia.StateIncomplete, match="no manifest"):
+        ia.prune_state(g, "g1", "2026-08-05", 4, bucket="data", scratch="scr", workers=4)
+    assert g.deleted == []

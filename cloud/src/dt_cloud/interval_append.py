@@ -18,8 +18,10 @@ Per scan `D`, under `interval-store/<gen>/deltas/<D>/` (data bucket):
    Worker reads), carry the binary counter (two runs of one level merge into one a level up: per range
    `pyrmts.runs.merge_parquets` on the deltas, min-`vt`, then the merged run's own cut), then
    `manifests/<D>.json`, written once and only after every file of every run it lists exists.
-4. `r2` (one task, as the R2 account): each listed run's served files → R2, checked there, then the manifest.
-5. `prune` (local): every earlier scan's `state/` in the scratch bucket, once `D`'s is complete.
+4. `r2` (as the R2 account): each listed run's served files → R2, checked there, then the manifest. A second runnable
+   of the publish job's one task (one provisioning, not two), unless the R2 account is another service account; its
+   own job when the manifest already exists (a rerun).
+5. `prune` (local): every earlier scan's `state/` in the scratch bucket, once `D`'s is complete (parallel deletes).
 
 The base+runs reconstruction is exact, version for version, with a full rebuild through `D`
 (`test_interval_append.py`): the change keys are `build`'s, `wts` is carried as `build` and `fold` carry it (a
@@ -37,6 +39,8 @@ import os
 import shutil
 import sys
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from math import ceil
@@ -252,6 +256,51 @@ def run_meta(gen: str, run: dict, stamps: dict[str, int], docs: dict) -> dict:
             "bytes": sum(d["bytes"] + d["groups_bytes"] for d in docs.values()), "sorts": docs}
 
 
+# ── Key ranges → tasks ─────────────────────────────────────────────────────
+
+
+def assign_ranges(k: int, tasks: int, counts: list[int] | None) -> list[list[int]]:
+    """Each of `tasks` tasks' key ranges (of `k`), ascending. With `counts` (each range's open rows after the previous
+    scan, its cost): longest first, each to the least-loaded task (ties: the lower task), so the big ranges don't pile
+    up in one task as contiguous blocks do. Without: interleaved (task `t`: `t`, `t + tasks`, …). Deterministic: every
+    task computes the same plan and runs its own row of it."""
+    if counts is None:
+        return [list(range(t, k, tasks)) for t in range(tasks)]
+    if len(counts) != k:
+        raise ValueError(f"{len(counts)} counts for {k} ranges")
+    load = [0] * tasks
+    out: list[list[int]] = [[] for _ in range(tasks)]
+    for i in sorted(range(k), key=lambda i: (-counts[i], i)):
+        t = min(range(tasks), key=lambda t: (load[t], t))
+        out[t].append(i)
+        load[t] += counts[i]
+    return [sorted(o) for o in out]
+
+
+def open_counts(docs: dict[str, dict], k: int) -> list[int] | None:
+    """Each range's open rows (Σ over `TABLES`) from a scan's `ranges/r####.json` docs (by name), or None unless all `k`
+    are there with every table's count (a run before the counts, or the base: no docs)."""
+    out = []
+    for i in range(k):
+        d = docs.get(f"r{i:04d}")
+        if d is None or any(not isinstance(d.get(t), dict) or "open" not in d[t] for t in TABLES):
+            return None
+        out.append(sum(int(d[t]["open"]) for t in TABLES))
+    return out
+
+
+def prev_open_counts(gcs, bucket: str, prefix: str, prev: str, k: int, *, workers: int = 8) -> list[int] | None:
+    """`open_counts` of the previous scan's run (`<prefix>/deltas/<prev>/ranges/`), read in parallel."""
+    root = f"{prefix}/{run_key(prev, prev)}/ranges/"
+    b = gcs.bucket(bucket)
+    names = sorted(x.name for x in gcs.list_blobs(bucket, prefix=root) if x.name.endswith(".json"))
+    if len(names) < k:
+        return None
+    with ThreadPoolExecutor(workers) as ex:
+        docs = dict(zip((Path(n).stem for n in names), ex.map(lambda n: json.loads(b.blob(n).download_as_bytes()), names)))
+    return open_counts(docs, k)
+
+
 # ── The open-version state: the newest complete scan only ─────────────────
 
 
@@ -445,20 +494,38 @@ class Runner:
             mem = ["-M", f"{vcpus * 7700 * 3 // 4 // 1024}GB", "-p", str(vcpus)]
             name, spec = self.job("ranges", d, ceil(k / per), ["-d", d, "-n", str(per), *mem])
             self.stage(f"{d} ranges ({n}/{k})", lambda: self.run_job(name, spec))
-        # 3. publish: the run's cut, the counter's merges, then `manifests/<d>.json` (written once).
+        # 3. publish: the run's cut, the counter's merges, then `manifests/<d>.json` (written once); 4. R2: the runs the
+        # manifest lists, checked, then the manifest — one task's two runnables, so one provisioning.
         if self.exists(f"{self.root}/manifests/{d}.json"):
             self.log(f"{d} publish: done")
+            self.r2(d)
+        elif self.cfg.p.r2_sa in (None, "", self.cfg.p.sa):
+            name, spec = self.publish_job(d, r2=True)
+            self.stage(f"{d} publish+r2", lambda: self.run_job(name, spec))
         else:
-            vcpus = int(self.cfg.p.machine.rsplit("-", 1)[-1])
-            name, spec = self.job("publish", d, 1, ["-d", d, "-M", f"{vcpus * 7700 * 3 // 4 // 1024}GB", "-p", str(vcpus)])
+            # The R2 account is another service account: a job runs as one, so the copy is its own job.
+            name, spec = self.publish_job(d)
             self.stage(f"{d} publish", lambda: self.run_job(name, spec))
-        # 4. R2: the runs the manifest lists, checked, then the manifest.
-        self.r2(d)
+            self.r2(d)
         # 5. prune: only the newest complete open-version state is kept.
         self.stage(f"{d} prune", lambda: self.prune(d))
 
     def cfg_ranges_json(self) -> str:
         return f"{PREFIX}/{self.cfg.ranges_gen}/ranges.json"
+
+    def publish_job(self, d: str, r2: bool = False) -> tuple[str, dict]:
+        """The publish job; with `r2`, as the R2 account, its task's second runnable the R2 copy (Batch runs a task's
+        runnables in order and stops at a failed one, so the copy only follows a written manifest). A retried task's
+        publish skips a manifest it already wrote (`-s`), and the copy skips objects already on R2."""
+        vcpus = int(self.cfg.p.machine.rsplit("-", 1)[-1])
+        args = ["-d", d, "-M", f"{vcpus * 7700 * 3 // 4 // 1024}GB", "-p", str(vcpus), *(["-s"] if r2 else [])]
+        name, spec = self.job("publish", d, 1, args, r2=r2)
+        if r2:
+            ts = spec["taskGroups"][0]["taskSpec"]
+            copy = deepcopy(ts["runnables"][0])
+            copy["container"]["commands"] = ["-c", task_command(self.cfg, "r2", ["-d", d], mount=False)]
+            ts["runnables"].append(copy)
+        return name, spec
 
     def r2(self, d: str) -> None:
         if self.dry_run:
@@ -556,17 +623,32 @@ def prepare_scan(bucket: str, gen: str, scan: str, layouts: tuple[str, ...]) -> 
     return doc
 
 
-def prune_state(gcs, gen: str, scan: str, k: int, *, bucket: str, scratch: str, dry_run: bool = False) -> dict:
+def delete_objects(bucket, names: list[str], *, workers: int = 8) -> int:
+    """Delete `names` from `bucket` (a `google.cloud.storage.Bucket`) over `workers` threads (one request each; ≤ the
+    client's 10 pooled connections). One already gone is skipped; any other error raises. Returns the objects deleted."""
+    from google.api_core.exceptions import NotFound
+
+    def one(n: str) -> int:
+        try:
+            bucket.blob(n).delete()
+        except NotFound:
+            return 0
+        return 1
+
+    with ThreadPoolExecutor(workers) as ex:
+        return sum(ex.map(one, names))
+
+
+def prune_state(gcs, gen: str, scan: str, k: int, *, bucket: str, scratch: str, dry_run: bool = False, workers: int = 8) -> dict:
     """Delete every `state/<prev>/` (prev < `scan`) of generation `gen` in the scratch bucket (nowhere else), once
-    `scan`'s state is complete and its manifest published (`prune_plan`). Idempotent."""
+    `scan`'s state is complete and its manifest published (`prune_plan`), `workers` deletes at a time. Idempotent."""
     prefix = f"{PREFIX}/{gen}"
     objects = [(b.name, int(b.size or 0)) for b in gcs.list_blobs(scratch, prefix=f"{prefix}/state/")]
     published = gcs.bucket(bucket).blob(f"{prefix}/manifests/{scan}.json").exists()
     plan = prune_plan(objects, prefix, k, published, scan)
     names = plan.pop("names")
     if not dry_run and names:
-        sb = gcs.bucket(scratch)
-        sb.delete_blobs([sb.blob(n) for n in names], on_error=lambda blob: None)
+        delete_objects(gcs.bucket(scratch), names, workers=workers)
     return {**plan, "deleted": 0 if dry_run else len(names)}
 
 
@@ -613,8 +695,14 @@ def ranges_cmd(bucket, gen, ranges_gen, scratch, scan, force, index, mount, mem,
     prev = _scans_of(base, runs)[-1]
     smount = str(Path(mount).parent / scratch)
     t = sn._task(index)
-    todo = list(range(t * per_task, min((t + 1) * per_task, ranges["k"])))
-    b, sb = _gcs().bucket(bucket), _gcs().bucket(scratch)
+    k = ranges["k"]
+    # Balanced by the previous scan's open rows (a range's cost), else interleaved: tasks = the job's.
+    counts = prev_open_counts(_gcs(), bucket, prefix, prev, k) if runs else None
+    plan = assign_ranges(k, ceil(k / per_task), counts)
+    todo = plan[t] if t < len(plan) else []
+    err(f"ranges task {t}: {len(todo)} ranges" + (f", {sum(counts[i] for i in todo):,} open rows at {prev} (max task "
+                                                  f"{max(sum(counts[i] for i in p) for p in plan):,})" if counts else ", interleaved"))
+    b = _gcs().bucket(bucket)
     con = sn.connect(threads, mem, tmp)
     for i in todo:
         name = f"r{i:04d}"
@@ -656,17 +744,21 @@ def _cut_and_upload(con, bucket: str, prefix: str, run: dict, stamps: dict[str, 
 @option("-M", "--mem", default="100GB", help="DuckDB memory limit")
 @option("-n", "--dry-run", is_flag=True, help="Print the merges and manifest; write nothing")
 @option("-p", "--threads", default=16, type=int, help="DuckDB threads")
+@option("-s", "--skip-published", is_flag=True, help="Exit 0 when `manifests/<D>.json` exists (a retried publish+r2 task goes on to the copy)")
 @option("-T", "--tmp", default="/stage/tmp", help="Scratch dir")
-def publish_cmd(bucket, gen, ranges_gen, scratch, scan, mount, mem, dry_run, threads, tmp) -> None:
+def publish_cmd(bucket, gen, ranges_gen, scratch, scan, mount, mem, dry_run, threads, skip_published, tmp) -> None:
     """Cut the run's served sorts (`deltas/<D>/served/`, then its `meta.json`), carry the binary counter (each merge a
     new run dir: its deltas, its cut, its `meta.json`), then write `manifests/<D>.json` once, after checking every
     file of every run it lists. A level reaching `COMPACT_LEVEL` is reported: time for a new base generation."""
     prefix = f"{PREFIX}/{gen}"
+    key = f"{prefix}/manifests/{scan}.json"
+    b = _gcs().bucket(bucket)
+    if skip_published and b.blob(key).exists():
+        err(f"{key}: published")
+        return
     base, runs = _state(bucket, gen, scan)
     if _scans_of(base, runs)[-1] >= scan:
         raise SystemExit(f"{scan} is not past the generation's newest scan {_scans_of(base, runs)[-1]}")
-    key = f"{prefix}/manifests/{scan}.json"
-    b = _gcs().bucket(bucket)
     if b.blob(key).exists():
         raise SystemExit(f"{key} exists: manifests are never rewritten")
     k = read_json(f"gs://{bucket}/{PREFIX}/{ranges_gen}/ranges.json")["k"]
@@ -731,8 +823,6 @@ def r2_cmd(bucket, gen, ranges_gen, scratch, scan, workers) -> None:
     """Copy the served files of every run `manifests/<D>.json` lists GCS → R2 (objects already there with the same size
     and md5 skipped), check every one is there, then copy the manifest, last. R2 via `R2_ENDPOINT`, `R2_BUCKET` and
     AWS_* (or R2_*) keys."""
-    from concurrent.futures import ThreadPoolExecutor
-
     from . import publish as pub
 
     prefix = f"{PREFIX}/{gen}"
