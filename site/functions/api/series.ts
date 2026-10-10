@@ -181,12 +181,14 @@ export const onRequestGet = async (ctx0: Ctx & { waitUntil?: (p: Promise<unknown
   // or a rollup under an owner pool (rollups carry no owners).
   const found = skey ? await st.time('static', sfs!.source.hits(skey, path)) : null
   const shits = found?.rollup && owner ? null : found
-  // The scans it is exact on: the drilldown's are its base generation's.
+  // The scans it is exact on: the drilldown's are its base generation's, less the dir-only ones (a v1 source
+  // lists no files, so a name's total there reads ~0 — a gap, not a point).
   const sscans = shits ? new Set(shits.scans ?? await sfs!.scans()) : null
+  if (sscans) for (const d of await sfs!.dirOnly?.() ?? []) sscans.delete(d)
   // Indexed-only: no answer is `scan-not-indexed` (never the client's roots read per scan).
   if (query && strict && !shits) return new Response(rejectBody(reject('scan-not-indexed')), { status: 400, headers: { 'content-type': 'application/json' } })
   if (query && !shits && !paths.length) return json({ error: 'a filtered series needs its match roots (paths=)' }, 400)
-  /** Indexed-only: the scans the answer doesn't cover (gaps in the series, named). */
+  /** The scans a static answer doesn't cover: gaps in the series, named (indexed-only or not). */
   const unindexed: string[] = []
   const indexable = !split && !lens && !owner && !classes && !shits
   const lines = indexable ? await st.time('overtime', Promise.all((paths.length ? paths : [path]).map(p => readOverTime(env, p)))) : []
@@ -205,9 +207,9 @@ export const onRequestGet = async (ctx0: Ctx & { waitUntil?: (p: Promise<unknown
         const t = shits.rollup ? rollupTotal(shits.rollup, date) : liveTotal(shits.hits, date, u => ownerOk(u, owner))
         return { date, b: t.b, o: t.o }
       }
-      // A scan the answer doesn't cover: the client's match roots (`paths=`), unless they come from a rollup,
-      // which lists only some of them (a gap, not a wrong point).
-      if (shits && (!paths.length || shits.rollup || strict)) { if (strict) unindexed.push(date); return null }
+      // A scan the static answer doesn't cover: a gap, named — never the current scan's match roots read on
+      // it (another scan's roots, or a rollup's few) nor a zero.
+      if (shits) { unindexed.push(date); return null }
       const covered = ot ? overTimePoint(ot, date) : undefined
       if (covered !== undefined) return covered && { date, ...covered }
       if (split) {

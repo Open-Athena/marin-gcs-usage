@@ -2258,6 +2258,9 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
   --dt-ts-window-edge: rgb(255 255 255 / 0.4);
 }
 
+// Size over time: the scans a filter's index doesn't cover (gaps in the line).
+.gap-note { color: var(--ink-3); font-size: 0.85em; margin: 2px 0 0; }
+
 // An anchored section parks a little below the sticky bar — not under it, not
 // flush against it (the bar's height is published as --topbar-h; it wraps to
 // more rows on narrow viewports). `useHashSpy` reads the computed margin back

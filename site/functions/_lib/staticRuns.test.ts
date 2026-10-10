@@ -66,6 +66,12 @@ describe('static runs', () => {
     expect(await tiers(files([])).scans()).toEqual(DATES.slice(0, 2))
   })
 
+  it('names the base\'s dir-only (v1) scans, with runs or without; an unversioned scans.json has none', async () => {
+    const versioned = (b: Blobs): Blobs => ({ ...b, json: async <T,>(key: string) => (key === 'scans.json' ? { scans: [{ id: '2026-08-01', version: 1 }, { id: '2026-09-01', version: 2 }] } : await b.json(key)) as T })
+    expect(await Promise.all([tiers(files()).dirOnly(), tiers(versioned(files())).dirOnly(), tiers(versioned(files([]))).dirOnly()]))
+      .toEqual([[], ['2026-08-01'], ['2026-08-01']])
+  })
+
   it('exercises close records, opens, and a literal that became a member in the last run', () => {
     expect(catalog.qqq?.length).toBeGreaterThan(1)
     expect(expected.foo['2026-10-02']).not.toEqual(expected.foo['2026-10-01'])

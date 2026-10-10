@@ -10,6 +10,8 @@ import { allUsers } from './UserChip'
 import { useUnits } from './units'
 import { type CoverItem, type FilterCover, groupItems } from './filterCover'
 import { ActStatus, useActDeps, useKeepFocus, useMatchAct } from './MatchActions'
+import { ACT_BLOCKED_LABEL } from './matchAct'
+import { Tooltip } from './Tooltip'
 
 export { caveats } from './matchAct'
 
@@ -41,7 +43,7 @@ export function itemsText(items: readonly CoverItem[]): string {
   return parts.length ? parts.join(', ') : 'nothing'
 }
 
-export function BulkBar({ cover, loading, onIntent, resolve, resetKey, scheme, query, canAssign, canStage }: {
+export function BulkBar({ cover, loading, onIntent, resolve, resetKey, scheme, query, canAssign, canStage, blocked }: {
   /** The view's cover once listed (prefetched on intent, or by a click): the summary and review list. */
   cover?: FilterCover
   /** The listing is in flight (a hover started it). */
@@ -56,6 +58,9 @@ export function BulkBar({ cover, loading, onIntent, resolve, resetKey, scheme, q
   query: string
   canAssign: boolean
   canStage: boolean
+  /** Why this view's matches can't be acted on (`actBlock`): the actions give way to a muted label whose
+   *  tooltip says why, and nothing is listed. */
+  blocked?: string | null
 }) {
   const send = useActDeps()
   const { fmtBytes } = useUnits()
@@ -69,6 +74,11 @@ export function BulkBar({ cover, loading, onIntent, resolve, resetKey, scheme, q
   const groups = useMemo(() => groupItems(items), [items])
 
   if (!canAssign && !canStage) return null
+  if (blocked) return (
+    <span className="bulkbar blocked">
+      <Tooltip content={<span className="bb-tip">{blocked}</span>}><span className="act-st muted" tabIndex={0}>{ACT_BLOCKED_LABEL}</span></Tooltip>
+    </span>
+  )
   const idle = act.state.s === 'idle'
   const keptB = kept.reduce((n, i) => n + i.b, 0)
   const startAssign = () => {

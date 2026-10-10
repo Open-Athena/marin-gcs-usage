@@ -57,7 +57,7 @@ const src = (items: CoverItem[]) => ({
 })
 /** Each row's exact match roots: the response's full list (every root of `items`). */
 const exact = rowMatchesOf(items, 'exact')
-const render = (filter?: ReturnType<typeof src>, rowMatches: ((row: string) => RowMatches | null) | undefined = exact) => renderToStaticMarkup(createElement(ChildrenTable, {
+const render = (filter?: ReturnType<typeof src> & { blocked?: string }, rowMatches: ((row: string) => RowMatches | null) | undefined = exact) => renderToStaticMarkup(createElement(ChildrenTable, {
   node, segs: [], scheme: 'gs://', ownerIdx: { assignmentOf: () => null } as never, onOpen: () => {}, onOpenObject: () => {}, filter, rowMatches,
 }))
 const rows = (html: string) => [...(html.match(/<tbody>(.*?)<\/tbody>/)?.[1] ?? '').matchAll(/<tr[^>]*>(.*?)<\/tr>/g)].map(([, r]) => r)
@@ -100,6 +100,17 @@ describe('the children table under a filter', () => {
       [['bkt-none', 'K']],
     ])
     expect([checkboxes(html), assigns(html), html.includes('>list<')]).toEqual([['box', 'box', 'box'], [], false])
+  })
+  it('a view whose matches can\'t be acted on (`blocked`: a refusal, rollup, catalog or approximate answer): no row offers an action, nothing selects', () => {
+    selected.add('gs://marin-eu-west4')
+    const html = render({ ...src(items), blocked: 'per-bucket totals only' })
+    expect([
+      rows(html).map(r => [name(r), r.includes('class="col-sel"'), r.includes('class="actions"'), r.includes('data-row=')]),
+      html.includes('class="sel-bar"'),
+    ]).toEqual([
+      [['marin-us-central1 · 3 matches', false, false, false], ['marin-eu-west4/tomat', false, false, false], ['bkt-none', false, false, false]],
+      false,
+    ])
   })
   it('the selection acts on the selected rows\' matches (resolved on the click), never their whole prefixes', async () => {
     selected.add('gs://marin-eu-west4').add('gs://marin-us-central1')

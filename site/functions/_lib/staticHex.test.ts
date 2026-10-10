@@ -186,7 +186,7 @@ describe('anchored search on a generation with the rule', () => {
     const b = files()
     return {
       ...b,
-      async json(key) { if (key === 'anchors/meta.json' && anchors) return anchors; return b.json(key) },
+      async json<T>(key: string): Promise<T> { if (key === 'anchors/meta.json' && anchors) return anchors as T; return b.json<T>(key) },
       async list(prefix) { return [...KEYS, ...(anchors ? ['anchors/meta.json'] : [])].filter(k => k.startsWith(prefix)) },
     }
   }

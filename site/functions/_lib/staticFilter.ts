@@ -80,8 +80,10 @@ export interface HitSource {
   readonly heavy?: boolean
 }
 
-/** The generation's scans (ids); `hexRuns`: its hex-run rule (`hexRuns.ts`; absent or null = the full index). */
-export interface StaticFilterStore { source: HitSource; scans: () => Promise<string[]>; gen: string; hexRuns?: () => Promise<HexRule | null> }
+/** The generation's scans (ids). `dirOnly`: those of them indexed from a dir-only (v1) source — held, but blind
+ *  to every file name, so a literal's total there is not the scan's (`/api/series` leaves them as gaps). `hexRuns`:
+ *  its hex-run rule (`hexRuns.ts`; absent or null = the full index). */
+export interface StaticFilterStore { source: HitSource; scans: () => Promise<string[]>; dirOnly?: () => Promise<string[]>; gen: string; hexRuns?: () => Promise<HexRule | null> }
 
 /** A suffix range read whole above this many rows (row-group granular) is declined: V = 100K (the
  *  catalog's membership bound, so every non-member fits) plus two 8K-row groups of slack. */
@@ -252,7 +254,7 @@ export function staticFilterStore(env: StaticFilterEnv): StaticFilterStore | nul
         top: dir => cacheIndexes(caches.default, sub(dir, 'anchors'), 'top-v1'),
       },
     })
-    held = { r2: env.INDEX_R2, gen, store: { source: new SuffixHits(t.names, { cache: cacheHits(caches.default, pre), heavy, catalog: heavy ? null : t.catalog, anchored }), scans: t.scans, gen: `${gen}${heavy ? '+drill' : ''}`, hexRuns: () => t.names.hexRuns() } }
+    held = { r2: env.INDEX_R2, gen, store: { source: new SuffixHits(t.names, { cache: cacheHits(caches.default, pre), heavy, catalog: heavy ? null : t.catalog, anchored }), scans: t.scans, dirOnly: t.dirOnly, gen: `${gen}${heavy ? '+drill' : ''}`, hexRuns: () => t.names.hexRuns() } }
   }
   return held.store
 }
@@ -283,9 +285,10 @@ export function liveTotal(hits: Hit[], date: string, keep: (usr: string | null) 
  *  character literal's fleet-root `matchCount.n` counted from the roots index, not 0; 6: heavy literals on
  *  the drill runs' scans; 7: with no drilldown, a heavy literal's fleet root from the catalog's buckets and a
  *  `term-too-common` refusal below it, never the approximate walk; 8: anchored terms — `^q`, `q$` were literals before;
- *  9: a heavy `^q` — its fleet root from the starts-with catalog, scoped reads below, a 400K-row bound; 10: the hex-run
- *  rule — `hexRuns` on hex-affected literals, `occurs` in the fallback and the anchored reader). */
-const RESPONSE_V = 10
+ *  9: a heavy `^q` — its fleet root from the starts-with catalog, scoped reads below, a 400K-row bound; 10: a
+ *  series' uncovered and dir-only scans are gaps named in `unindexed`, indexed-only or not — never zeros; 11: the
+ *  hex-run rule — `hexRuns` on hex-affected literals, `occurs` in the fallback and the anchored reader). */
+const RESPONSE_V = 11
 
 /** The query's substring matchers (positive and negative): the literals the hex-run rule applies to. */
 const subMatchers = (ast: QueryAst | undefined): Extract<Matcher, { kind: 'sub' }>[] =>
