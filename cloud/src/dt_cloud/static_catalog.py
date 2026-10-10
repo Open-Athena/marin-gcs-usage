@@ -42,9 +42,10 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from click import IntRange, argument, group, option
 
+from .hex_runs import HexRule, first_sql, grams_sql, kept_sql, occurs_sql, rule_json
 from .static_profile import data_bucket, scratch_bucket
 from .static_names import (
-    CINTERVAL_SCHEMA, CODEC, NAME, OPEN, PREFIX, SX_SCHEMA, _batches, _download, _task, connect, err, q,
+    CINTERVAL_SCHEMA, CODEC, NAME, OPEN, PREFIX, SX_SCHEMA, _batches, _download, _task, connect, err, gen_rule, q,
     read_json, scan_epoch, upload_tree, write_sorted,
 )
 
@@ -116,7 +117,14 @@ def census(con, src: str, floor_rows: int, floor_bytes: int | None = None) -> pa
 # ── Answers: first-hit events per member ───────────────────────────────────
 
 
-def member_events(con, rows_sql: str, members: str, fresh: bool = True) -> str:
+def first_hit_sql(L: int, rule: HexRule | None) -> str:
+    """A suffix row `(s, l, par)` is the first hit of `left(s, L)`: it starts at the literal's first occurrence in the
+    name `l` (under `rule`: the first one the rule keeps) and the literal does not occur in the parent `par`."""
+    x = f"left(s, {L})"
+    return f"{first_sql('l', x, rule)} = length(l) - length(s) + 1 AND NOT {occurs_sql('par', x, rule)}"
+
+
+def member_events(con, rows_sql: str, members: str, fresh: bool = True, rule: HexRule | None = None) -> str:
     """Events `(q, bucket, t, db, dn)` of `members`' (a table with `q`, ≥ 3 characters) first hits among
     `rows_sql`'s suffix rows `(s, depth, path, t0, t1, size, n_files, sign)`: `sign·(size, n_files)` at `t0`,
     and its negation at `t1` unless `t1` is NULL or OPEN (a delta's close record is a row with `t0` = the
@@ -142,7 +150,7 @@ def member_events(con, rows_sql: str, members: str, fresh: bool = True) -> str:
             break
         hit = f"""SELECT left(s, {L}) AS q, {BUCKET} AS bucket, t0, t1, sign * size AS sz, sign * n_files AS nf FROM mx
             SEMI JOIN (SELECT p FROM ml WHERE member) AS mm ON left(mx.s, {L}) = mm.p
-            WHERE instr(l, left(s, {L})) = length(l) - length(s) + 1 AND NOT contains(par, left(s, {L}))"""
+            WHERE {first_hit_sql(L, rule)}"""
         con.execute(f"""INSERT INTO ev SELECT q, bucket, t, sum(db), sum(dn) FROM (
                 SELECT q, bucket, t0 AS t, sz AS db, nf AS dn FROM ({hit})
                 UNION ALL SELECT q, bucket, t1 AS t, -sz, -nf FROM ({hit}) WHERE t1 IS NOT NULL AND t1 <> {OPEN}
@@ -152,17 +160,16 @@ def member_events(con, rows_sql: str, members: str, fresh: bool = True) -> str:
     return "ev"
 
 
-def short_events(con, versions_sql: str) -> str:
+def short_events(con, versions_sql: str, rule: HexRule | None = None) -> str:
     """Events of every one- and two-character literal's first hits among `versions_sql`'s rows `(depth, path,
     t0, t1, size, n_files, sign)` (as `member_events`), into table `sev`: each distinct character and
     character pair of the lowercase name that the lowercase parent does not contain."""
     con.execute("DROP TABLE IF EXISTS sev")
     hit = f"""SELECT g AS q, bucket, t0, t1, sz, nf FROM (
-            SELECT unnest(list_distinct(list_transform(range(1, length(l) + 1), lambda p: substring(l, p, 1))
-                || list_transform(range(1, length(l)), lambda p: substring(l, p, 2)))) AS g, par, bucket, t0, t1, sz, nf
+            SELECT unnest({grams_sql('l', rule)}) AS g, par, bucket, t0, t1, sz, nf
             FROM (SELECT {NAME} AS l, {PARENT} AS par, {BUCKET} AS bucket, t0, t1, sign * size AS sz, sign * n_files AS nf
                   FROM ({versions_sql}) WHERE depth >= 1)
-        ) WHERE NOT contains(par, g)"""
+        ) WHERE NOT {occurs_sql('par', 'g', rule)}"""
     con.execute(f"""CREATE TABLE sev AS SELECT q, bucket, t, sum(db)::HUGEINT AS db, sum(dn)::HUGEINT AS dn FROM (
             SELECT q, bucket, t0 AS t, sz AS db, nf AS dn FROM ({hit})
             UNION ALL SELECT q, bucket, t1 AS t, -sz, -nf FROM ({hit}) WHERE t1 IS NOT NULL AND t1 <> {OPEN}
@@ -170,12 +177,11 @@ def short_events(con, versions_sql: str) -> str:
     return "sev"
 
 
-def short_vocab_sql(versions_sql: str) -> str:
-    """Every one- and two-character literal of the versions' lowercase names (depth ≥ 1), with how many
-    versions contain it: the short members, including those whose every occurrence is under a match."""
+def short_vocab_sql(versions_sql: str, rule: HexRule | None = None) -> str:
+    """Every one- and two-character literal occurring (under `rule`) in the versions' lowercase names (depth ≥ 1), with
+    how many versions it occurs in: the short members, including those whose every occurrence is under a match."""
     return f"""SELECT g AS q, count(*)::BIGINT AS n FROM (
-            SELECT unnest(list_distinct(list_transform(range(1, length(l) + 1), lambda p: substring(l, p, 1))
-                || list_transform(range(1, length(l)), lambda p: substring(l, p, 2)))) AS g
+            SELECT unnest({grams_sql('l', rule)}) AS g
             FROM (SELECT {NAME} AS l FROM ({versions_sql}) WHERE depth >= 1)) GROUP BY g"""
 
 
@@ -200,7 +206,8 @@ def sx_rows_sql(src: str) -> str:
 CHUNK_ROWS = 1 << 24
 
 
-def shard_cells(con, sx: str, members: str, dst: Path, chunk_rows: int = CHUNK_ROWS, log: str = "") -> tuple[int, dict]:
+def shard_cells(con, sx: str, members: str, dst: Path, chunk_rows: int = CHUNK_ROWS, log: str = "",
+                rule: HexRule | None = None) -> tuple[int, dict]:
     """One shard's members' cells (`members`: `q, rows`, all within the shard) → `dst`, sorted; returns the
     cell count and per-phase seconds. `sx` is a local file (sorted `s, path, …`), read in chunks of about
     `chunk_rows` rows cut at row-group boundaries as `(s, path)` ranges (not `s` alone: one suffix can fill a
@@ -226,7 +233,7 @@ def shard_cells(con, sx: str, members: str, dst: Path, chunk_rows: int = CHUNK_R
         if hi is not None:
             conds.append(f"s <= {q(hi[0])} AND (s < {q(hi[0])} OR path < {q(hi[1])})")
         where = " AND ".join(conds) or "true"
-        member_events(con, sx_rows_sql(f"(SELECT * FROM read_parquet({q(sx)}) WHERE {where})"), members, fresh=False)
+        member_events(con, sx_rows_sql(f"(SELECT * FROM read_parquet({q(sx)}) WHERE {where})"), members, fresh=False, rule=rule)
         if log:
             err(f"{log}: chunk {k + 1}/{len(bounds) - 1} in {monotonic() - t0:.1f}s")
     t1 = monotonic()
@@ -235,15 +242,15 @@ def shard_cells(con, sx: str, members: str, dst: Path, chunk_rows: int = CHUNK_R
     return rows, {"events": round(t1 - t0, 1), "cells": round(monotonic() - t1, 1)}
 
 
-def range_short(con, versions: str, dst: Path, name: str) -> None:
+def range_short(con, versions: str, dst: Path, name: str, rule: HexRule | None = None) -> None:
     """One key range's short-literal events and vocabulary (`versions`: an intervals or cintervals file)
     → `dst/{events,vocab}/<name>.parquet`."""
     vs = f"SELECT depth, path, vf AS t0, vt AS t1, size, n_files, 1::BIGINT AS sign FROM read_parquet({q(versions)})"
-    short_events(con, vs)
+    short_events(con, vs, rule)
     (dst / "events").mkdir(parents=True, exist_ok=True)
     (dst / "vocab").mkdir(parents=True, exist_ok=True)
     con.execute(f"COPY (SELECT q, bucket, t, db::BIGINT AS db, dn::BIGINT AS dn FROM sev ORDER BY q, bucket, t) TO {q(str(dst / 'events' / f'{name}.parquet'))} (FORMAT parquet, COMPRESSION zstd)")
-    con.execute(f"COPY ({short_vocab_sql(vs)} ORDER BY q) TO {q(str(dst / 'vocab' / f'{name}.parquet'))} (FORMAT parquet, COMPRESSION zstd)")
+    con.execute(f"COPY ({short_vocab_sql(vs, rule)} ORDER BY q) TO {q(str(dst / 'vocab' / f'{name}.parquet'))} (FORMAT parquet, COMPRESSION zstd)")
 
 
 def assemble(con, short_events_glob: str, short_vocab_glob: str, shard_cells_glob: str, out: Path) -> dict:
@@ -267,12 +274,12 @@ def assemble(con, short_events_glob: str, short_vocab_glob: str, shard_cells_glo
 # ── Appending a scan ───────────────────────────────────────────────────────
 
 
-def expand_sql(versions_sql: str) -> str:
-    """Suffix rows (≥ 3 characters, depth ≥ 1) of `versions_sql`'s rows `(depth, path, t0, t1, size, n_files,
-    sign)`, as `member_events` input."""
+def expand_sql(versions_sql: str, rule: HexRule | None = None) -> str:
+    """Suffix rows (≥ 3 characters, depth ≥ 1; under `rule`, the positions it keeps) of `versions_sql`'s rows `(depth,
+    path, t0, t1, size, n_files, sign)`, as `member_events` input."""
     return f"""SELECT substring(l, p) AS s, depth, path, t0, t1, size, n_files, sign FROM (
             SELECT depth, path, t0, t1, size, n_files, sign, l, unnest(generate_series(1, length(l) - 2)) AS p
-            FROM (SELECT *, {NAME} AS l FROM ({versions_sql}) WHERE depth >= 1) WHERE length(l) >= 3)"""
+            FROM (SELECT *, {NAME} AS l FROM ({versions_sql}) WHERE depth >= 1) WHERE length(l) >= 3) WHERE {kept_sql('l', 'p', rule)}"""
 
 
 def delta_versions_sql(files: list[str], point: bool) -> str:
@@ -348,7 +355,7 @@ def _insert(con, table: str, rows: list[tuple]) -> None:
         con.executemany(f"INSERT INTO {table} VALUES ({', '.join('?' * len(rows[0]))})", rows)
 
 
-def append(con, *, prev: Path, base: BaseShards, deltas: list[list[str]], V: int, out: Path) -> dict:
+def append(con, *, prev: Path, base: BaseShards, deltas: list[list[str]], V: int, out: Path, rule: HexRule | None = None) -> dict:
     """The catalog of `base` plus the scans of `deltas` (each a scan's coalesced delta files, oldest first), from
     `prev` (`cells.parquet`: the catalog of `base` plus all but the last delta) — equal to rebuilding it.
 
@@ -368,7 +375,7 @@ def append(con, *, prev: Path, base: BaseShards, deltas: list[list[str]], V: int
             (o - coalesce(lag(o) OVER w, 0))::HUGEINT AS dn FROM pc WHERE bucket <> '' WINDOW w AS (PARTITION BY q, bucket ORDER BY vf)""")
     # every delta's opened suffix rows: who could cross V
     all_files = [f for d in deltas for f in d]
-    con.execute(f"CREATE OR REPLACE TABLE xo AS SELECT s, t0 FROM ({expand_sql(delta_versions_sql(all_files, point=False))})")
+    con.execute(f"CREATE OR REPLACE TABLE xo AS SELECT s, t0 FROM ({expand_sql(delta_versions_sql(all_files, point=False), rule)})")
     D = con.execute(f"SELECT max(CASE WHEN op = 1 THEN vf ELSE vt END) FROM read_parquet([{', '.join(q(f) for f in last)}])").fetchone()[0]
     cand: list[tuple[str, int, int]] = []  # (q, rows over all deltas, rows of the last)
     L = 3
@@ -400,21 +407,21 @@ def append(con, *, prev: Path, base: BaseShards, deltas: list[list[str]], V: int
     _insert(con, "lmem", list(rows_now.items()))
     # the last scan's events for existing long members
     point_last = delta_versions_sql(last, point=True)
-    member_events(con, expand_sql(point_last), "lmem")
+    member_events(con, expand_sql(point_last, rule), "lmem", rule=rule)
     con.execute("CREATE OR REPLACE TABLE lev AS SELECT * FROM ev")
     # new long members: their whole history
     if new_members:
         con.register("base_rows", base.rows([k for k, _ in new_members]))
-        hist = f"""{sx_rows_sql('base_rows')} UNION ALL {expand_sql(delta_versions_sql(all_files, point=True))}"""
-        member_events(con, hist, "nmem")
+        hist = f"""{sx_rows_sql('base_rows')} UNION ALL {expand_sql(delta_versions_sql(all_files, point=True), rule)}"""
+        member_events(con, hist, "nmem", rule=rule)
         con.unregister("base_rows")
     else:
         con.execute("DELETE FROM ev")
     con.execute("CREATE OR REPLACE TABLE nev AS SELECT * FROM ev")
     # short literals: the last scan's events, and any first seen
-    short_events(con, point_last)
+    short_events(con, point_last, rule)
     con.execute(f"""CREATE OR REPLACE TABLE amem AS SELECT q, rows FROM lmem UNION ALL SELECT q, rows FROM nmem
-        UNION ALL SELECT q, -1::BIGINT FROM (SELECT q FROM pmem WHERE rows = -1 UNION SELECT q FROM ({short_vocab_sql(delta_versions_sql(last, point=False))}))""")
+        UNION ALL SELECT q, -1::BIGINT FROM (SELECT q FROM pmem WHERE rows = -1 UNION SELECT q FROM ({short_vocab_sql(delta_versions_sql(last, point=False), rule)}))""")
     con.execute("""CREATE OR REPLACE TABLE aev AS SELECT * FROM pev UNION ALL SELECT * FROM lev UNION ALL SELECT * FROM nev
         UNION ALL SELECT q, bucket, t, db, dn FROM sev""")
     out.mkdir(parents=True, exist_ok=True)
@@ -636,6 +643,7 @@ def answers_cmd(bucket, gen, index, lease, mount, mem, threads, queue, scratch, 
 
     prefix = f"{PREFIX}/{gen}"
     plan = read_json(f"gs://{bucket}/{prefix}/shards.json")
+    rule = gen_rule(read_json(f"gs://{bucket}/{prefix}/scans.json"))
     t = _task(index)
     client = storage.Client()
     b = client.bucket(bucket)
@@ -687,7 +695,7 @@ def answers_cmd(bucket, gen, index, lease, mount, mem, threads, queue, scratch, 
         n_members = con.execute("SELECT count(*) FROM mem").fetchone()[0]
         err(f"answers {name}: {s['rows']:,} rows, {n_members:,} members, downloaded in {t_dl:.1f}s")
         dst = out / f"{name}.parquet"
-        rows, phases = shard_cells(con, str(src), "mem", dst, log=f"answers {name}")
+        rows, phases = shard_cells(con, str(src), "mem", dst, log=f"answers {name}", rule=rule)
         src.unlink()
         t1 = monotonic()
         b.blob(key).upload_from_filename(str(dst))
@@ -717,6 +725,7 @@ def short_cmd(bucket, gen, index, intervals_gen, mount, mem, per_task, threads, 
     from google.cloud import storage
 
     prefix = f"{PREFIX}/{gen}"
+    rule = gen_rule(read_json(f"gs://{bucket}/{prefix}/scans.json"))
     ranges = read_json(f"gs://{bucket}/{PREFIX}/{intervals_gen or gen}/ranges.json")
     t = _task(index)
     todo = list(range(t * per_task, min((t + 1) * per_task, ranges["k"])))
@@ -728,9 +737,12 @@ def short_cmd(bucket, gen, index, intervals_gen, mount, mem, per_task, threads, 
             err(f"short {name}: done")
             continue
         t0 = monotonic()
-        src = (f"{mount}/{PREFIX}/{intervals_gen}/intervals/{name}.parquet" if intervals_gen else f"{mount}/{prefix}/cintervals/{name}.parquet")
+        # -I: that generation's coalesced versions when it has them (a derived generation's source), else its intervals.
+        ig = f"{mount}/{PREFIX}/{intervals_gen}"
+        src = ((f"{ig}/cintervals/{name}.parquet" if Path(f"{ig}/cintervals/{name}.parquet").exists() else f"{ig}/intervals/{name}.parquet")
+               if intervals_gen else f"{mount}/{prefix}/cintervals/{name}.parquet")
         outp = Path(tmp) / f"short-{i}"
-        range_short(con, src, outp, name)
+        range_short(con, src, outp, name, rule)
         sb.blob(f"{prefix}/catalog-short/events/{name}.parquet").upload_from_filename(str(outp / "events" / f"{name}.parquet"))
         sb.blob(f"{prefix}/catalog-short/vocab/{name}.parquet").upload_from_filename(str(outp / "vocab" / f"{name}.parquet"))
         shutil.rmtree(outp)
@@ -761,21 +773,23 @@ def assemble_cmd(bucket, gen, mount, mem, threads, scratch, tmp) -> None:
     members = read_json(f"gs://{bucket}/{prefix}/catalog/members.json") if storage.Client().bucket(bucket).blob(f"{prefix}/catalog/members.json").exists() else None
     if members:
         meta["membership"] = {k: members[k] for k in ("max_rows", "max_bytes") if k in members}
+    # The generation's hex-run rule, which the readers follow (every tier's `catalog/meta.json` carries it).
+    meta.update(rule_json(gen_rule(read_json(f"gs://{bucket}/{prefix}/scans.json"))))
     (out / "meta.json").write_text(json.dumps(meta, indent=1) + "\n")
     upload_tree(out, bucket, f"{prefix}/catalog")
     shutil.rmtree(out)
     print(json.dumps(meta, indent=1))
 
 
-def brute_sql(src: str, version: int, terms: str) -> str:
+def brute_sql(src: str, version: int, terms: str, rule: HexRule | None = None) -> str:
     """Per (term, bucket): Σ size, n_files over one scan's rows (`src`, its `path` sort; v1 `b`/`o`) at depth ≥ 1
-    whose lowercase name contains the term and whose lowercase parent does not — the first-hit rule straight
-    from the scan, no versions, no index. `terms`: a table of `term`."""
+    whose lowercase name the term occurs in (`hex_runs`, under `rule`) and whose lowercase parent it does not — the
+    first-hit rule straight from the scan, no versions, no index. `terms`: a table of `term`."""
     size, n = ("size", "n_files") if version == 2 else ("b", "o")
     return f"""SELECT t.term, split_part(x.path, '/', 1) AS bucket, sum(x.sz)::BIGINT AS b, sum(x.nf)::BIGINT AS o
         FROM (SELECT path, {NAME} AS l, {PARENT} AS par, {size} AS sz, {n} AS nf FROM read_parquet({q(src)}) WHERE depth >= 1) AS x,
             {terms} AS t
-        WHERE contains(x.l, t.term) AND NOT contains(x.par, t.term) GROUP BY ALL"""
+        WHERE {occurs_sql('x.l', 't.term', rule)} AND NOT {occurs_sql('x.par', 't.term', rule)} GROUP BY ALL"""
 
 
 @cli.command("brute")
@@ -797,13 +811,14 @@ def brute_cmd(bucket, dates, gen, index, mount, mem, threads, terms_file, tmp) -
 
     prefix = f"{PREFIX}/{gen}"
     date = dates[_task(index)]
-    scan = next(s for s in read_json(f"gs://{bucket}/{prefix}/scans.json")["scans"] if s["id"] == date)
+    scans = read_json(f"gs://{bucket}/{prefix}/scans.json")
+    scan = next(s for s in scans["scans"] if s["id"] == date)
     terms = sorted({x.lower() for x in read_text(terms_file).splitlines() if x.strip()})
     con = connect(threads, mem, tmp)
     con.execute("CREATE TABLE terms (term VARCHAR)")
     con.executemany("INSERT INTO terms VALUES (?)", [(t,) for t in terms])
     t0 = monotonic()
-    rows = con.execute(brute_sql(f"{mount}/{scan['src']}", scan["version"], "terms")).fetchall()
+    rows = con.execute(brute_sql(f"{mount}/{scan['src']}", scan["version"], "terms", gen_rule(scans))).fetchall()
     got: dict[str, dict] = {t: {} for t in terms}
     for term, bkt, b_, o_ in rows:
         if b_ or o_:
@@ -827,7 +842,7 @@ def query_cmd(bucket, dates, gen, terms_file, also_static, terms) -> None:
 
     lits = list(terms) + ([x for x in read_text(terms_file).splitlines() if x.strip()] if terms_file else [])
     cat = gcs_catalog(bucket, f"{PREFIX}/{gen}")
-    reader = gcs_reader(bucket, f"{PREFIX}/{gen}") if also_static else None
+    reader = gcs_reader(bucket, f"{PREFIX}/{gen}", gen_rule(read_json(f"gs://{bucket}/{PREFIX}/{gen}/scans.json"))) if also_static else None
     for t in lits:
         t0 = monotonic()
         out = cat.answer(t, list(dates))

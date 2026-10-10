@@ -42,6 +42,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from click import Choice, argument, group, option
 
+from .hex_runs import HexRule, end_dropped_sql, rule_from_json, rule_json, segment_occurs
 from .static_catalog import PARENT
 from .static_names import (
     CODEC, NAME, OPEN, PREFIX, SX_RG, _batches, _sx_cast, _task, connect, q, read_json,
@@ -76,8 +77,9 @@ ROLLUP_RG = 2048
 # ── Predicates ─────────────────────────────────────────────────────────────
 
 
-def segment_matches(seg: str, text: str, mode: str) -> bool:
-    return seg.startswith(text) if mode == "start" else seg.endswith(text) if mode == "end" else seg == text if mode == "exact" else text in seg
+def segment_matches(seg: str, text: str, mode: str | None, rule: HexRule | None = None) -> bool:
+    """Whether a lowercase segment holds `text` in `mode` under the generation's hex-run rule (`segment_occurs`)."""
+    return segment_occurs(seg, text, mode, rule)
 
 
 def parse_key(key: str) -> tuple[str, str | None]:
@@ -91,9 +93,14 @@ def term_key(text: str, mode: str | None) -> str:
     return {"start": f"/{text}", "end": f"{text}/", "exact": f"/{text}/", None: text}[mode]
 
 
-def first_hit_sql(mode: str, key: str = "s", par: str = "par") -> str:
+def first_hit_sql(mode: str, key: str = "s", par: str = "par", rule: HexRule | None = None) -> str:
     """The per-segment first-hit test of a row whose `key` column is the matched key (`q` for `end`, `/q` for
-    `start`/`exact`) and whose lowercase parent is `par`: no ancestor segment matches."""
+    `start`/`exact`) and whose lowercase parent is `par`: no ancestor segment matches. Under a hex-run rule (only `end`
+    can lose occurrences to it, `segment_occurs`), a `q$` row (a suffix row kept in a run's tail) also matches only
+    where the rule keeps its occurrence (the name from the row's `path`), and so does an ancestor segment."""
+    if mode == "end" and rule is not None:
+        anc = f"list_bool_or(list_transform(string_split({par}, '/'), lambda seg: ends_with(seg, {key}) AND NOT {end_dropped_sql('seg', key, rule)}))"
+        return f"(NOT {end_dropped_sql(NAME, key, rule)} AND NOT (contains({par} || '/', {key} || '/') AND {anc}))"
     if mode == "end":
         return f"NOT contains({par} || '/', {key} || '/')"
     if mode == "exact":
@@ -195,14 +202,14 @@ def rollup_cells(con, roots: str, heads: str, K: int, into: str, closed: bool = 
         con.execute(f"DROP TABLE IF EXISTS {t}")
 
 
-def base_rollups(con, files: list[str], mode: str, R: int, K: int, into: str) -> dict:
+def base_rollups(con, files: list[str], mode: str, R: int, K: int, into: str, rule: HexRule | None = None) -> dict:
     """A base shard set's rollups (`mode` `end` over suffix shards, `exact` over name shards) into table `into`: the
     keys holding more than R rows, their heavy directories (`heavy_dirs`) and the rollups of their first hits
-    (`rollup_cells`)."""
+    (`rollup_cells`; under the generation's hex-run `rule`). Heaviness counts stored rows, as the reader's bound."""
     con.execute(f"CREATE OR REPLACE TABLE hk AS SELECT s AS k FROM ({files_sql(files, 's')}) GROUP BY s HAVING count(*) > {R}")
     con.execute(f"CREATE OR REPLACE TABLE ar AS SELECT x.* FROM ({shard_rows_sql(files)}) AS x SEMI JOIN hk USING (k)")
     heavy_dirs(con, "ar", R)
-    con.execute(f"CREATE OR REPLACE TABLE rt AS SELECT * FROM ar WHERE {first_hit_sql(mode, 'k')}")
+    con.execute(f"CREATE OR REPLACE TABLE rt AS SELECT * FROM ar WHERE {first_hit_sql(mode, 'k', rule=rule)}")
     con.execute("DROP TABLE ar; DROP TABLE hk")
     rollup_cells(con, "rt", "hv", K, into, closed=True)
     keys, dirs = con.execute("SELECT count(DISTINCT k), count(*) FROM hv").fetchone()
@@ -245,19 +252,21 @@ def anchors_meta(R: int, K: int, sets: dict, scans: list[str] | None = None, **e
             **({"scans": scans} if scans is not None else {}), **extra}
 
 
-def build_tier_local(con, sx_files: list[str], names_files: list[str], out: Path, R: int, K: int, scans: list[str] | None = None) -> dict:
-    """A whole tier's `anchors/` locally from its shard files (the base path in tests; on Batch per shard)."""
+def build_tier_local(con, sx_files: list[str], names_files: list[str], out: Path, R: int, K: int, scans: list[str] | None = None,
+                     rule: HexRule | None = None) -> dict:
+    """A whole tier's `anchors/` locally from its shard files (the base path in tests; on Batch per shard), under the
+    generation's hex-run `rule` (recorded in `meta.json`)."""
     out.mkdir(parents=True, exist_ok=True)
     sets, docs = {}, {}
     for kind, files in (("end", sx_files), ("exact", names_files)):
         con.execute("DROP TABLE IF EXISTS cells")
         parts = []
-        docs[kind] = base_rollups(con, files, kind, R, K, "cells") if files else {}
+        docs[kind] = base_rollups(con, files, kind, R, K, "cells", rule) if files else {}
         con.execute("CREATE TABLE IF NOT EXISTS cells (q VARCHAR, dir VARCHAR, kind TINYINT, child VARCHAR, vf BIGINT, b BIGINT, o BIGINT)")
         _, idx = write_rollups(con, "cells", out, f"rollups/{kind}-s0000.parquet")
         parts.append(idx)
         sets[kind] = write_index(parts, out, kind)
-    (out / "meta.json").write_text(json.dumps(anchors_meta(R, K, sets, scans), indent=1) + "\n")
+    (out / "meta.json").write_text(json.dumps(anchors_meta(R, K, sets, scans, **rule_json(rule)), indent=1) + "\n")
     if names_files:
         con.execute("DROP TABLE IF EXISTS cells")
         docs[START] = start_base(con, names_files, start_heads_sql(prefix_counts_sql(names_files), R), R, K, "cells")
@@ -487,9 +496,10 @@ def _child(path: str, dir_: str) -> str:
     return f"CASE WHEN {dir_} = '' THEN string_split({path}, '/')[1] ELSE string_split(substring({path}, length({dir_}) + 2), '/')[1] END"
 
 
-def run_rollups(con, prior: list[Tier], run: Tier, D: int, mode: str, R: int, K: int, into: str) -> dict:
+def run_rollups(con, prior: list[Tier], run: Tier, D: int, mode: str, R: int, K: int, into: str, rule: HexRule | None = None) -> dict:
     """One level-0 run's rollups of `mode` at scan `D` (epoch seconds) into table `into` (see the module doc).
-    `prior`: the tiers before the run, base first, each with its `anchors/`; `run`: the run's shards."""
+    `prior`: the tiers before the run, base first, each with its `anchors/`; `run`: the run's shards; `rule`: the
+    generation's hex-run rule."""
     con.execute(f"CREATE TABLE IF NOT EXISTS {into} (q VARCHAR, dir VARCHAR, kind TINYINT, child VARCHAR, vf BIGINT, b BIGINT, o BIGINT)")
     run_files = run.files(mode)
     doc = {"keys": 0, "delta": 0, "new_heavy": 0, "probes": 0, "probe_rows": 0}
@@ -562,10 +572,10 @@ def run_rollups(con, prior: list[Tier], run: Tier, D: int, mode: str, R: int, K:
         con.execute(f"""CREATE OR REPLACE TABLE nroots AS SELECT * FROM (
                 SELECT k, any_value(depth) AS depth, path, usr, vf, min(vt) AS vt, any_value(size) AS size, any_value(n_files) AS n_files, any_value(par) AS par
                 FROM (SELECT * FROM pv UNION ALL SELECT * FROM rr) GROUP BY k, path, usr, vf)
-            WHERE {first_hit_sql(mode, 'k')}""")
+            WHERE {first_hit_sql(mode, 'k', rule=rule)}""")
         rollup_cells(con, "nroots", "nh", K, into)
     # 4. Delta headers and cells at D for the heavy (k, dir) the run touches.
-    doc["delta"] = delta_cells(con, mode, D, K, into)
+    doc["delta"] = delta_cells(con, mode, D, K, into, rule)
     doc["keys"] = con.execute(f"SELECT count(DISTINCT q) FROM {into}").fetchone()[0]
     for t in ("rr", "rk", "pb", "sc", "sca", "scb", "ck", "rd", "pr", "ps", "cand", "kt", "ktk", "near", "prows", "pv", "pd", "nh", "nroots"):
         con.execute(f"DROP TABLE IF EXISTS {t}")
@@ -580,7 +590,7 @@ def stack_rows(con, tiers: str, out: str) -> None:
         USING (q, dir) WHERE x.t >= f.floor""")
 
 
-def delta_cells(con, mode: str, D: int, K: int, into: str) -> int:
+def delta_cells(con, mode: str, D: int, K: int, into: str, rule: HexRule | None = None) -> int:
     """Delta headers (`kind` −1) and the cells dated `D` into `into`, for every `(k, dir)` of the prior stacks `ps`
     the run's rows `rr` touch (`rd`): each series' last value (a kept child's, or the remainder's) moved by the run's
     first-hit events under it (an open adds at `D`, a close record subtracts); a child no tier has kept is kept while
@@ -598,7 +608,7 @@ def delta_cells(con, mode: str, D: int, K: int, into: str) -> int:
     con.execute(f"""CREATE OR REPLACE TABLE ev AS SELECT dt.q, dt.dir, {_child('x.path', 'dt.dir')} AS child,
             sum(CASE WHEN x.vf = {D} THEN x.size ELSE 0 END - CASE WHEN x.vt = {D} THEN x.size ELSE 0 END)::BIGINT AS db,
             sum(CASE WHEN x.vf = {D} THEN x.n_files ELSE 0 END - CASE WHEN x.vt = {D} THEN x.n_files ELSE 0 END)::BIGINT AS dn
-        FROM dt JOIN (SELECT * FROM rr WHERE {first_hit_sql(mode, 'k')}) AS x
+        FROM dt JOIN (SELECT * FROM rr WHERE {first_hit_sql(mode, 'k', rule=rule)}) AS x
             ON x.k = dt.q AND (dt.dir = '' OR starts_with(x.path, dt.dir || '/'))
         GROUP BY ALL""")
     # New kept children: not kept in any tier, while the kept count is under K, by name.
@@ -636,9 +646,9 @@ def merge_rollups(con, files_by_tier: list[list[str]], into: str) -> None:
 
 
 def build_run_local(con, prior: list[Tier], run: Tier, D: int, R: int, K: int, scans: list[str], versions_sql: str | None = None,
-                    names_rows: int = NAME_SHARD_ROWS) -> dict:
+                    names_rows: int = NAME_SHARD_ROWS, rule: HexRule | None = None) -> dict:
     """A level-0 run's `names/` (from `versions_sql`, its `cdelta`, unless already there) and `anchors/` (both kinds,
-    `meta.json` last), locally."""
+    `meta.json` last, recording the generation's hex-run `rule`), locally."""
     if versions_sql is not None:
         write_names(con, versions_sql, run.root / NAMES, names_rows)
     out = run.root / ANCHORS
@@ -646,10 +656,10 @@ def build_run_local(con, prior: list[Tier], run: Tier, D: int, R: int, K: int, s
     sets, docs = {}, {}
     for kind in KINDS:
         con.execute("DROP TABLE IF EXISTS cells")
-        docs[kind] = run_rollups(con, prior, run, D, kind, R, K, "cells")
+        docs[kind] = run_rollups(con, prior, run, D, kind, R, K, "cells", rule)
         _, idx = write_rollups(con, "cells", out, f"rollups/{kind}-s0000.parquet")
         sets[kind] = write_index([idx], out, kind)
-    (out / "meta.json").write_text(json.dumps(anchors_meta(R, K, sets, scans), indent=1) + "\n")
+    (out / "meta.json").write_text(json.dumps(anchors_meta(R, K, sets, scans, **rule_json(rule)), indent=1) + "\n")
     if all(t.has_start for t in prior):
         docs[START], sets[START] = build_run_start(con, prior, run, D, R, K, scans)
     return {"sets": sets, "docs": docs}
@@ -665,8 +675,10 @@ def build_run_start(con, prior: list[Tier], run: Tier, D: int, R: int, K: int, s
     return doc, write_start(con, "cells", run.root / START_DIR, R, K, scans)
 
 
-def merge_run_local(con, runs: list[Tier], out: Tier, R: int, K: int, scans: list[str], names_rows: int = NAME_SHARD_ROWS) -> dict:
-    """Runs (oldest first) merged into one tier's `names/` (`static_append.merge_shards`) and `anchors/` (`merge_rollups`)."""
+def merge_run_local(con, runs: list[Tier], out: Tier, R: int, K: int, scans: list[str], names_rows: int = NAME_SHARD_ROWS,
+                    rule: HexRule | None = None) -> dict:
+    """Runs (oldest first) merged into one tier's `names/` (`static_append.merge_shards`) and `anchors/` (`merge_rollups`;
+    `rule`: the generation's hex-run rule, which the runs' rollups were built under)."""
     from .static_append import merge_shards
 
     merge_shards([r.root / NAMES for r in runs], out.root / NAMES, names_rows)
@@ -678,7 +690,7 @@ def merge_run_local(con, runs: list[Tier], out: Tier, R: int, K: int, scans: lis
         merge_rollups(con, [r.rollup_files(kind) for r in runs], "cells")
         _, idx = write_rollups(con, "cells", dst, f"rollups/{kind}-s0000.parquet")
         sets[kind] = write_index([idx], dst, kind)
-    (dst / "meta.json").write_text(json.dumps(anchors_meta(R, K, sets, scans), indent=1) + "\n")
+    (dst / "meta.json").write_text(json.dumps(anchors_meta(R, K, sets, scans, **rule_json(rule)), indent=1) + "\n")
     # The starts-with catalog: merged when every input carries one (else the merged run has none, and it is cut there).
     if all(r.has_start for r in runs):
         con.execute("DROP TABLE IF EXISTS cells")
@@ -690,12 +702,12 @@ def merge_run_local(con, runs: list[Tier], out: Tier, R: int, K: int, scans: lis
 # ── Reading (the Worker's logic, `staticAnchors.ts`) ───────────────────────
 
 
-def term_in_path(key: str, path: str) -> bool:
-    """Whether `path` holds the keyed term in some segment (its view is then the plain one)."""
+def term_in_path(key: str, path: str, rule: HexRule | None = None) -> bool:
+    """Whether `path` holds the keyed term in some segment under the hex-run rule (its view is then the plain one)."""
     text, mode = parse_key(key)
     if mode is None:
-        return text in path.lower()
-    return path != "" and any(segment_matches(seg, text, mode) for seg in path.lower().split("/"))
+        return segment_occurs(path.lower(), text, None, rule)
+    return path != "" and any(segment_matches(seg, text, mode, rule) for seg in path.lower().split("/"))
 
 
 def under_range(P: str) -> tuple[str, str]:
@@ -758,9 +770,10 @@ class ShardSet:
         return t.to_pylist()
 
 
-def fold(rows: list[dict], key: str, under: str | None = None) -> list[dict]:
+def fold(rows: list[dict], key: str, under: str | None = None, rule: HexRule | None = None) -> list[dict]:
     """`AnchoredHits`: the rows matching the key (`s == q` for `q$`, `/q…` / `/q` for `^q` / `^q$`) under `under`,
-    depth ≥ 1, with no ancestor segment matching."""
+    depth ≥ 1, with no ancestor segment matching; under a hex-run rule, a `q$` row whose occurrence the rule drops
+    is no match (`segment_occurs`)."""
     text, mode = parse_key(key)
     k = text if mode == "end" else "/" + text
     lo, hi = under_range(under) if under else (None, None)
@@ -772,10 +785,12 @@ def fold(rows: list[dict], key: str, under: str | None = None) -> list[dict]:
         p = r["path"]
         if lo is not None and not (lo <= p < hi):
             continue
+        if mode == "end" and not segment_matches(p.rsplit("/", 1)[-1].lower(), text, mode, rule):
+            continue
         if r["depth"] < 1:
             continue
         par = p.rsplit("/", 1)[0].lower() if "/" in p else ""
-        if par and any(segment_matches(seg, text, mode) for seg in par.split("/")):
+        if par and any(segment_matches(seg, text, mode, rule) for seg in par.split("/")):
             continue
         out.append(r)
     return out
@@ -881,11 +896,16 @@ def rollup_answers(head: dict, cells: list[dict], dates: dict[str, int]) -> dict
 class AnchoredReader:
     """`staticAnchors.ts` `AnchoredSource` over tiers (base first): `view(key, P, dates)` → the per-child answers on each
     date (`answers`; a rollup's `rest`), the source (`plain`, `light`, `roots`, `rollup`, `declined`) and the scans'
-    tiers it read. The anchored tiers are the prefix with `anchors/meta.json`."""
+    tiers it read. The anchored tiers are the prefix with `anchors/meta.json`, none when the base's was built under
+    another hex-run rule than the generation's `rule` (`staticAnchors.ts` `state`)."""
 
-    def __init__(self, tiers: list[ReaderTier], max_rows: int = MAX_ROWS, start_max_rows: int | None = None, start_max_hits: int = START_MAX_HITS):
+    def __init__(self, tiers: list[ReaderTier], max_rows: int = MAX_ROWS, start_max_rows: int | None = None, start_max_hits: int = START_MAX_HITS,
+                 rule: HexRule | None = None):
         self.light = tiers
+        self.rule = rule
         n = next((i for i, t in enumerate(tiers) if t.meta is None), len(tiers))
+        if n and rule_from_json(tiers[0].meta.get("hex_runs")) != rule:
+            n = 0
         self.anch = tiers[:n]
         m = next((i for i, t in enumerate(self.anch) if t.start is None), len(self.anch))
         self.start = self.anch[:m]
@@ -898,8 +918,11 @@ class AnchoredReader:
 
         text, mode = parse_key(key)
         out: dict = {"key": key, "P": P}
-        if term_in_path(key, P):
+        if term_in_path(key, P, self.rule):
             return {**out, "source": "plain"}
+        if mode != "end" and not self.anch:
+            # `^q`, `^q$` read only the name index: none to read (no anchors build, or one under another rule)
+            return {**out, "source": "declined"}
         Ds = {d: scan_epoch(d) * 1000 for d in dates}
         k = text if mode == "end" else "/" + text
         exact = mode != "start"
@@ -908,7 +931,7 @@ class AnchoredReader:
         bound = self.start_max_rows if mode == "start" else self.max_rows
         hits = None
         if sum(x[2] for x in sels) <= bound:
-            hits = combine([fold(s.read(i, g), key) for s, (i, g, _) in zip(sets, sels) if i is not None])
+            hits = combine([fold(s.read(i, g), key, rule=self.rule) for s, (i, g, _) in zip(sets, sels) if i is not None])
             if mode == "start" and len(hits) > self.start_max_hits:
                 hits = None
         if hits is not None:
@@ -924,7 +947,7 @@ class AnchoredReader:
         upper = sum(x[2] for x in sels)
         out.update(upper=upper, tiers=len(self.anch))
         if upper <= bound:
-            hits = combine([fold(s.read(i, g), key, P) for s, (i, g, _) in zip(sets, sels) if i is not None])
+            hits = combine([fold(s.read(i, g), key, P, self.rule) for s, (i, g, _) in zip(sets, sels) if i is not None])
             return {**out, "source": "roots", "answers": {d: child_sums(hits, P, D) for d, D in Ds.items()}}
         got = stack([t.rollups[mode].rows(k, P) for t in self.anch])
         if got is None:
@@ -944,33 +967,39 @@ class AnchoredReader:
         upper = sum(x[2] for x in sels)
         if upper > self.start_max_rows:
             return {"source": "declined", "upper": upper}
-        hits = combine([fold(t.names.read(i, g), key, P) for t, (i, g, _) in zip(self.anch, sels) if i is not None])
+        hits = combine([fold(t.names.read(i, g), key, P, self.rule) for t, (i, g, _) in zip(self.anch, sels) if i is not None])
         if len(hits) > self.start_max_hits:
             return {"source": "declined", "upper": upper, "hits": len(hits)}
         return {"source": "scoped", "upper": upper, "tiers": len(self.anch), "answers": {d: child_sums(hits, P, D) for d, D in Ds.items()}}
 
 
-def brute_view(versions: list[tuple], key: str, P: str, D_ms: int) -> dict[str, list[int]]:
-    """The definition, over versions `(path, usr, vf_ms, vt_ms, size, n_files)`: per child of P the live first hits."""
+def brute_view(versions: list[tuple], key: str, P: str, D_ms: int, rule: HexRule | None = None) -> dict[str, list[int]]:
+    """The definition, over versions `(path, usr, vf_ms, vt_ms, size, n_files)`: per child of P the live first hits
+    (segments matched under the hex-run `rule`)."""
     text, mode = parse_key(key)
     hits = []
     for path, usr, vf, vt, size, n in versions:
         if not (vf <= D_ms < vt) or (P != "" and not path.startswith(P + "/")):
             continue
         segs = path.lower().split("/")
-        if not segment_matches(segs[-1], text, mode) or any(segment_matches(s, text, mode) for s in segs[:-1]):
+        if not segment_matches(segs[-1], text, mode, rule) or any(segment_matches(s, text, mode, rule) for s in segs[:-1]):
             continue
         hits.append({"path": path, "usr": usr, "vf": vf, "vt": vt, "size": size, "n_files": n})
     return child_sums(hits, P, D_ms)
 
 
-def brute_sql(src: str, version: int, cases: str) -> str:
+def brute_sql(src: str, version: int, cases: str, rule: HexRule | None = None) -> str:
     """Per (case, child of its P): Σ size, n_files over one scan's rows (`src`, its `path` sort; v1 `b`/`o`) strictly
     under P (`''`: everything), depth ≥ 1, whose lowercase name matches the case's anchored key (`k`: the literal,
-    `m`: start | end | exact) and none of whose ancestor segments does. `cases`: a table of `(key, k, m, P)`."""
+    `m`: start | end | exact) and none of whose ancestor segments does, under the hex-run `rule` (`segment_occurs`:
+    only `end` can lose occurrences to it). `cases`: a table of `(key, k, m, P)`."""
     size, n = ("size", "n_files") if version == 2 else ("b", "o")
-    match = """CASE c.m WHEN 'start' THEN starts_with(x.l, c.k) AND NOT contains('/' || x.par, '/' || c.k)
-        WHEN 'end' THEN ends_with(x.l, c.k) AND NOT contains(x.par || '/', c.k || '/')
+    end = "ends_with(x.l, c.k) AND NOT contains(x.par || '/', c.k || '/')"
+    if rule is not None:
+        anc = f"list_bool_or(list_transform(string_split(x.par, '/'), lambda seg: ends_with(seg, c.k) AND NOT {end_dropped_sql('seg', 'c.k', rule)}))"
+        end = f"ends_with(x.l, c.k) AND NOT {end_dropped_sql('x.l', 'c.k', rule)} AND NOT (contains(x.par || '/', c.k || '/') AND {anc})"
+    match = f"""CASE c.m WHEN 'start' THEN starts_with(x.l, c.k) AND NOT contains('/' || x.par, '/' || c.k)
+        WHEN 'end' THEN {end}
         ELSE x.l = c.k AND NOT contains('/' || x.par || '/', '/' || c.k || '/') END"""
     # Each row is matched once per distinct key, then joined to that key's cases (P a prefix).
     return f"""WITH x AS (SELECT path, {NAME} AS l, {PARENT} AS par, {size} AS sz, {n} AS nf FROM read_parquet({q(src)}) WHERE depth >= 1),
@@ -1127,6 +1156,7 @@ def rollups_cmd(bucket, gen, index, kind, K, lease, mount, mem, threads, R, shar
     sub = "" if kind == "end" else f"{NAMES}/"
     plan = json.loads((Path(mount) / prefix / sub / "shards.json").read_text())
     queue = Queue(sb, f"{out_anchors}", kind, _task(index), lease)
+    rule = _gen_rule(mount, gen)
     con = connect(threads, mem, tmp)
     for sh in sorted(plan["shards"], key=lambda s: -s["rows"]):
         if shards and sh["i"] not in shards:
@@ -1139,7 +1169,7 @@ def rollups_cmd(bucket, gen, index, kind, K, lease, mount, mem, threads, R, shar
         local = Path(tmp) / f"{kind}-{name}.parquet"
         shutil.copy(Path(mount) / prefix / sub / "sx" / f"{name}.parquet", local)
         con.execute("DROP TABLE IF EXISTS cells")
-        doc = base_rollups(con, [str(local)], kind, R, K, "cells")
+        doc = base_rollups(con, [str(local)], kind, R, K, "cells", rule)
         out = Path(tmp) / "anchors-out"
         rel = f"rollups/{kind}-{name}.parquet"
         cells, idx = write_rollups(con, "cells", out, rel)
@@ -1180,7 +1210,7 @@ def index_cmd(bucket, gen, K, mount, R, tmp) -> None:
         for f in (f"{kind}-rollups-index.parquet", f"{kind}-rollups-index.top.parquet", f"keys-{kind}.parquet"):
             b.blob(f"{prefix}/{ANCHORS}/{f}").upload_from_filename(str(out / f))
     names_doc = json.loads((root / NAMES / "shards.json").read_text())
-    meta = anchors_meta(R, K, sets, gen=gen, names={"rows": names_doc["total_rows"], "shards": len(names_doc["shards"])})
+    meta = anchors_meta(R, K, sets, gen=gen, names={"rows": names_doc["total_rows"], "shards": len(names_doc["shards"])}, **rule_json(_gen_rule(mount, gen)))
     b.blob(f"{prefix}/{ANCHORS}/meta.json").upload_from_string(json.dumps(meta, indent=1) + "\n")
     print(json.dumps(meta, indent=1))
 
@@ -1309,7 +1339,7 @@ def run_cmd(bucket, run, gen, K, mount, mem, threads, R, tmp) -> None:
     else:
         versions = files_sql(cdelta, "depth, path, usr, vf, vt, size, n_files")
     shutil.rmtree(local / ANCHORS, ignore_errors=True)
-    doc = build_run_local(con, prior, Tier(local), scan_epoch(run), R, K, scans, versions)
+    doc = build_run_local(con, prior, Tier(local), scan_epoch(run), R, K, scans, versions, rule=_gen_rule(mount, gen))
     if versions is not None:
         _upload_dir(b, local / NAMES, f"{prefix}/{NAMES}", last=("sidecar.parquet",))
     # The starts-with catalog first (its own `meta.json` last), then the rest of `anchors/` (`meta.json` last).
@@ -1319,6 +1349,14 @@ def run_cmd(bucket, run, gen, K, mount, mem, threads, R, tmp) -> None:
     _upload_dir(b, local / ANCHORS, f"{prefix}/{ANCHORS}", last=("meta.json",))
     err(f"anchors {prefix}: {json.dumps(doc['docs'])} in {monotonic() - t0:.0f}s")
     print(json.dumps(doc))
+
+
+def _gen_rule(mount: str, gen: str) -> HexRule | None:
+    """The generation's hex-run rule, as its `scans.json` records it (`static_names.gen_rule`): every anchored build and
+    check of the generation follows it, and its `anchors/meta.json` records it (the reader declines a disagreeing one)."""
+    from .static_names import gen_rule
+
+    return gen_rule(json.loads((Path(mount) / PREFIX / gen / "scans.json").read_text()))
 
 
 def _cases(path: str) -> list[tuple[str, str]]:
@@ -1347,13 +1385,14 @@ def brute_cmd(bucket, cases_file, dates, gen, index, mount, mem, out, threads, t
     for r in _manifest_runs(mount, gen):
         scans += json.loads((root / r["key"] / "scans.json").read_text())["scans"] if (root / r["key"] / "scans.json").exists() else []
     scan = next(s for s in scans if s["id"] == date)
-    cases = [(key, *parse_key(key), P) for key, P in sorted(set(_cases(cases_file))) if not term_in_path(key, P)]
+    rule = _gen_rule(mount, gen)
+    cases = [(key, *parse_key(key), P) for key, P in sorted(set(_cases(cases_file))) if not term_in_path(key, P, rule)]
     con = connect(threads, mem, tmp)
     con.execute("CREATE TABLE cases (key VARCHAR, k VARCHAR, m VARCHAR, P VARCHAR)")
     con.executemany("INSERT INTO cases VALUES (?, ?, ?, ?)", cases)
     t0 = monotonic()
     got: dict[tuple[str, str], dict] = {(key, P): {} for key, _, _, P in cases}
-    for key, P, child, b_, o_ in con.execute(brute_sql(f"{mount}/{scan['src']}", scan["version"], "cases") + " ORDER BY ALL").fetchall():
+    for key, P, child, b_, o_ in con.execute(brute_sql(f"{mount}/{scan['src']}", scan["version"], "cases", rule) + " ORDER BY ALL").fetchall():
         if b_ or o_:
             got[(key, P)][child] = [int(b_), int(o_)]
     body = "".join(json.dumps({"date": date, "key": k, "P": P, "children": got[(k, P)]}) + "\n" for k, _, _, P in cases)
@@ -1377,7 +1416,10 @@ def query_cmd(cases_file, dates, gen, root) -> None:
     fs, base = fsspec.core.url_to_fs(f"{root.rstrip('/')}/{PREFIX}/{gen}")
     mf = sorted(fs.glob(f"{base}/manifests/*.json"))
     runs = json.loads(fs.cat(mf[-1]))["runs"] if mf else []
-    reader = AnchoredReader([reader_tier(fs, base), *(reader_tier(fs, f"{base}/{r['key']}") for r in runs)])
+    from .static_names import gen_rule
+
+    rule = gen_rule(json.loads(fs.cat(f"{base}/scans.json")))
+    reader = AnchoredReader([reader_tier(fs, base), *(reader_tier(fs, f"{base}/{r['key']}") for r in runs)], rule=rule)
     for key, P in _cases(cases_file):
         t0 = monotonic()
         out = reader.view(key, P, list(dates))

@@ -58,6 +58,7 @@ def ready(p: Profile, gen: str | None = None) -> Profile:
         p = replace(p, project=gcp_project())
     for f in ("gen", "bucket", "scratch", "layouts", "region", "image", "sa", "r2_bucket"):
         p.need(f)
+    p.hex_rule()
     p.r2_env_secrets()
     return p
 
@@ -217,8 +218,16 @@ class Runner:
         return f"{PREFIX}/{self.cfg.gen}"
 
     def have(self) -> tuple[list[str], list[str] | None]:
-        """The generation's scans (base + the newest manifest's runs), and the base's layouts."""
+        """The generation's scans (base + the newest manifest's runs), and the base's layouts. Runs follow the base's
+        recorded hex-run rule (every stage reads it from the base's `scans.json`), so a run's tiers always agree; a
+        profile whose rule differs (a deployment that adopts the rule at its next generation) is logged, not applied."""
+        from .hex_runs import rule_from_json
+
         base = self.read_json(f"{self.root}/scans.json")
+        recorded, wanted = rule_from_json(base.get("hex_runs")), self.cfg.hex_rule()
+        if recorded != wanted:
+            self.log(f"{self.cfg.gen}: built with hex_runs {recorded.to_json() if recorded else 'off'}, the profile says "
+                     f"{wanted.to_json() if wanted else 'off'}: its runs keep the generation's rule (the profile's applies to the next generation)")
         keys = self.manifests()
         runs = self.read_json(keys[-1])["runs"] if keys else []
         return [*(s["id"] for s in base["scans"]), *(s for r in runs for s in r["scans"])], base.get("layouts")

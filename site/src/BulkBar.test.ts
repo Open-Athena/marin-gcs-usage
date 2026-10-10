@@ -2,6 +2,7 @@ import { createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import { applyToggle, BulkBar, caveats } from './BulkBar'
+import { ACT_BLOCKED_LABEL, actBlock } from './matchAct'
 import { overCapReason } from '../functions/_lib/cover'
 import { actionTargets, groupItems, type FilterCover, targetsText } from './filterCover'
 
@@ -27,8 +28,8 @@ const cover = (o: Partial<FilterCover> = {}): FilterCover => ({
   ...o,
 })
 const resolve = async () => cover()
-const render = (c: FilterCover | undefined, opts: { canAssign?: boolean; canStage?: boolean; loading?: boolean } = {}) =>
-  renderToStaticMarkup(createElement(BulkBar, { cover: c, loading: opts.loading, resolve, scheme: 'gs://', query: 'tomat', canAssign: opts.canAssign ?? true, canStage: opts.canStage ?? true }))
+const render = (c: FilterCover | undefined, opts: { canAssign?: boolean; canStage?: boolean; loading?: boolean; blocked?: string | null } = {}) =>
+  renderToStaticMarkup(createElement(BulkBar, { cover: c, loading: opts.loading, resolve, scheme: 'gs://', query: 'tomat', canAssign: opts.canAssign ?? true, canStage: opts.canStage ?? true, blocked: opts.blocked }))
 const text = (html: string) => html.replace(/<[^>]+>/g, '|').split('|').map(s => s.trim()).filter(Boolean)
 
 describe('the bulk bar lists the matches as prefixes, grouped by folder, for review', () => {
@@ -109,6 +110,19 @@ describe('deselect: a folder\'s worth or one item, and what each action then sen
     ])
     expect(caveats({ buckets: 2, unknown: 0 }, 'stage')).toEqual([
       '2 whole buckets can’t be staged; they are left out.',
+    ])
+  })
+})
+
+// A rollup, catalog, refused or approximate view (`actBlock`): no actions, the reason muted in a tooltip.
+describe('blocked: the view lists no matches to act on', () => {
+  it('a muted label in the actions\' place, its reason in the tooltip; nothing listed even with a cover; null blocks nothing', () => {
+    const why = actBlock({ bucketsOnly: true })!
+    expect([render(cover(), { blocked: why }), render(undefined, { blocked: why, canStage: false }), render(undefined, { blocked: why, canAssign: false, canStage: false }), text(render(undefined, { blocked: null }))]).toEqual([
+      `<span class="bulkbar blocked"><span class="tt"><span class="act-st muted" tabindex="0">${ACT_BLOCKED_LABEL}</span><span class="tt-tip"><span class="bb-tip">${why}</span></span></span></span>`,
+      `<span class="bulkbar blocked"><span class="tt"><span class="act-st muted" tabindex="0">${ACT_BLOCKED_LABEL}</span><span class="tt-tip"><span class="bb-tip">${why}</span></span></span></span>`,
+      '',
+      ['assign to me', 'stage for deletion'],
     ])
   })
 })

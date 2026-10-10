@@ -639,4 +639,15 @@ describe('pathGens', () => {
     expect(await pathGens(e, ['d1', 'd2'])).not.toBe(both)
     expect(await pathGens({ ROOT_LABEL: 'root' } as Env, ['d1'])).toBe('')
   })
+  it('a `bysize` repoint alone is a new key too (2026-10-09: re-cut `bysize` gens served stale cached views)', async () => {
+    const { db, raw } = await sqliteD1('cw')
+    const v2 = await readJson<Record<string, D1Variant>>('v2/d1.json')
+    const files = { path: { parquet: 'v2/path-index.parquet', groups: 'v2/path-index.groups.json' }, bysize: { parquet: 'v2/path-index-bysize.parquet', groups: 'v2/path-index-bysize.groups.json' } }
+    seedGeneration(raw, { date: 'd1', gen: 'g1', dir: 'x/d1/g1', variants: v2, files })
+    const e = { DB: db, ROOT_LABEL: 'root' } as Env
+    const before = await pathGens(e, ['d1'])
+    raw.exec("UPDATE index_schema SET gen = 'recut' WHERE date = 'd1' AND variant = 'bysize'")
+    const after = await pathGens(e, ['d1'])
+    expect([before === after, after === await pathGens(e, ['d1'])]).toEqual([false, true])
+  })
 })

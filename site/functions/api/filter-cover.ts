@@ -15,7 +15,7 @@ import { storeReady } from '../_lib/index.js'
 import { queryParam, QueryError } from '../_lib/scope.js'
 import { allMatchRoots, FILTER_VIEW_V, NotFound, pathTotals } from '../_lib/view.js'
 import { COVER_V, coverFloor, coverSet, overCapReason } from '../_lib/cover.js'
-import { indexedGate, staticTag } from '../_lib/staticFilter.js'
+import { hexQuery, indexedGate, staticTag } from '../_lib/staticFilter.js'
 import { FilterRejected, indexedOnly, rejectBody, rejectQuery } from '../_lib/indexedOnly.js'
 import { cacheKeyFor, cacheMatch, cacheStore, serverTiming } from '../_lib/edgeCache.js'
 import { storeKey, withStore } from '../_lib/stores.js'
@@ -60,7 +60,7 @@ export async function onRequestGet(ctx0: Ctx): Promise<Response> {
     if (e instanceof QueryError) return new Response(`bad query: ${e.message}`, { status: 400 })
     throw e
   }
-  const query = qp.query
+  let query = qp.query
   if (!query) return jsonRes({ error: 'q= (a filter) is required' }, 400)
   const refused = indexedOnly(ctx.env) ? rejectQuery(qRaw, url.searchParams.get('qs'), ctx.env.QUERY_SYNTAX) : null
   if (refused) return new Response(rejectBody(refused), { status: 400, headers: { 'content-type': 'application/json' } })
@@ -76,6 +76,8 @@ export async function onRequestGet(ctx0: Ctx): Promise<Response> {
       date = scan
     }
     if (!await st.time('pre', indexedScan(ctx.env, date, true))) return noScan('date', date)
+    // The static index's hex-run rule: the cover's roots are the filter's, matched as the map matches them.
+    query = (await hexQuery(ctx.env, query)).query!
     if (indexedOnly(ctx.env)) {
       const r = await st.time('indexed', indexedGate(ctx.env, query.ast, path, [date]))
       if (r) return new Response(rejectBody(r), { status: 400, headers: { 'content-type': 'application/json' } })
@@ -90,6 +92,7 @@ export async function onRequestGet(ctx0: Ctx): Promise<Response> {
     const why = found?.rollup ? 'There are too many matches under this folder to list them. Open a folder below to act on its matches.'
       : found?.coverage.partial?.length ? `Not every match here could be listed (${found.coverage.partial.join('; ')}).`
       : found?.coverage.approximate?.length ? `Small matches may be missing here (${found.coverage.approximate.join('; ')}).`
+      : found?.coverage.dirsOnly?.length ? 'This scan lists folders only, so its file matches can’t be listed here. Pick a newer scan to act on the matches.'
       : null
     const cap = coverCap(ctx.env)
     // More roots than the cap: first a lower bound on the cover's size (`coverFloor`, a few shallow lookups —

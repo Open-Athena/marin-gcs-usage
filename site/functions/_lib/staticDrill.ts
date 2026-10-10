@@ -33,6 +33,7 @@ import type { Found, HitCache, HitSource } from './staticFilter.js'
 import { type Blobs, cmp, decodeFlat, type FlatSchema, type Hit, type IndexCache, scanAt } from './staticNames.js'
 import { subBlobs } from './staticRuns.js'
 import { compressors } from './zstd.js'
+import { type HexRule, occurs, ruleOf } from './hexRuns.js'
 import { isScanId } from '../../src/scanSlug.js'
 
 export const DRILL_DIR = 'drill'
@@ -585,9 +586,15 @@ export class Drill {
   /** The base tier's alias map. */
   aliases(): Promise<Map<string, { c: string; n: number | null }>> { return this.tier(null).aliases() }
 
+  /** The generation's hex-run rule (`hexRuns.ts`): the catalog's `meta.json` `hex_runs` (null without a catalog
+   *  `info`, or on a generation without the rule). */
+  async hexRuns(): Promise<HexRule | null> {
+    return this.catalog?.info ? ruleOf((await this.catalog.info()).hex_runs) : null
+  }
+
   /** `t`'s (lowercase) view at `P`, on any scan of `state` (default: the current one). */
   async view(t: string, P: string, state?: DrillState): Promise<DrillAnswer> {
-    if (P.toLowerCase().includes(t)) return { source: 'plain' }
+    if (occurs(t, P.toLowerCase(), await this.hexRuns())) return { source: 'plain' }
     const st = state ?? await this.state()
     const { tiers } = st
     const kind: Kind = [...t].length <= 2 ? 'short' : 'long'

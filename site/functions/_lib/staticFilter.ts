@@ -29,6 +29,9 @@ import { type Blobs, cacheIndexes, type FirstHits, type Hit, type Io, r2Blobs, s
 import { tiers } from './staticRuns.js'
 import { ANCHOR_MIN, type FilterReject, type FilterRejectCode, reject } from './indexedOnly.js'
 import { AnchoredSource, parseKey, termInPath, termKey } from './staticAnchors.js'
+import { type HexRule, hexAffected } from './hexRuns.js'
+import type { Matcher } from './queryAst.js'
+import { compileQuery, type NamePred } from './pathQuery.js'
 
 export type { Hit } from './staticNames.js'
 export { type Rollup, rollupAt, rollupTotal } from './staticDrill.js'
@@ -77,8 +80,10 @@ export interface HitSource {
   readonly heavy?: boolean
 }
 
-/** The generation's scans (ids). */
-export interface StaticFilterStore { source: HitSource; scans: () => Promise<string[]>; gen: string }
+/** The generation's scans (ids). `dirOnly`: those of them indexed from a dir-only (v1) source — held, but blind
+ *  to every file name, so a literal's total there is not the scan's (`/api/series` leaves them as gaps). `hexRuns`:
+ *  its hex-run rule (`hexRuns.ts`; absent or null = the full index). */
+export interface StaticFilterStore { source: HitSource; scans: () => Promise<string[]>; dirOnly?: () => Promise<string[]>; gen: string; hexRuns?: () => Promise<HexRule | null> }
 
 /** A suffix range read whole above this many rows (row-group granular) is declined: V = 100K (the
  *  catalog's membership bound, so every non-member fits) plus two 8K-row groups of slack. */
@@ -249,7 +254,7 @@ export function staticFilterStore(env: StaticFilterEnv): StaticFilterStore | nul
         top: dir => cacheIndexes(caches.default, sub(dir, 'anchors'), 'top-v1'),
       },
     })
-    held = { r2: env.INDEX_R2, gen, store: { source: new SuffixHits(t.names, { cache: cacheHits(caches.default, pre), heavy, catalog: heavy ? null : t.catalog, anchored }), scans: t.scans, gen: `${gen}${heavy ? '+drill' : ''}` } }
+    held = { r2: env.INDEX_R2, gen, store: { source: new SuffixHits(t.names, { cache: cacheHits(caches.default, pre), heavy, catalog: heavy ? null : t.catalog, anchored }), scans: t.scans, dirOnly: t.dirOnly, gen: `${gen}${heavy ? '+drill' : ''}`, hexRuns: () => t.names.hexRuns() } }
   }
   return held.store
 }
@@ -260,6 +265,26 @@ export async function staticKey(s: StaticFilterStore | null, ast: QueryAst | und
   if (!s || !key) return null
   const have = await s.scans()
   return dates.every(d => have.includes(d)) ? key : null
+}
+
+/** Which of `dates` are dir-only (v1) scans of the store (`StaticFilterStore.dirOnly`): every source's answer
+ *  there — the suffix shards', the anchored and drill readers', the catalog's (`catalogRoot`) — comes from an
+ *  index that only ever saw folder names, so a literal's matches there are its folder-name matches: exact as
+ *  such (a folder's bytes and objects are its whole subtree's), never a file's. */
+export async function dirsOnlyOf(s: StaticFilterStore | null, dates: string[]): Promise<string[]> {
+  const held = s?.dirOnly ? await s.dirOnly() : []
+  return dates.filter(d => held.includes(d))
+}
+
+/** A literal compared across a dir-only scan and a full one (a diff over the v1 → v2 cutover): one side counts
+ *  folder names only, the other files too, so every file match would read as added — `scan-dirs-only`, never a
+ *  diff. Null: comparable (neither side dir-only, or both), not a static literal, or a view root the literal
+ *  matches (the plain view, nothing searched). */
+export async function dirsOnlySplit(s: StaticFilterStore | null, ast: QueryAst | undefined, path: string, dates: string[]): Promise<FilterReject | null> {
+  const key = staticLiteral(ast)
+  if (!s || !key || termInPath(key, path, s.hexRuns ? await s.hexRuns() : null)) return null
+  const n = (await dirsOnlyOf(s, dates)).length
+  return n && n < dates.length ? reject('scan-dirs-only') : null
 }
 
 /** The filter's bytes and objects under the hits' root on `date` (Σ live first hits), with `keep` an
@@ -280,13 +305,45 @@ export function liveTotal(hits: Hit[], date: string, keep: (usr: string | null) 
  *  character literal's fleet-root `matchCount.n` counted from the roots index, not 0; 6: heavy literals on
  *  the drill runs' scans; 7: with no drilldown, a heavy literal's fleet root from the catalog's buckets and a
  *  `term-too-common` refusal below it, never the approximate walk; 8: anchored terms — `^q`, `q$` were literals before;
- *  9: a heavy `^q` — its fleet root from the starts-with catalog, scoped reads below, a 400K-row bound). */
-const RESPONSE_V = 9
+ *  9: a heavy `^q` — its fleet root from the starts-with catalog, scoped reads below, a 400K-row bound; 10: a
+ *  series' uncovered and dir-only scans are gaps named in `unindexed`, indexed-only or not — never zeros;
+ *  12: a dir-only scan's answer flagged `dirsOnly`, a diff across a dir-only and a full scan `scan-dirs-only`;
+ *  13: the hex-run rule — `hexRuns` on hex-affected literals, `occurs` in the fallback and the anchored reader). */
+const RESPONSE_V = 13
 
-/** The cache keys' static marker: the generation when the static filter would answer this query's literal
- *  (so a response never outlives a switch of backend or generation), else ''. */
+/** The query's substring matchers (positive and negative): the literals the hex-run rule applies to. */
+const subMatchers = (ast: QueryAst | undefined): Extract<Matcher, { kind: 'sub' }>[] =>
+  ast ? [...ast.alts.flat(), ...ast.neg].filter((m): m is Extract<Matcher, { kind: 'sub' }> => m.kind === 'sub') : []
+export const subTexts = (ast: QueryAst | undefined): string[] => subMatchers(ast).map(m => m.text)
+
+/** The cache keys' static marker: the generation when the static filter would answer this query's literal, or
+ *  when the query has any substring matcher (the generation's hex-run rule decides how the fallback matches it), so
+ *  a response never outlives a switch of backend or generation; else ''. */
 export function staticTag(env: StaticFilterEnv, query: { ast?: QueryAst } | undefined): string {
-  return staticLiteral(query?.ast) && staticFilterStore(env) ? `${staticFilterStore(env)!.gen}.${RESPONSE_V}` : ''
+  const s = staticFilterStore(env)
+  return s && (staticLiteral(query?.ast) || subTexts(query?.ast).length) ? `${s.gen}.${RESPONSE_V}` : ''
+}
+
+/** The deployment's hex-run rule: its static store's generation's (null: no static store, or a generation built
+ *  without the rule). The filter's predicate then matches substrings by `occurs` under it (`pathQuery.ts`), so the
+ *  static and the path-store answers for a literal agree. */
+export async function staticHexRule(env: StaticFilterEnv): Promise<HexRule | null> {
+  const s = staticFilterStore(env)
+  return s?.hexRuns ? await s.hexRuns() : null
+}
+
+/** `query` recompiled under the deployment's hex-run rule (`staticHexRule`), with the rule: unchanged when there is
+ *  none (or no query). */
+export async function hexQuery(env: StaticFilterEnv, query: NamePred | undefined): Promise<{ query: NamePred | undefined; hexRuns: HexRule | null }> {
+  const rule = query?.ast ? await staticHexRule(env) : null
+  return { query: rule ? compileQuery(query!.ast!, { hexRuns: rule }) : query, hexRuns: rule }
+}
+
+/** A response's `hexRuns` note: the rule, when it is on and some substring of the query is hex-affected (its
+ *  matches inside long hex ids aren't counted); else nothing. Never a refusal. */
+export function hexNote(rule: HexRule | null, ast: QueryAst | undefined): { hexRuns?: HexRule } {
+  // A start-anchored literal (`^q`, `^q$`) occurs at a segment's start, which the rule never drops (`segmentOccurs`).
+  return rule && subMatchers(ast).some(m => !m.start && hexAffected(m.text, rule)) ? { hexRuns: { min: rule.min, tail: rule.tail } } : {}
 }
 
 /** Why a static read declined: a scan outside the generation (`skey` null), or a heavy literal past the
@@ -300,16 +357,20 @@ export function declined(s: StaticFilterStore | null, skey: string | null, raw: 
 }
 
 /** An indexed-only deployment's coverage test (`indexedOnly.ts`): `ast` (one literal, `rejectAst` passed) is
- *  answered statically under `path` on every one of `dates`, else the refusal `declined` names. A view root
+ *  answered statically under `path` on every one of `dates`, else the refusal `declined` names (or, dates
+ *  across a dir-only and a full scan, `scan-dirs-only`: `dirsOnlySplit`); a dir-only scan alone passes, its
+ *  view flagged `dirsOnly`. A view root
  *  the literal matches is the plain view (nothing to search). The answer is held per isolate, so the view's
  *  own read reuses it. */
 export async function indexedGate(env: StaticFilterEnv, ast: QueryAst | undefined, path: string, dates: string[], opts?: HitOpts): Promise<FilterReject | null> {
   const key = staticLiteral(ast)
   if (!key) return reject('unsupported-terms')
-  if (termInPath(key, path)) return null
   const s = staticFilterStore(env)
+  if (termInPath(key, path, await staticHexRule(env))) return null
   const skey = s ? await staticKey(s, ast, dates) : null
   if (!skey) return declined(s, null, null)
+  const split = await dirsOnlySplit(s, ast, path, dates)
+  if (split) return split
   const found = await s!.source.hits(key, path, opts)
   return found && covers(found, dates) ? null : declined(s, skey, found)
 }

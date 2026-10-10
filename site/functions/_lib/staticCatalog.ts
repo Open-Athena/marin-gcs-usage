@@ -20,12 +20,14 @@
 import { parquetReadObjects } from 'hyparquet'
 import { type Blobs, cmp, decodeFlat, type FlatSchema, type IndexCache, scanAt, type Totals } from './staticNames.js'
 import { compressors } from './zstd.js'
+import { ruleOf } from './hexRuns.js'
 
 export const CELLS = 'catalog/cells.parquet'
 export const CELL_SCHEMA: FlatSchema = { columns: ['q', 'bucket', 'vf', 'b', 'o'], types: ['BYTE_ARRAY', 'BYTE_ARRAY', 'INT64', 'INT64', 'INT64'] }
 const NC = CELL_SCHEMA.columns.length
 
-export interface CatalogMeta { gen: string; bytes: number; cells_rows: number; row_groups: number; membership: { max_rows: number } }
+/** `hex_runs`: the generation's hex-run rule (`hexRuns.ts`), recorded by every tier; absent = the full index. */
+export interface CatalogMeta { gen: string; bytes: number; cells_rows: number; row_groups: number; membership: { max_rows: number }; hex_runs?: { min: number; tail: number } }
 /** `index.parquet`, column-wise; `chunks` flat: column `c` of group `g` at `(g * 5 + c) * 3`. */
 export interface CatalogIndex { size: number; qMin: string[]; qMax: string[]; offset: number[]; length: number[]; rows: number[]; chunks: number[] }
 export interface Cell { bucket: string; vf: bigint; b: bigint; o: bigint }
@@ -76,6 +78,7 @@ export class StaticCatalog {
   info(): Promise<CatalogMeta> {
     this.meta ??= this.blobs.json<CatalogMeta>('catalog/meta.json').then(m => {
       if (!Number.isSafeInteger(m.membership?.max_rows) || m.membership.max_rows < 1 || !Number.isSafeInteger(m.bytes)) throw new Error('static catalog: bad meta.json')
+      ruleOf(m.hex_runs)
       return m
     })
     this.meta.catch(() => { this.meta = undefined })
