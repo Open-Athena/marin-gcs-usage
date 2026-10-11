@@ -278,13 +278,21 @@ phase index-gc
 # scan-id order) to cw's generation as a run — Batch stages, then R2, then `manifests/<scan>.json` — so the map's
 # `?f=` filter and /names answer it statically. On when STATIC_NAMES=1 (the cron sets it, with STATIC_NAMES_IMAGE =
 # this job's image): the stages run as this job's account (`cw-s3-job`, cw's profile; it holds the scratch bucket).
-# See specs/cw-static-names.md. Never fatal: a scan the index doesn't hold reads "not indexed" until a later run's
-# `-c` catches it up. Exit 3 = not the next scan yet.
+# See specs/cw-static-names.md. Its stages are separate Batch jobs this VM only waits on, so it runs in the
+# background, beside the warm-up, probe and digest (an `overlapped` phase in job/scan-runs.json, recorded from
+# when it began); the job waits for it before finishing. Never fatal: a scan the index doesn't hold reads "not
+# indexed" until a later run's `-c` catches it up. Exit 3 = not the next scan yet.
+STATIC_PID=""
 if [ "${STATIC_NAMES:-0}" = "1" ] && [ "${REPROC:-0}" != "1" ]; then
-  STATIC_NAMES_PROFILE=cw dt-cloud static-names runs add -c "$SNAP_ID" \
-    || echo "WARN: static-names runs add failed for $SNAP_ID (exit $?; the filter keeps its path-store fallback)" >&2
+  SN_BEGAN=$(date +%s)
+  (
+    STATIC_NAMES_PROFILE=cw dt-cloud static-names runs add -c "$SNAP_ID" \
+      || echo "WARN: static-names runs add failed for $SNAP_ID (exit $?)" >&2
+    echo "PHASE static-names: ${SECONDS}s (wall, overlapped)" >&2
+    scan_run -P static-names -b "$SN_BEGAN" -q overlapped
+  ) &
+  STATIC_PID=$!
 fi
-phase static-names
 
 # 4b. Warm the site's subtree + diff caches for this scan (the colo cache, plus
 # the global KV tier once `CACHE_KV` is bound in site/wrangler.toml) so the
@@ -330,5 +338,7 @@ else
   echo "no Slack bot transport (SLACK_BOT_TOKEN+SLACK_CHANNEL) — skipping usage digest" >&2
 fi
 phase digest
+
+[ -z "$STATIC_PID" ] || wait "$STATIC_PID" || echo "WARN: static-names stage exited $?" >&2
 
 echo "CW-SCAN-JOB-DONE $SNAP_ID -> gs://$DATA/snapshots/cw/$SNAP_ID"

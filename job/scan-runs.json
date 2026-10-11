@@ -3,6 +3,7 @@
   "comment": "The cw-s3 deployment's scan-run profile (specs/scan-runs-ui.md): `dt-cloud scan-run -c job/scan-runs.json`. Prices: n2 list $/h, us-central1, compute only.",
   "project": "oa-internal-450019",
   "regions": ["us-central1"],
+  "overlapped": ["static-names"],
   "jobs": [
     {"kind": "scan", "where": {"commands": "^job/cw-run\\.sh"},
      "scan": [{"env": "SNAP_ID"}, {"log": "^CW-SCAN-JOB-DONE (\\S+)"}, {"started": "%Y-%m-%dT%H%M"}]}
