@@ -273,12 +273,11 @@ describe('static filter: dispatch', () => {
     expect([v.tier.split('+')[0], matchedRows(v)]).toEqual(['static', expected.roots.tomat[''][B]])
   })
 
-  it('a scan outside the generation, a lens or a class scope keep today\'s read', async () => {
+  it('a literal on a scan outside the generation is `scan-not-indexed`, never the walk; a class scope keeps today\'s read', async () => {
     const outside: StaticFilterStore = { ...staticStore(), scans: async () => [B] }
-    const v = await view(envStatic(outside), A, '', 'tomat')
-    expect(v.tier.split('+')[0]).toBe('search')
+    const got = await view(envStatic(outside), A, '', 'tomat').catch((e: FilterRejected) => e.reject.code)
     const c = await view(envStatic(), A, '', 'tomat', { classes: new Set(['1']) as never })
-    expect(c.tier.split('+')[0]).toBe('search')
+    expect([got, c.tier.split('+')[0]]).toEqual(['scan-not-indexed', 'search'])
   })
 
   it('a first hit dedups a name holding the term twice (one row per occurrence in the shards)', async () => {

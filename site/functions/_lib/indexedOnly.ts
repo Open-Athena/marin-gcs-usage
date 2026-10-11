@@ -4,7 +4,8 @@
  * starting with it, `q$` ending with it, `^q$` the whole name; specs/search-extensions.md §2), with no `/`,
  * `*`, regex, exclusion, second term or alternative, unscoped — and every other form is a 400 with a reason code, never a slow
  * or approximate scan of the path store (specs/architecture/static-name-search.md, "Indexed-only filter").
- * A literal on a scan the index doesn't cover is the same 400 (`scan-not-indexed`).
+ * A literal on a scan the index doesn't cover is the same 400 (`scan-not-indexed`) — on every deployment with the
+ * static filter, indexed-only or not (`view.ts`).
  *
  * Pure, DOM- and Workers-free: the server (`subtree`, `diff`, `series`, `/names`) and the client (the filter
  * box's inline message and help) share it.

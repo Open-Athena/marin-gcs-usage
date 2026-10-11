@@ -245,11 +245,11 @@ describe('the map routes, flag set: a scan the static index doesn\'t cover', () 
       .toEqual([refusal('scan-not-indexed'), refusal('scan-not-indexed')])
   })
 
-  it('a scan outside the generation (even a light literal); unset, it reads the path store as before', async () => {
+  it('a scan outside the generation (even a light literal); unset, the same refusal', async () => {
     expect(await Promise.all([
       call(subtree, `date=${B}&path=bk&q=tomat`, envOf(true, store([A]))),
       call(subtree, `date=${B}&path=bk&q=tomat`, envOf(false, store([A]))),
-    ])).toEqual([refusal('scan-not-indexed'), [200, 'ok']])
+    ])).toEqual([refusal('scan-not-indexed'), refusal('scan-not-indexed')])
   })
 
   it('the series: covered scans\' points, the others named (`unindexed`), never read per scan', async () => {
@@ -320,6 +320,64 @@ describe('an anchored term on a generation with no anchors build (cw: `anchors=F
       expect(await Promise.all([call(subtree, `date=${A}&path=bk&${q('^tomat')}`, env), call(series, `path=bk&${q('^tomat')}`, env)]))
         .toEqual([[200, 'ok'], [400, { error: 'a filtered series needs its match roots (paths=)' }]])
     } finally { spy.mockRestore() }
+  })
+})
+
+// cw prod (`FILTER_STATIC` on, `FILTER_INDEXED_ONLY` off): its newest scan, published but not yet appended to the
+// static index, answered `?f=.json` from the thresholded path-store walk — "no matches" — blind to small matches.
+describe('flag unset: a static literal on a scan the generation doesn\'t hold is `scan-not-indexed`, never the walk', () => {
+  const newer = () => envOf(false, store([A]))
+  const older = () => envOf(false, store([B]))
+  const coverOf = async (qs: string, env: Env): Promise<[number, unknown]> => {
+    const r = await filterCover({ request: new Request(`http://localhost/api/filter-cover?${qs}`), env } as never)
+    const j = await r.json() as Record<string, unknown>
+    return [r.status, r.status === 200 ? [j.date, j.roots] : j]
+  }
+  const tierOf = async (qs: string, env: Env): Promise<[number, string]> => {
+    const r = await subtree({ request: new Request(`http://localhost/api/x?${qs}`), env })
+    return [r.status, (await r.json() as { tier: string }).tier.split('+')[0]]
+  }
+
+  it('subtree: past the newest scan and before the base, light and heavy literals, at the root and below', async () => {
+    expect(await Promise.all([
+      call(subtree, `date=${B}&path=bk&q=tomat`, newer()),
+      call(subtree, `date=${B}&path=&q=tomat`, newer()),
+      call(subtree, `date=${B}&path=bk&q=${encodeURIComponent('.json')}`, newer()),
+      call(subtree, `date=${B}&path=bk/fill&q=0`, newer()),
+      call(subtree, `date=${A}&path=bk&q=tomat`, older()),
+    ])).toEqual(Array(5).fill(refusal('scan-not-indexed')))
+  })
+
+  it('diff: either side uncovered is refused; both covered answers', async () => {
+    expect(await Promise.all([
+      call(diff, `from=${A}&to=${B}&path=bk&q=tomat`, newer()),
+      call(diff, `from=${A}&to=${B}&path=bk&q=tomat`, older()),
+      call(diff, `from=${A}&to=${B}&path=bk&q=tomat`, envOf(false)),
+    ])).toEqual([refusal('scan-not-indexed'), refusal('scan-not-indexed'), [200, 'ok']])
+  })
+
+  it('filter-cover: refused on the uncovered scan; the covered one lists its roots', async () => {
+    expect(await Promise.all([
+      coverOf(`date=${B}&path=bk&q=tomat`, newer()),
+      coverOf(`date=${A}&path=bk&q=tomat`, newer()),
+    ])).toEqual([
+      refusal('scan-not-indexed'),
+      [200, [A, { n: 5, b: 17927, o: 7 }]],
+    ])
+  })
+
+  it('a covered scan answers byte for byte as when the generation holds both', async () => {
+    const [only, both] = await Promise.all([store([A]), store()].map(async s => (await subtree({ request: new Request(`http://localhost/api/x?date=${A}&path=bk&q=tomat`), env: envOf(false, s) })).text()))
+    expect([JSON.parse(only).tier.split('+')[0], only]).toEqual(['static', both])
+  })
+
+  it('a query the static index can\'t answer (regex, glob, two terms) still walks the uncovered scan; a view root the literal holds is the plain view', async () => {
+    expect(await Promise.all([
+      tierOf(`date=${B}&path=bk&q=tom.*t&qs=regex`, newer()),
+      tierOf(`date=${B}&path=bk&q=${encodeURIComponent('tom*t')}`, newer()),
+      tierOf(`date=${B}&path=bk&q=${encodeURIComponent('tomat bin')}`, newer()),
+      call(subtree, `date=${B}&path=bk/data/tomato&q=tomat`, newer()),
+    ])).toEqual([[200, 'bysize'], [200, 'search'], [200, 'search'], [200, 'ok']])
   })
 })
 

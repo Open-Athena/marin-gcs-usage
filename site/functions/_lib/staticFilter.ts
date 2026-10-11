@@ -333,8 +333,10 @@ export function liveTotal(hits: Hit[], date: string, keep: (usr: string | null) 
  *  14: an anchored term on a generation with no anchors build is `anchor-not-indexed`, never the approximate walk;
  *  15: `\^`, `\$`, `\\` escapes — `q\$` and `\^q` were anchored or `\`-holding literals before;
  *  16: a heavy literal on a scan its drilldown doesn't cover — past a run with no live `drill/` — is
- *  `scan-not-indexed`, never the walk's "no matches"). */
-const RESPONSE_V = 16
+ *  `scan-not-indexed`, never the walk's "no matches"; 17: any static literal on a scan the generation doesn't hold — newer
+ *  than its newest (published, not yet appended) or before its base — or that its answer doesn't cover is `scan-not-indexed`
+ *  on every deployment, indexed-only or not: the walk answered it before, missing small matches). */
+const RESPONSE_V = 17
 
 /** The query's substring matchers (positive and negative): the literals the hex-run rule applies to. */
 const subMatchers = (ast: QueryAst | undefined): Extract<Matcher, { kind: 'sub' }>[] =>
