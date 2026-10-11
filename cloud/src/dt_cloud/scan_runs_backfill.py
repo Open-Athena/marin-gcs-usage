@@ -91,21 +91,24 @@ def scan_of(kind: JobKind, job: Mapping, lines: Sequence[tuple[int, str]], start
 
 def phases_of(profile: Profile, lines: Sequence[tuple[int, str]], started: int | None) -> list[Phase]:
     """The phase markers, in order: each ends at its line's time and starts where the previous ended (an overlapped
-    phase at the run's start). A repeated name keeps its last marker."""
+    phase at the run's start; a concurrent one where the last serial phase ended). A repeated name keeps its last
+    marker."""
     rx = re.compile(profile.phase_marker)
     out: dict[str, Phase] = {}
-    prev = started
+    prev = serial = started
     for t, x in lines:
         m = rx.search(x)
         if not m or m.group("name") in profile.phase_ignore:
             continue
         name = m.group("name")
         note = m.groupdict().get("note")
-        begin = started if name in profile.overlapped else prev
+        begin = started if name in profile.overlapped else serial if name in profile.concurrent else prev
         seq = out[name].seq if name in out else len(out)
         out[name] = Phase(name, seq, begin, t, "done", note)
         if name not in profile.overlapped:
             prev = t
+            if name not in profile.concurrent:
+                serial = t
     return sorted(out.values(), key=lambda p: p.seq)
 
 

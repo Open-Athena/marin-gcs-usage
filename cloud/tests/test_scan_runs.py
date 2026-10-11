@@ -63,6 +63,7 @@ PROFILE = parse_profile({
          "scan": [{"commands": "/listing/([0-9T-]+)/"}]},
     ],
     "overlapped": ["ingest"],
+    "concurrent": ["names", "iv"],
     "nop_marker": "^NOP ",
     "error_marker": "^\\+ fail_alert (?P<rc>\\d+) (?P<line>\\d+) (?P<cmd>.*)",
     "outputs": [
@@ -289,6 +290,27 @@ def test_classify():
     assert [getattr(classify(PROFILE, j), "kind", None) for j in JOBS] == ["scan", "listing", "reproc", "scan", "scan", None]
 
 
+def test_record_concurrent_phases():
+    """Concurrent phases each start where the last serial phase ended; the next serial phase where the last of them did."""
+    s = sink()
+    t0 = ts("2026-10-08T07:01:00")
+    record(s, PROFILE, "2026-10-08", "uid-c", t0, start=True)
+    record(s, PROFILE, "2026-10-08", "uid-c", t0 + 1500, phase="listing")
+    record(s, PROFILE, "2026-10-08", "uid-c", t0 + 1510, phase="ingest")
+    record(s, PROFILE, "2026-10-08", "uid-c", t0 + 3000, phase="publish")
+    record(s, PROFILE, "2026-10-08", "uid-c", t0 + 4000, phase="iv")
+    record(s, PROFILE, "2026-10-08", "uid-c", t0 + 6000, phase="names")
+    record(s, PROFILE, "2026-10-08", "uid-c", t0 + 6500, phase="sync")
+    assert rows(s, "SELECT phase, seq, started_ts - %d, finished_ts - %d FROM scan_run_phases ORDER BY seq" % (t0, t0)) == [
+        ("listing", 0, 0, 1500),
+        ("ingest", 1, 0, 1510),
+        ("publish", 2, 1500, 3000),
+        ("iv", 3, 3000, 4000),
+        ("names", 4, 3000, 6000),
+        ("sync", 5, 6000, 6500),
+    ]
+
+
 def test_phases_from_markers():
     lines = task_lines(LOGS)["uid-a"]
     assert phases_of(PROFILE, lines, ts("2026-10-08T07:01:00")) == [
@@ -296,6 +318,23 @@ def test_phases_from_markers():
         Phase("ingest", 1, ts("2026-10-08T07:01:00"), ts("2026-10-08T07:30:00"), "done", "wall, overlapped the listing"),
         Phase("index", 2, ts("2026-10-08T07:30:00"), ts("2026-10-08T07:50:00"), "done", "wall"),
         Phase("publish", 3, ts("2026-10-08T07:50:00"), ts("2026-10-08T07:55:00"), "done", "wall"),
+    ]
+
+
+def test_phases_from_markers_concurrent():
+    lines = [
+        (ts("2026-10-08T07:30:00"), "PHASE listing: 1740s (wall)"),
+        (ts("2026-10-08T07:50:00"), "PHASE publish: 2940s (wall)"),
+        (ts("2026-10-08T08:05:00"), "PHASE iv: 3840s (wall)"),
+        (ts("2026-10-08T08:40:00"), "PHASE names: 5940s (wall)"),
+        (ts("2026-10-08T08:50:00"), "PHASE sync: 6540s (wall)"),
+    ]
+    assert phases_of(PROFILE, lines, ts("2026-10-08T07:01:00")) == [
+        Phase("listing", 0, ts("2026-10-08T07:01:00"), ts("2026-10-08T07:30:00"), "done", "wall"),
+        Phase("publish", 1, ts("2026-10-08T07:30:00"), ts("2026-10-08T07:50:00"), "done", "wall"),
+        Phase("iv", 2, ts("2026-10-08T07:50:00"), ts("2026-10-08T08:05:00"), "done", "wall"),
+        Phase("names", 3, ts("2026-10-08T07:50:00"), ts("2026-10-08T08:40:00"), "done", "wall"),
+        Phase("sync", 4, ts("2026-10-08T08:40:00"), ts("2026-10-08T08:50:00"), "done", "wall"),
     ]
 
 

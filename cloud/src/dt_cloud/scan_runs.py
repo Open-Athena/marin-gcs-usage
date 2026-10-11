@@ -275,6 +275,9 @@ class Profile:
     phase_ignore: tuple[str, ...] = ("total",)
     #: Phases that run beside the others from the start (their marker is where they joined), by name.
     overlapped: tuple[str, ...] = ()
+    #: Phases that run beside each other after the serial phase before them: each starts where the last phase
+    #: outside this set (and `overlapped`) ended, and the next serial phase starts where the last of them ended.
+    concurrent: tuple[str, ...] = ()
     #: A log line meaning the run did nothing (an already-published scan): group 1 the scan id.
     nop_marker: str | None = None
     #: A log line naming a failure (the ERR trap's xtrace), groups `rc`, `line`, `cmd`.
@@ -305,6 +308,7 @@ def parse_profile(d: Mapping) -> Profile:
     kw["regions"] = tuple(d.get("regions", ()))
     kw["phase_ignore"] = tuple(d.get("phase_ignore", Profile.phase_ignore))
     kw["overlapped"] = tuple(d.get("overlapped", ()))
+    kw["concurrent"] = tuple(d.get("concurrent", ()))
     kw["jobs"] = tuple(JobKind(kind=j["kind"], where=j.get("where", {}), scan=tuple(j.get("scan", ())),
                                downstream=bool(j.get("downstream", False))) for j in d.get("jobs", ()))
     kw["outputs"] = tuple(OutputSpec(key=o["key"], uri=o["uri"], after=o.get("after"), kinds=tuple(o.get("kinds", ())),
@@ -596,7 +600,8 @@ def record(
         run = replace(run, **{k: v for k, v in job_fields(profile, job, now).items() if v is not None})
     new_phases: list[Phase] = []
     if phase:
-        prev_end = max((p["finished_ts"] for p in phases if p.get("finished_ts") and p["phase"] not in profile.overlapped), default=None)
+        skip = profile.overlapped + (profile.concurrent if phase in profile.concurrent else ())
+        prev_end = max((p["finished_ts"] for p in phases if p.get("finished_ts") and p["phase"] not in skip), default=None)
         begin = run.started_ts or started
         p_start = begin if phase in profile.overlapped else (prev_end or begin)
         seq = next((p["seq"] for p in phases if p["phase"] == phase), len(phases))
