@@ -41,7 +41,7 @@ import { shared } from './shared.js'
 import { storeKey } from './stores.js'
 import { extrasFor } from './extras.js'
 import { loadRegistry } from './identity.js'
-import { covers, declined, dirsOnlyOf, dirsOnlySplit, fromDrill, type Hit, type Rollup, rollupAt, staticFilterStore, staticKey } from './staticFilter.js'
+import { covers, declined, dirsOnlyOf, dirsOnlySplit, type Hit, type Rollup, rollupAt, staticFilterStore, staticKey, staticLiteral } from './staticFilter.js'
 import { scanAt } from './staticNames.js'
 import { FilterRejected, indexedOnly, reject } from './indexedOnly.js'
 
@@ -852,23 +852,29 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       // generation, exact, from one cached suffix-range read — no search sidecars, no thresholded walk.
       const sfs = !lens && !classes ? staticFilterStore(env) : null
       const skey = sfs ? await staticKey(sfs, pq, [date]) : null
+      // A literal the static index answers, on a scan its generation doesn't hold (newer than its newest — published,
+      // not yet appended — or before its base): `scan-not-indexed` on every deployment, indexed-only or not — never the
+      // thresholded walk, which can't see small matches and reads as "no matches". Queries the index can't answer at
+      // all (regexes, globs, several terms: no literal) still walk.
+      if (sfs && !skey && staticLiteral(pq)) throw new FilterRejected(reject('scan-not-indexed'))
       // A dir-only (v1) scan's index never saw a file: whatever answers, its matches are its folders'.
       if (skey && (await dirsOnlyOf(sfs, [date])).length) noteCoverage(cov, 'dirsOnly', DIRS_ONLY)
       const raw = skey ? await sfs!.source.hits(skey, path, { firstPaint: o.firstPaint }) : null
       let shits = raw
-      // A heavy literal on a scan its drilldown doesn't cover (a run with no live `drill/` cuts the drill's
-      // stack: that run's scans and every later one's), or that its heavy source declined: `scan-not-indexed` —
-      // never the thresholded walk, which can't see a heavy literal's matches and reads as "no matches".
-      if (skey && (raw ? fromDrill(raw) && !covers(raw, [date]) : !!sfs!.source.heavyDeclined?.(skey))) throw new FilterRejected(reject('scan-not-indexed'))
+      // An answer that doesn't cover the scan — a heavy literal past the drill base (a run with no live `drill/` cuts
+      // the drill's stack: that run's scans and every later one's), a light read over a stack cut mid-read, the
+      // catalog's buckets on a scan past its stack — or a heavy literal its heavy source declined: `scan-not-indexed`,
+      // never the thresholded walk, which can't see the literal's small matches and reads as "no matches".
+      if (skey && (raw ? !covers(raw, [date]) : !!sfs!.source.heavyDeclined?.(skey))) throw new FilterRejected(reject('scan-not-indexed'))
       // A heavy literal's rollups know no owners: under one, the view reads as before.
-      const off = shits && !covers(shits, [date]) ? 'after the drill base' : shits?.rollup && owner ? 'rollup: no owners' : null
+      const off = shits?.rollup && owner ? 'rollup: no owners' : null
       if (off) shits = null
       // An indexed-only deployment never walks the path store for a filter (`indexedOnly.ts`); nor does a heavy
       // literal with no drilldown (`FILTER_STATIC_HEAVY` off), whose thresholded walk would read as "no
       // matches": below the fleet root it is `term-too-common`, and the root's catalog buckets know no owners.
       // Nor does an anchored term on a generation with no anchors build (`anchor-not-indexed`), indexed-only or not.
       const noDrill = !!sfs && !!skey && sfs.source.heavy === false
-      const why = shits ? null : (noDrill || raw?.rollup?.scopedBelow) && raw?.rollup?.bucketsOnly && owner && covers(raw, [date]) ? reject('unsupported-scope') : declined(sfs, skey, raw)
+      const why = shits ? null : (noDrill || raw?.rollup?.scopedBelow) && raw?.rollup?.bucketsOnly && owner ? reject('unsupported-scope') : declined(sfs, skey, raw)
       if (why && (indexedOnly(env) || why.code === 'anchor-not-indexed' || (noDrill && why.code !== 'scan-not-indexed'))) throw new FilterRejected(why)
       tr?.('static', performance.now() - t0, shits ? `${skey} ${shits.rollup ? `rollup ${shits.rollup.cells.length}` : shits.hits.length}` : skey ? `declined${off ? ` (${off})` : ''}` : undefined)
       if (shits?.rollup) {
