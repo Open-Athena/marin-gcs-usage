@@ -203,12 +203,19 @@ export function metaHref(base: string | null | undefined, uri: string): string |
 export const mapHref = (scan: string, storePath = '/', slug: (id: string) => string = exactSlug): string | null =>
   isScanId(scan) ? `${storePath.replace(/\/$/, '')}/?d=${slug(scan)}` : null
 
-export const batchHref = (project: string, region: string, job: string): string =>
-  `https://console.cloud.google.com/batch/jobsDetail/regions/${region}/jobs/${job}/details?project=${encodeURIComponent(project)}`
+export const batchHref = (project: string, region: string, job: string, tab: 'details' | 'logs' = 'details'): string =>
+  `https://console.cloud.google.com/batch/jobsDetail/regions/${region}/jobs/${job}/${tab}?project=${encodeURIComponent(project)}`
 
-/** The run's task logs (Batch's `labels.job_uid` is the run id). */
-export function logsHref(project: string, run: Pick<ScanRun, 'run_id' | 'started_ts'>): string {
+/** Logs Explorer's `;query=` is parsed as URL params: `(`/`)` must be escaped
+ * too (`encodeURIComponent` leaves them), or the query is cut at the first `(`. */
+export const logsQueryParam = (query: string): string => encodeURIComponent(query).replace(/\(/g, '%28').replace(/\)/g, '%29')
+
+/** The run's logs: its Batch job's Logs tab (task + agent logs, no query to
+ * get wrong), else Logs Explorer over its task logs (`labels.job_uid` is the
+ * run id). */
+export function logsHref(project: string, run: Pick<ScanRun, 'run_id' | 'started_ts' | 'job_name' | 'region'>): string {
+  if (run.job_name && run.region) return batchHref(project, run.region, run.job_name, 'logs')
   const since = run.started_ts != null ? new Date((run.started_ts - 600) * 1000).toISOString() : null
   const query = `labels.job_uid="${run.run_id}"\nlog_id("batch_task_logs")${since ? `\ntimestamp >= "${since}"` : ''}`
-  return `https://console.cloud.google.com/logs/query;query=${encodeURIComponent(query)}?project=${encodeURIComponent(project)}`
+  return `https://console.cloud.google.com/logs/query;query=${logsQueryParam(query)}?project=${encodeURIComponent(project)}`
 }

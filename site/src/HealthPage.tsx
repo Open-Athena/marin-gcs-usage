@@ -193,7 +193,7 @@ export function HealthPage() {
     <main className="staged-page scans-page health-page">
       <SiteNav />
       <h1>Health</h1>
-      <p className="sub">The state of this deployment's append-only stores: each store's runs over the scan timeline, what every scan is served from, and how fresh it is. Each scan job's run is on <Link to="/scans">Scan runs</Link>.</p>
+      <p className="sub">What this deployment serves for each scan, and how fresh it is: the path index (the map, every scan) and the append-only stores scans are added to as runs — the static name index (the map's name filter and /names) and the interval store, where configured. Each scan job's run is on <Link to="/scans">Scan runs</Link>.</p>
       {q.isLoading ? <p>Loading…</p> : q.error ? <p className="err">{q.error.message}</p> : doc && (<>
         <section className="hl-fresh">
           <h3>Freshness</h3>
@@ -210,7 +210,7 @@ export function HealthPage() {
           {WINDOWS.map(([w]) => <button key={w} type="button" className={w === win ? 'on' : undefined} aria-pressed={w === win} onClick={() => setWin(w)}>{w}</button>)}
           <span className="hl-legend"><i className="hl-sw present" />present <i className="hl-sw pending" />pending <i className="hl-sw missing" />missing <i className="hl-sw now" />now</span>
         </div>
-        {doc.stores.length === 0 && <p className="dim">This deployment configures no append-only store (no <code>INTERVAL_STORE_GEN</code> or <code>STATIC_GEN</code> with an <code>INDEX_R2</code> binding).</p>}
+        {doc.stores.length === 0 && <p className="dim">No append-only store is configured here (<code>STATIC_GEN</code> or <code>INTERVAL_STORE_GEN</code>, with an <code>INDEX_R2</code> binding), so there are no store runs to show; the coverage below is the path index's.</p>}
         {doc.stores.map(s => <StoreSection key={s.kind} s={s} doc={doc} genesis={genesis} now={now} />)}
         <section className="hl-coverage">
           <h3>Coverage per scan</h3>
@@ -220,8 +220,8 @@ export function HealthPage() {
           </p>
           {doc.unserved.length > 0 && (
             <p className="dim">
-              <Tooltip content="A scan job finished for these scans, but no store serves them (not in the path index or any store's runs): e.g. a backfilled run of a scan purged since. Not counted as gaps.">
-                <span>{doc.unserved.length} finished job{doc.unserved.length === 1 ? '' : 's'} with no served scan: {doc.unserved.join(', ')}</span>
+              <Tooltip content={<>A scan job finished for these, but nothing serves them now (not in the path index or any store's runs), e.g. scans purged since. Not counted as gaps: {doc.unserved.join(', ')}</>}>
+                <span>{doc.unserved.length} older scan{doc.unserved.length === 1 ? '' : 's'} no longer served</span>
               </Tooltip>
             </p>
           )}
