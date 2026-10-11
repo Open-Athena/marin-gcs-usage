@@ -112,6 +112,21 @@ STORE_REGION = "auto"
 STORES_EXTRA = "meta"
 STORES_JSON = '{"meta":{"scope":"admin","vars":{"ROOT_LABEL":"Marin usage — meta","SNAPSHOTS_SUBDIR":"meta","STORE_SCHEME":"gs://","STORE_BUCKETS":"oa-gcs-usage-dvx,oa-cw-s3-usage-index","STORE_PREFIXES":"meta-l2/,snapshots/meta/","STORE_BUCKET":"oa-cw-s3-usage-index","STORE_REGION":"auto","ROOT_TITLE":"Data behind this site: scans, indexes and listings in oa-gcs-usage-dvx (GCS) and oa-cw-s3-usage-index (R2)"},"secrets":{"STORE_ENDPOINT":"STORE_ENDPOINT","STORE_ACCESS_KEY_ID":"STORE_ACCESS_KEY_ID","STORE_SECRET_ACCESS_KEY":"STORE_SECRET_ACCESS_KEY"}}}'
 
+# Static name search (specs/architecture/static-name-search.md, specs/static-append.md): the map's `?f=` filter
+# and /names read cw's static name index from its R2 bucket (INDEX_R2, below; generation `STATIC_GEN` under
+# `static-names/<gen>/`, built by `job/static-names.sh` with `STATIC_NAMES_PROFILE=cw`, appended per scan by
+# the scan job's stage 4f). The hex-run generation (specs/static-hex-runs.md), light index and drill both on R2;
+# heavy terms read the drill. Same values as `[env.preview.vars]`.
+FILTER_STATIC = "1"
+NAME_SUMMARY_STATIC = "1"
+STATIC_GEN = "2026-10-10cw"
+FILTER_STATIC_HEAVY = "1"
+
+# Worker-served indexes (the static name index), read through a native binding (the store seam's S3 creds are
+# for the path store; this is the same bucket).
+[[r2_buckets]]
+binding = "INDEX_R2"
+bucket_name = "oa-cw-s3-usage-index"
 
 # Global cache tier for the index reader's JSON (`functions/_lib/edgeCache.ts`:
 # colo cache → KV; gcs binds `CACHE_KV`). Optional — the code runs without it
@@ -207,7 +222,7 @@ STORES_JSON = '{"meta":{"scope":"admin","vars":{"ROOT_LABEL":"Marin usage — me
 # Static name search (specs/architecture/static-name-search.md, specs/static-append.md): the map's `?f=` filter
 # and /names read cw's static name index from its R2 bucket (INDEX_R2, below; generation `STATIC_GEN` under
 # `static-names/<gen>/`, built by `job/static-names.sh` with `STATIC_NAMES_PROFILE=cw`, appended per scan by
-# `dt-cloud static-names runs add`). Dev only until the per-scan runs are scheduled.
+# `dt-cloud static-names runs add`).
 FILTER_STATIC = "1"
 NAME_SUMMARY_STATIC = "1"
 # The hex-run generation (specs/static-hex-runs.md), light index and drill both on R2; heavy terms read the drill.
