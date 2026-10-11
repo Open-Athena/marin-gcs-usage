@@ -401,19 +401,21 @@ phase publish
 # on a failure the scan still publishes (browse and diff work; search says "not
 # available for this scan yet") and the alert says how to resume — every stage
 # skips what's done, so a rerun picks up where this one stopped.
-if [ "${SKIP_STATIC_NAMES:-0}" != "1" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
-  # The append's Batch tasks run this job's own image (`JOB_IMAGE`), not the profile's pinned default — on
-  # 2026-10-10 they ran that stale digest and every task failed (`No module named dt_cloud.static_append`).
-  if R2_ENDPOINT=${R2_ENDPOINT:-https://$CLOUDFLARE_ACCOUNT_ID.r2.cloudflarestorage.com} STATIC_NAMES_PROFILE=gcs STATIC_NAMES_IMAGE=$JOB_IMAGE \
-      timeout "${STATIC_NAMES_TIMEOUT:-120m}" dt-cloud static-names runs add -c "$SNAP_ID"; then
-    phase static-names
-  else
-    rc=$?
-    echo "WARN: static-names runs add failed for $SNAP_ID (exit $rc$([ $rc = 124 ] && echo ', timed out'))" >&2
-    slack_post "⚠️ \`dt-cloud\` $SNAP_ID: the search index append failed (exit $rc$([ $rc = 124 ] && echo ', timed out after '"${STATIC_NAMES_TIMEOUT:-120m}")) — the scan publishes, search says \"not available\" for it. Resume: \`STATIC_NAMES_PROFILE=gcs STATIC_NAMES_IMAGE=$JOB_IMAGE dt-cloud static-names runs add -c $SNAP_ID\`."
-    phase static-names "failed (exit $rc)"
+static_names_step() {
+  if [ "${SKIP_STATIC_NAMES:-0}" != "1" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+    # The append's Batch tasks run this job's own image (`JOB_IMAGE`), not the profile's pinned default — on
+    # 2026-10-10 they ran that stale digest and every task failed (`No module named dt_cloud.static_append`).
+    if R2_ENDPOINT=${R2_ENDPOINT:-https://$CLOUDFLARE_ACCOUNT_ID.r2.cloudflarestorage.com} STATIC_NAMES_PROFILE=gcs STATIC_NAMES_IMAGE=$JOB_IMAGE \
+        timeout "${STATIC_NAMES_TIMEOUT:-120m}" dt-cloud static-names runs add -c "$SNAP_ID"; then
+      phase static-names
+    else
+      rc=$?
+      echo "WARN: static-names runs add failed for $SNAP_ID (exit $rc$([ $rc = 124 ] && echo ', timed out'))" >&2
+      slack_post "⚠️ \`dt-cloud\` $SNAP_ID: the search index append failed (exit $rc$([ $rc = 124 ] && echo ', timed out after '"${STATIC_NAMES_TIMEOUT:-120m}")) — the scan publishes, search says \"not available\" for it. Resume: \`STATIC_NAMES_PROFILE=gcs STATIC_NAMES_IMAGE=$JOB_IMAGE dt-cloud static-names runs add -c $SNAP_ID\`."
+      phase static-names "failed (exit $rc)"
+    fi
   fi
-fi
+}
 
 # Interval store (specs/interval-store.md §2.7): append this scan to the change-
 # interval path store as a run beside its base generation — per key range on
@@ -425,18 +427,31 @@ fi
 # the scan still publishes and reads per-scan; every stage skips what's done,
 # so a rerun resumes. Its Batch tasks run this job's own image (the profile
 # pins an older one, without `interval_append`).
-if [ "${INTERVAL_STORE_APPEND:-1}" = "1" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
-  if R2_ENDPOINT=${R2_ENDPOINT:-https://$CLOUDFLARE_ACCOUNT_ID.r2.cloudflarestorage.com} INTERVAL_STORE_PROFILE=gcs \
-      INTERVAL_STORE_IMAGE=${INTERVAL_STORE_IMAGE:-$JOB_IMAGE} DISKY_LABELS=${DISKY_LABELS:-app=disky,deployment=gcs} \
-      timeout "${INTERVAL_STORE_TIMEOUT:-60m}" dt-cloud interval-store append -c -w "${INTERVAL_STORE_MERGE_WAIT:-1800}" "$SNAP_ID"; then
-    phase interval-store
-  else
-    rc=$?
-    echo "WARN: interval-store append failed for $SNAP_ID (exit $rc$([ $rc = 124 ] && echo ', timed out'))" >&2
-    slack_post "⚠️ \`dt-cloud\` $SNAP_ID: the interval store append failed (exit $rc$([ $rc = 124 ] && echo ', timed out after '"${INTERVAL_STORE_TIMEOUT:-60m}")) — the scan publishes and reads per-scan. Resume: \`INTERVAL_STORE_PROFILE=gcs INTERVAL_STORE_IMAGE=$JOB_IMAGE dt-cloud interval-store append -c $SNAP_ID\`."
-    phase interval-store "failed (exit $rc)"
+interval_store_step() {
+  if [ "${INTERVAL_STORE_APPEND:-1}" = "1" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+    if R2_ENDPOINT=${R2_ENDPOINT:-https://$CLOUDFLARE_ACCOUNT_ID.r2.cloudflarestorage.com} INTERVAL_STORE_PROFILE=gcs \
+        INTERVAL_STORE_IMAGE=${INTERVAL_STORE_IMAGE:-$JOB_IMAGE} DISKY_LABELS=${DISKY_LABELS:-app=disky,deployment=gcs} \
+        timeout "${INTERVAL_STORE_TIMEOUT:-60m}" dt-cloud interval-store append -c -w "${INTERVAL_STORE_MERGE_WAIT:-1800}" "$SNAP_ID"; then
+      phase interval-store
+    else
+      rc=$?
+      echo "WARN: interval-store append failed for $SNAP_ID (exit $rc$([ $rc = 124 ] && echo ', timed out'))" >&2
+      slack_post "⚠️ \`dt-cloud\` $SNAP_ID: the interval store append failed (exit $rc$([ $rc = 124 ] && echo ', timed out after '"${INTERVAL_STORE_TIMEOUT:-60m}")) — the scan publishes and reads per-scan. Resume: \`INTERVAL_STORE_PROFILE=gcs INTERVAL_STORE_IMAGE=$JOB_IMAGE dt-cloud interval-store append -c $SNAP_ID\`."
+      phase interval-store "failed (exit $rc)"
+    fi
   fi
-fi
+}
+
+# The two appends are independent (each reads the published path index and
+# writes its own R2 store; their work runs as separate Batch jobs), so they run
+# side by side: the interval store's ~17 min hides under the name index's
+# ~50. Both finish before index-sync lists the scan. Each is never fatal on
+# its own (its `if` alerts and records the phase); `job/scan-runs.json` names
+# them `concurrent`, so each phase starts where `publish` ended.
+static_names_step & SN_PID=$!
+interval_store_step & IV_PID=$!
+wait "$SN_PID"
+wait "$IV_PID"
 
 # Footer-in-D1: sync the path-index parquet footer into the site's D1 so the
 # reader skips the cold-isolate footer parse (specs/done/path-agnostic-serving.md

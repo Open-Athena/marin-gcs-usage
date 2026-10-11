@@ -13,6 +13,7 @@
      "scan": [{"commands": "/listing/(\\d{4}-\\d{2}-\\d{2}(?:T\\d{4})?)/\\$b"}]}
   ],
   "overlapped": ["access-ingest"],
+  "concurrent": ["static-names", "interval-store"],
   "nop_marker": "^SNAPSHOT-JOB-NOP ",
   "error_marker": "^\\+ fail_alert (?P<rc>\\d+) (?P<line>\\d+) (?P<cmd>.*)",
   "outputs": [
