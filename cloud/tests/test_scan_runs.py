@@ -152,6 +152,20 @@ def test_record_failure_keeps_phases_and_names_the_error():
     assert rows(s, "SELECT phase, started_ts, finished_ts FROM scan_run_phases") == [("listing", 100, 200)]
 
 
+def test_record_phase_began_beside_the_sequence():
+    s = sink()
+    t0 = ts("2026-10-08T07:01:00")
+    record(s, PROFILE, "2026-10-08", "uid-1", t0, store=STORE, start=True)
+    record(s, PROFILE, "2026-10-08", "uid-1", t0 + 1500, store=STORE, phase="listing")
+    record(s, PROFILE, "2026-10-08", "uid-1", t0 + 1900, store=STORE, phase="ingest", began=t0 + 1500)
+    record(s, PROFILE, "2026-10-08", "uid-1", t0 + 2000, store=STORE, phase="index")
+    assert rows(s, "SELECT phase, seq, started_ts - %d, finished_ts - %d FROM scan_run_phases ORDER BY seq" % (t0, t0)) == [
+        ("listing", 0, 0, 1500),
+        ("ingest", 1, 1500, 1900),
+        ("index", 2, 1500, 2000),
+    ]
+
+
 def test_record_start_with_a_job_not_yet_running_keeps_the_start():
     """`scan_run -S -B` reads the Batch job right after it starts: its events may not show RUNNING yet, and the job's
     empty start must not clear the one `-S` stamps (the live cw runs had `started_ts` NULL)."""

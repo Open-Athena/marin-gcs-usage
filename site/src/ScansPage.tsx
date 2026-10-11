@@ -164,7 +164,7 @@ export function ScansPage() {
           <Legend order={order} color={color} />
         </section>
         <div className="run-filters">
-          <select aria-label="Filter by kind" value={kind} onChange={e => setKind(e.target.value)}><option value="">all kinds</option>{kinds.map(k => <option key={k}>{k}</option>)}</select>
+          {kinds.length > 1 && <select aria-label="Filter by kind" value={kind} onChange={e => setKind(e.target.value)}><option value="">all kinds</option>{kinds.map(k => <option key={k}>{k}</option>)}</select>}
           <select aria-label="Filter by status" value={status} onChange={e => setStatus(e.target.value)}><option value="">all statuses</option>{['succeeded', 'failed', 'running', 'nop'].map(s => <option key={s} value={s}>{s === 'nop' ? 'no-op' : s}</option>)}</select>
           <span className="dim">{shown.length} / {runs.length} runs</span>
         </div>
@@ -185,7 +185,7 @@ export function ScansPage() {
                 return (
                   <tr key={r.run_id} className={r.status === 'failed' ? 'failed' : undefined}>
                     <td className="nb"><Link to={scanHref(r.run_id)}><code>{r.scan}</code></Link>
-                      <div className="sr-kind">{r.kind}{s.downstream > 0 && <Tooltip content={`${s.downstream} downstream job${s.downstream > 1 ? 's' : ''} (listing fan-out, …)`}><span> + {s.downstream} job{s.downstream > 1 ? 's' : ''}</span></Tooltip>}</div></td>
+                      {(kinds.length > 1 || s.downstream > 0) && <div className="sr-kind">{kinds.length > 1 && r.kind}{s.downstream > 0 && <Tooltip content={`${s.downstream} downstream job${s.downstream > 1 ? 's' : ''} (listing fan-out, …)`}><span>{kinds.length > 1 ? ' + ' : '+ '}{s.downstream} job{s.downstream > 1 ? 's' : ''}</span></Tooltip>}</div>}</td>
                     <td><Status run={r} failedAt={s.failed_at} /></td>
                     <td className="nb hide-sm">{utc(r.started_ts)}</td>
                     <td className="num nb">{s.secs == null ? <span className="dim">—</span> : fmtDur(s.secs)}</td>
@@ -193,7 +193,7 @@ export function ScansPage() {
                     <td className="num nb">{bytes(s.out_bytes)}</td>
                     <td className={`num nb ${deltaClass(s.delta_bytes)}`}>{delta(s.delta_bytes)}</td>
                     <td className="num nb">{s.cost_usd == null ? <span className="dim">—</span> : usd(s.cost_usd)}</td>
-                    <td className="nb links hide-md"><Link to={scanHref(r.run_id)}>details</Link>{map && <> · <Link to={map}>map</Link></>}{' · '}<Links run={r} links={q.data!} /></td>
+                    <td className="nb links hide-md">{map && <><Link to={map}>map</Link> · </>}<Links run={r} links={q.data!} /></td>
                   </tr>
                 )
               })}
@@ -316,13 +316,14 @@ export function ScanRunPage() {
   const scanRun = (scan: string | null) => scan ? list.data?.runs.find(s => s.run.scan === scan && s.run.kind === 'scan' && s.run.status === 'succeeded') ?? list.data?.runs.find(s => s.run.scan === scan) : undefined
   const prev = scanRun(d?.prev_scan ?? null), next = scanRun(d?.next_scan ?? null)
   const r = d?.run
+  const kinds = new Set(list.data?.runs.map(s => s.run.kind))
   const map = r && r.status === 'succeeded' ? mapHref(r.scan, DEFAULT_STORE.path, slug) : null
   return (
     <main className="staged-page scans-page">
       <SiteNav />
       <p className="sr-crumbs"><Link to="/scans">Scan runs</Link>{prev && <> · <Link to={scanHref(prev.run.run_id)}>‹ {prev.run.scan}</Link></>}{next && <> · <Link to={scanHref(next.run.run_id)}>{next.run.scan} ›</Link></>}</p>
       {q.isLoading ? <p>Loading run…</p> : q.error ? <p className="err">{q.error.message}</p> : d && r && <>
-        <h1><code>{r.scan}</code> <span className="dim">{r.kind}</span></h1>
+        <h1><code>{r.scan}</code>{kinds.size > 1 && <> <span className="dim">{r.kind}</span></>}</h1>
         <p className="sub">
           <Status run={r} failedAt={d.failed_at} /> · {utc(r.started_ts)} → {r.finished_ts ? utc(r.finished_ts).slice(11) : '…'} UTC
           {d.secs != null && <> · {fmtDur(d.secs)}</>}
