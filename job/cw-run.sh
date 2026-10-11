@@ -284,6 +284,7 @@ if [ "${STATIC_NAMES:-0}" = "1" ] && [ "${REPROC:-0}" != "1" ]; then
   STATIC_NAMES_PROFILE=cw dt-cloud static-names runs add -c "$SNAP_ID" \
     || echo "WARN: static-names runs add failed for $SNAP_ID (exit $?; the filter keeps its path-store fallback)" >&2
 fi
+phase static-names
 
 # 4b. Warm the site's subtree + diff caches for this scan (the colo cache, plus
 # the global KV tier once `CACHE_KV` is bound in site/wrangler.toml) so the
