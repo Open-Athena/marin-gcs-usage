@@ -273,7 +273,7 @@ class Profile:
     phase_marker: str = r"^PHASE (?P<name>[^:]+): \d+s(?: \((?P<note>[^)]*)\))?"
     #: Markers that are not phases (a final total).
     phase_ignore: tuple[str, ...] = ("total",)
-    #: Phases that run beside the others from the start (their marker is where they joined), by name.
+    #: Phases that run beside the others (from the start, or from `record -b`; their marker is where they joined), by name.
     overlapped: tuple[str, ...] = ()
     #: A log line meaning the run did nothing (an already-published scan): group 1 the scan id.
     nop_marker: str | None = None
@@ -562,6 +562,7 @@ def record(
     start: bool = False,
     phase: str | None = None,
     note: str | None = None,
+    began: int | None = None,
     outputs: Sequence[tuple[str, str]] = (),
     gen: str | None = None,
     exit_code: int | None = None,
@@ -598,7 +599,7 @@ def record(
     if phase:
         prev_end = max((p["finished_ts"] for p in phases if p.get("finished_ts") and p["phase"] not in profile.overlapped), default=None)
         begin = run.started_ts or started
-        p_start = begin if phase in profile.overlapped else (prev_end or begin)
+        p_start = began if began is not None else begin if phase in profile.overlapped else (prev_end or begin)
         seq = next((p["seq"] for p in phases if p["phase"] == phase), len(phases))
         new_phases.append(Phase(phase, seq, p_start, now, "done", note))
     outs: list[Output] = []
@@ -688,6 +689,7 @@ def cli() -> None:
 
 
 @cli.command("record")
+@option("-b", "--began", type=int, default=None, help="With -P: when the phase began (epoch seconds), for one run beside the main sequence (list it in the profile's `overlapped`)")
 @option("-c", "--profile", "profile_path", default=None, help=f"The deployment's profile JSON (default ${PROFILE_ENV})")
 @option("-d", "--d1", default=None, help="D1 database id (default $D1_DB_ID)")
 @option("-e", "--error", default=None, help="With a non-zero -x: the failure's one-line reason (default `exit <rc>`)")
@@ -709,7 +711,7 @@ def cli() -> None:
 @option("-s", "--sqlite", default=None, help="Write to this local SQLite file (created from the migration) instead of D1")
 @option("-x", "--exit", "exit_code", type=IntRange(0, 255), default=None, help="Finish the run with this exit code (0 = succeeded)")
 @argument("scan")
-def record_cmd(profile_path, d1, from_batch, error, failed_phase, gen, job_name, kind, no_measure, dry_run, nop, outputs, parent,
+def record_cmd(profile_path, began, d1, from_batch, error, failed_phase, gen, job_name, kind, no_measure, dry_run, nop, outputs, parent,
                phase, note, run_id, region, start, sqlite, exit_code, scan) -> None:
     """Record one step of SCAN's run, from the job: `-S` at its start, `-P NAME` as each phase ends, `-x RC` from
     its exit trap. Never fails the job it reports on: an error is printed and the exit status is 0."""
@@ -735,7 +737,7 @@ def record_cmd(profile_path, d1, from_batch, error, failed_phase, gen, job_name,
                 err(f"scan-run: no Batch job with uid {run_id} in {region or profile.regions}")
         pairs = [tuple(o.split("=", 1)) for o in outputs]
         rec = record(sink, profile, scan, run_id, int(time.time()), store=store, kind=kind, start=start, phase=phase,
-                     note=note, outputs=pairs, gen=gen, exit_code=exit_code, nop=nop, failed_phase=failed_phase,
+                     note=note, began=began, outputs=pairs, gen=gen, exit_code=exit_code, nop=nop, failed_phase=failed_phase,
                      error=error, parent=parent, job=job)
         err(f"scan-run: {scan} {run_id} {rec.run.status}" + (f" · phase {phase}" if phase else "")
             + (f" · {len(rec.outputs)} outputs" if rec.outputs else ""))
